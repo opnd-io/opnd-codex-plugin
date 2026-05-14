@@ -89,7 +89,9 @@ test("agent control commands are exposed as deterministic runtime entrypoints", 
   assert.match(read("commands/agent.md"), /approval on-request/i);
   assert.match(read("commands/continue.md"), /codex-companion\.mjs" continue "\$ARGUMENTS"/);
   assert.match(read("commands/approve.md"), /codex-companion\.mjs" approve "\$ARGUMENTS"/);
+  assert.match(read("commands/approve.md"), /argument-hint:\s*"<approval-id>/);
   assert.match(read("commands/deny.md"), /codex-companion\.mjs" deny "\$ARGUMENTS"/);
+  assert.match(read("commands/deny.md"), /argument-hint:\s*"<approval-id>"/);
 });
 
 test("rescue command absorbs continue semantics", () => {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile } from "./state.mjs";
+import { readJobFile, resolveJobFile, resolveJobLogFile, updateJobFile, upsertJob, writeJobFile } from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -101,16 +101,7 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
 
     upsertJob(workspaceRoot, patch);
 
-    const jobFile = resolveJobFile(workspaceRoot, jobId);
-    if (!fs.existsSync(jobFile)) {
-      return;
-    }
-
-    const storedJob = readJobFile(jobFile);
-    writeJobFile(workspaceRoot, jobId, {
-      ...storedJob,
-      ...patch
-    });
+    updateJobFile(workspaceRoot, jobId, (storedJob) => (storedJob ? { ...storedJob, ...patch } : null));
   };
 }
 

@@ -549,36 +549,47 @@ rl.on("line", (line) => {
           }
         ];
 
-	        if (BEHAVIOR === "approval-command") {
+	        if (BEHAVIOR === "approval-command" || BEHAVIOR === "auth-refresh-request") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
-	          send({
-	            method: "item/started",
-	            params: {
-	              threadId: thread.id,
-	              turnId,
-	              item: { type: "commandExecution", id: "cmd_" + turnId, command: "npm test", status: "inProgress" }
-	            }
-	          });
 	          const requestId = "approval_" + turnId;
 	          pendingApprovalRequests.set(requestId, {
 	            threadId: thread.id,
 	            turnId,
 	            payload
 	          });
-	          send({
-	            id: requestId,
-	            method: "item/commandExecution/requestApproval",
-	            params: {
-	              threadId: thread.id,
-	              turnId,
-	              itemId: "cmd_" + turnId,
-	              startedAtMs: Date.now(),
-	              reason: "Need to run verification",
-	              command: "npm test",
-	              cwd: thread.cwd,
-	              commandActions: null
-	            }
-	          });
+	          if (BEHAVIOR === "auth-refresh-request") {
+	            send({
+	              id: requestId,
+	              method: "account/chatgptAuthTokens/refresh",
+	              params: {
+	                reason: "expired",
+	                previousAccountId: "acct_previous"
+	              }
+	            });
+	          } else {
+	            send({
+	              method: "item/started",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                item: { type: "commandExecution", id: "cmd_" + turnId, command: "npm test", status: "inProgress" }
+	              }
+	            });
+	            send({
+	              id: requestId,
+	              method: "item/commandExecution/requestApproval",
+	              params: {
+	                threadId: thread.id,
+	                turnId,
+	                itemId: "cmd_" + turnId,
+	                startedAtMs: Date.now(),
+	                reason: "Need to run verification",
+	                command: "npm test",
+	                cwd: thread.cwd,
+	                commandActions: null
+	              }
+	            });
+	          }
 	        } else if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          const timer = setTimeout(() => {
@@ -656,8 +667,10 @@ rl.on("line", (line) => {
 
 export function buildEnv(binDir) {
   const sep = process.platform === "win32" ? ";" : ":";
-  return {
+  const env = {
     ...process.env,
     PATH: `${binDir}${sep}${process.env.PATH}`
   };
+  delete env.CODEX_COMPANION_APP_SERVER_ENDPOINT;
+  return env;
 }

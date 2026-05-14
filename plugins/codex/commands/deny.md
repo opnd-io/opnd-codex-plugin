@@ -1,6 +1,6 @@
 ---
 description: Deny a pending Codex command, file-change, permission, or tool request
-argument-hint: "[approval-id]"
+argument-hint: "<approval-id>"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

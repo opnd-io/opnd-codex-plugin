@@ -37,6 +37,7 @@ import {
   getConfig,
   listJobs,
   setConfig,
+  updateJobFile,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
@@ -89,8 +90,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs agent [--wait|--background] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs continue [--job <job-id>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs approve [approval-id] [--session] [--response-json <json>] [--json]",
-      "  node scripts/codex-companion.mjs deny [approval-id] [--json]",
+      "  node scripts/codex-companion.mjs approve <approval-id> [--session] [--response-json <json>] [--json]",
+      "  node scripts/codex-companion.mjs deny <approval-id> [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -169,7 +170,7 @@ function parseCommandInput(argv, config = {}) {
     ...config,
     aliasMap: {
       C: "cwd",
-      ...(config.aliasMap ?? {})
+      ...config.aliasMap
     }
   });
 }
@@ -234,11 +235,11 @@ function writeStoredJobWithApprovals(workspaceRoot, jobId, storedJob) {
   const count = pendingApprovalCount(approvals);
   const activePhase =
     storedJob.status === "queued" || storedJob.status === "running" ? (count > 0 ? "waiting-approval" : "running") : null;
-  writeJobFile(workspaceRoot, jobId, {
-    ...storedJob,
+  updateJobFile(workspaceRoot, jobId, (existing) => ({
+    ...(existing ?? storedJob),
     pendingApprovals: approvals,
     ...(activePhase ? { phase: activePhase } : {})
-  });
+  }));
   upsertJob(workspaceRoot, {
     id: jobId,
     pendingApprovals: summarizePendingApprovals(approvals),
@@ -257,18 +258,33 @@ function appendPendingApproval(workspaceRoot, jobId, approval) {
   });
 }
 
-function updateApprovalDecision(workspaceRoot, approvalReference, decision) {
+function isPendingApproval(approval) {
+  return approval?.status === "pending";
+}
+
+function pendingApprovalsForJob(job) {
+  return normalizeApprovals(job?.pendingApprovals).filter(isPendingApproval);
+}
+
+function updateApprovalDecision(workspaceRoot, approvalReference, decision, options = {}) {
+  if (!approvalReference) {
+    throw new Error("Provide an approval id. Run /codex:status to list pending approvals.");
+  }
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const matches = [];
   for (const job of jobs) {
+    if (options.sessionId && job.sessionId !== options.sessionId) {
+      continue;
+    }
+    if (job.status !== "queued" && job.status !== "running") {
+      continue;
+    }
     const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
-    for (const approval of normalizeApprovals(storedJob.pendingApprovals)) {
-      if (approval.status !== "pending") {
+    for (const approval of pendingApprovalsForJob(storedJob)) {
+      if (approval.id !== approvalReference && !approval.id.startsWith(approvalReference)) {
         continue;
       }
-      if (!approvalReference || approval.id === approvalReference || approval.id.startsWith(approvalReference)) {
-        matches.push({ job, storedJob, approval });
-      }
+      matches.push({ job, storedJob, approval });
     }
   }
 
@@ -280,14 +296,15 @@ function updateApprovalDecision(workspaceRoot, approvalReference, decision) {
   }
 
   const { job, storedJob, approval } = matches[0];
+  const { responseJson, ...decisionMetadata } = decision;
   const decidedApproval = {
     ...approval,
     status: decision.action === "deny" ? "denied" : "approved",
     decision: {
-      ...decision,
+      ...decisionMetadata,
       decidedAt: nowIso()
     },
-    responseJson: decision.responseJson ?? null,
+    responseJson: responseJson ?? null,
     updatedAt: nowIso()
   };
   const nextApprovals = normalizeApprovals(storedJob.pendingApprovals).map((candidate) =>
@@ -305,12 +322,23 @@ function updateApprovalDecision(workspaceRoot, approvalReference, decision) {
 async function waitForApprovalDecision(workspaceRoot, jobId, approvalId) {
   while (true) {
     const storedJob = readStoredJobRequired(workspaceRoot, jobId);
+    if (storedJob.status !== "queued" && storedJob.status !== "running") {
+      throw new Error(`Pending approval ${approvalId} cannot continue because job ${jobId} is ${storedJob.status}.`);
+    }
     const approval = normalizeApprovals(storedJob.pendingApprovals).find((candidate) => candidate.id === approvalId);
     if (!approval) {
       throw new Error(`Pending approval ${approvalId} disappeared.`);
     }
     if (approval.status !== "pending") {
-      return buildApprovalResponse(approval);
+      const response = buildApprovalResponse(approval);
+      const nextApprovals = normalizeApprovals(storedJob.pendingApprovals).map((candidate) =>
+        candidate.id === approval.id ? { ...candidate, responseJson: null, updatedAt: nowIso() } : candidate
+      );
+      writeStoredJobWithApprovals(workspaceRoot, jobId, {
+        ...storedJob,
+        pendingApprovals: nextApprovals
+      });
+      return response;
     }
     await sleep(1000);
   }
@@ -860,17 +888,27 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: null,
     logFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+
+  const child = spawnDetachedTaskWorker(cwd, job.id);
+  const spawnedPid = child.pid ?? null;
+  updateJobFile(job.workspaceRoot, job.id, (storedJob) => ({
+    ...(storedJob ?? queuedRecord),
+    pid: spawnedPid
+  }));
+  upsertJob(job.workspaceRoot, {
+    id: job.id,
+    pid: spawnedPid
+  });
 
   return {
     payload: {
@@ -1094,10 +1132,6 @@ async function handleAgent(argv) {
   await handleTask(nextArgv);
 }
 
-function getCurrentSessionId() {
-  return process.env[SESSION_ID_ENV] ?? null;
-}
-
 function matchJobReferenceLocal(jobs, reference) {
   if (!reference) {
     return jobs[0] ?? null;
@@ -1117,7 +1151,7 @@ function matchJobReferenceLocal(jobs, reference) {
 }
 
 function resolveTaskJobForContinue(workspaceRoot, reference) {
-  const sessionId = getCurrentSessionId();
+  const sessionId = getCurrentClaudeSessionId();
   let jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.jobClass === "task");
   if (!reference && sessionId) {
     jobs = jobs.filter((job) => job.sessionId === sessionId);
@@ -1145,6 +1179,12 @@ async function handleContinue(argv) {
   }
 
   const selected = resolveTaskJobForContinue(workspaceRoot, options.job ?? null);
+  const pendingApprovals = pendingApprovalsForJob(readStoredJob(workspaceRoot, selected.id) ?? selected);
+  if (pendingApprovals.length > 0) {
+    throw new Error(
+      `Codex task ${selected.id} is waiting for approval. Resolve ${pendingApprovals[0].id} with /codex:approve or /codex:deny before continuing.`
+    );
+  }
   if ((selected.status === "queued" || selected.status === "running") && selected.threadId && selected.turnId) {
     const result = await steerAppServerTurn(cwd, {
       threadId: selected.threadId,
@@ -1220,13 +1260,15 @@ function handleApprovalDecision(argv, action) {
     booleanOptions: ["json", "session"]
   });
 
-  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  const approvalReference = positionals[0] ?? "";
   const decision = {
     action: action === "approve" && options.session ? "approve-session" : action,
     responseJson: parseResponseJson(options["response-json"])
   };
-  const result = updateApprovalDecision(workspaceRoot, positionals[0] ?? "", decision);
+  const result = updateApprovalDecision(workspaceRoot, approvalReference, decision, {
+    sessionId: getCurrentClaudeSessionId()
+  });
   const payload = {
     action,
     jobId: result.jobId,
@@ -1291,7 +1333,6 @@ function handleTaskResumeCandidate(argv) {
     booleanOptions: ["json"]
   });
 
-  const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = getCurrentClaudeSessionId();
   const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot)));
@@ -1347,18 +1388,35 @@ async function handleCancel(argv) {
   appendLogLine(job.logFile, "Cancelled by user.");
 
   const completedAt = nowIso();
+  const cancelledApprovals = normalizeApprovals(existing.pendingApprovals ?? job.pendingApprovals).map((approval) =>
+    approval.status === "pending"
+      ? {
+          ...approval,
+          status: "cancelled",
+          decision: {
+            action: "deny",
+            decidedAt: completedAt,
+            reason: "Job was cancelled before approval was resolved."
+          },
+          updatedAt: completedAt
+        }
+      : approval
+  );
   const nextJob = {
     ...job,
     status: "cancelled",
     phase: "cancelled",
     pid: null,
     completedAt,
-    errorMessage: "Cancelled by user."
+    errorMessage: "Cancelled by user.",
+    pendingApprovals: summarizePendingApprovals(cancelledApprovals),
+    pendingApprovalCount: 0
   };
 
   writeJobFile(workspaceRoot, job.id, {
     ...existing,
     ...nextJob,
+    pendingApprovals: cancelledApprovals,
     cancelledAt: completedAt
   });
   upsertJob(workspaceRoot, {
@@ -1366,6 +1424,8 @@ async function handleCancel(argv) {
     status: "cancelled",
     phase: "cancelled",
     pid: null,
+    pendingApprovals: summarizePendingApprovals(cancelledApprovals),
+    pendingApprovalCount: 0,
     errorMessage: "Cancelled by user.",
     completedAt
   });

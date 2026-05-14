@@ -76,29 +76,46 @@ test("terminateProcessTree treats missing Windows processes as already stopped",
   assert.match(outcome.result.stdout, /not found/i);
 });
 
-test("terminateProcessTree falls back to process kill when localized taskkill output is ambiguous", () => {
-  let killedPid = null;
+test("terminateProcessTree reports ambiguous taskkill failures instead of killing a single pid", () => {
+  assert.throws(
+    () =>
+      terminateProcessTree(1234, {
+        platform: "win32",
+        isProcessRunningImpl: () => true,
+        runCommandImpl(command, args) {
+          return {
+            command,
+            args,
+            status: 255,
+            signal: null,
+            stdout: "",
+            stderr: "localized taskkill failure text",
+            error: null
+          };
+        }
+      }),
+    /localized taskkill failure text/
+  );
+});
+
+test("terminateProcessTree treats an already-exited Windows root process as stopped", () => {
   const outcome = terminateProcessTree(1234, {
     platform: "win32",
+    isProcessRunningImpl: () => false,
     runCommandImpl(command, args) {
       return {
         command,
         args,
-        status: 255,
+        status: 128,
         signal: null,
         stdout: "",
         stderr: "localized taskkill failure text",
         error: null
       };
-    },
-    killImpl(pid) {
-      killedPid = pid;
     }
   });
 
-  assert.equal(killedPid, 1234);
   assert.equal(outcome.attempted, true);
-  assert.equal(outcome.delivered, true);
-  assert.equal(outcome.method, "kill");
-  assert.equal(outcome.result.status, 255);
+  assert.equal(outcome.delivered, false);
+  assert.equal(outcome.method, "taskkill");
 });

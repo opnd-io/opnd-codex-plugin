@@ -33,8 +33,8 @@ function send(socket, message) {
   socket.write(`${JSON.stringify(message)}\n`);
 }
 
-function isInterruptRequest(message) {
-  return message?.method === "turn/interrupt";
+function isActiveTurnControlRequest(message) {
+  return message?.method === "turn/interrupt" || message?.method === "turn/steer";
 }
 
 function writePidFile(pidFile) {
@@ -214,12 +214,12 @@ async function main() {
           continue;
         }
 
-        const allowInterruptDuringActiveStream =
-          isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
+        const allowActiveTurnControlDuringActiveStream =
+          isActiveTurnControlRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
 
         if (
           ((activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
-          !allowInterruptDuringActiveStream
+          !allowActiveTurnControlDuringActiveStream
         ) {
           send(socket, {
             id: message.id,
@@ -228,7 +228,7 @@ async function main() {
           continue;
         }
 
-        if (allowInterruptDuringActiveStream) {
+        if (allowActiveTurnControlDuringActiveStream) {
           try {
             const result = await appClient.request(message.method, message.params ?? {});
             send(socket, { id: message.id, result });

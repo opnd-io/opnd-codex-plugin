@@ -142,6 +142,18 @@ function looksLikeMissingProcessMessage(text) {
   return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
 }
 
+function isProcessRunning(pid, killImpl) {
+  try {
+    killImpl(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+}
+
 export function terminateProcessTree(pid, options = {}) {
   if (!Number.isFinite(pid)) {
     return { attempted: false, delivered: false, method: null };
@@ -150,6 +162,7 @@ export function terminateProcessTree(pid, options = {}) {
   const platform = options.platform ?? process.platform;
   const runCommandImpl = options.runCommandImpl ?? runCommand;
   const killImpl = options.killImpl ?? process.kill.bind(process);
+  const isProcessRunningImpl = options.isProcessRunningImpl ?? ((targetPid) => isProcessRunning(targetPid, killImpl));
 
   if (platform === "win32") {
     const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
@@ -163,6 +176,9 @@ export function terminateProcessTree(pid, options = {}) {
 
     const combinedOutput = `${result.stderr}\n${result.stdout}`.trim();
     if (!result.error && looksLikeMissingProcessMessage(combinedOutput)) {
+      return { attempted: true, delivered: false, method: "taskkill", result };
+    }
+    if (!result.error && !isProcessRunningImpl(pid)) {
       return { attempted: true, delivered: false, method: "taskkill", result };
     }
 
@@ -180,16 +196,6 @@ export function terminateProcessTree(pid, options = {}) {
 
     if (result.error) {
       throw result.error;
-    }
-
-    try {
-      killImpl(pid);
-      return { attempted: true, delivered: true, method: "kill", result };
-    } catch (error) {
-      if (error?.code === "ESRCH") {
-        return { attempted: true, delivered: false, method: "taskkill", result };
-      }
-      throw error;
     }
 
     throw new Error(formatCommandFailure(result));

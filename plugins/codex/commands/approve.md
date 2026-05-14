@@ -1,6 +1,6 @@
 ---
 description: Approve a pending Codex command, file-change, permission, or tool request
-argument-hint: "[approval-id] [--session] [--response-json <json>]"
+argument-hint: "<approval-id> [--session] [--response-json <json>]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

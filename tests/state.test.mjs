@@ -5,7 +5,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  loadState,
+  readJobFile,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  updateJobFile,
+  updateState,
+  writeJobFile
+} from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -102,4 +113,73 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+test("updateState does not overwrite an invalid existing state file", () => {
+  const workspace = makeTempDir();
+  const stateFile = resolveStateFile(workspace);
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, "{\"jobs\":[", "utf8");
+
+  assert.throws(
+    () =>
+      updateState(workspace, (state) => {
+        state.jobs.push({ id: "job-new" });
+      }),
+    /Unexpected end of JSON input/
+  );
+  assert.equal(fs.readFileSync(stateFile, "utf8"), "{\"jobs\":[");
+  assert.deepEqual(loadState(workspace).jobs, []);
+});
+
+test("writeJobFile writes complete JSON readable by readJobFile", () => {
+  const workspace = makeTempDir();
+  const jobFile = writeJobFile(workspace, "job-atomic", {
+    id: "job-atomic",
+    status: "running",
+    nested: { ok: true }
+  });
+
+  assert.deepEqual(readJobFile(jobFile), {
+    id: "job-atomic",
+    status: "running",
+    nested: { ok: true }
+  });
+});
+
+test("updateJobFile merges against the latest job file contents", () => {
+  const workspace = makeTempDir();
+  const jobFile = writeJobFile(workspace, "job-merge", {
+    id: "job-merge",
+    status: "running",
+    phase: "starting",
+    pendingApprovals: [{ id: "approval-1", status: "pending" }]
+  });
+
+  updateJobFile(workspace, "job-merge", (job) => ({
+    ...job,
+    pendingApprovals: [{ id: "approval-1", status: "approved" }]
+  }));
+
+  updateJobFile(workspace, "job-merge", (job) => ({
+    ...job,
+    phase: "waiting-approval"
+  }));
+
+  assert.deepEqual(readJobFile(jobFile).pendingApprovals, [{ id: "approval-1", status: "approved" }]);
+});
+
+test("state lock cleanup removes locks left by exited owners", () => {
+  const workspace = makeTempDir();
+  const lockDir = path.join(resolveStateDir(workspace), ".lock");
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, "owner"), "999999999\n2026-01-01T00:00:00.000Z\n", "utf8");
+
+  const jobFile = writeJobFile(workspace, "job-after-stale-lock", {
+    id: "job-after-stale-lock",
+    status: "running"
+  });
+
+  assert.equal(fs.existsSync(lockDir), false);
+  assert.equal(readJobFile(jobFile).id, "job-after-stale-lock");
 });

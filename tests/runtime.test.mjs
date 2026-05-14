@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
-import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import { resolveJobFile, resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -29,11 +29,12 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
 }
 
 test("setup reports ready when fake codex is installed and authenticated", () => {
+  const workspace = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -45,14 +46,15 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
 });
 
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
+  const workspace = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   fs.symlinkSync(process.execPath, path.join(binDir, process.platform === "win32" ? "node.exe" : "node"));
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: {
-      ...process.env,
+      ...buildEnv(binDir),
       PATH: binDir
     }
   });
@@ -66,11 +68,12 @@ test("setup is ready without npm when Codex is already installed and authenticat
 });
 
 test("setup trusts app-server API key auth even when login status alone would fail", () => {
+  const workspace = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "api-key-account-only");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -84,11 +87,12 @@ test("setup trusts app-server API key auth even when login status alone would fa
 });
 
 test("setup is ready when the active provider does not require OpenAI login", () => {
+  const workspace = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "provider-no-auth");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -102,11 +106,12 @@ test("setup is ready when the active provider does not require OpenAI login", ()
 });
 
 test("setup treats custom providers with app-server-ready config as ready", () => {
+  const workspace = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "env-key-provider");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -120,11 +125,12 @@ test("setup treats custom providers with app-server-ready config as ready", () =
 });
 
 test("setup reports not ready when app-server config read fails", () => {
+  const workspace = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "config-read-fails");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -884,7 +890,10 @@ test("background task stores approval requests and resumes after approve", async
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const env = buildEnv(binDir);
+  const env = {
+    ...buildEnv(binDir),
+    CODEX_COMPANION_SESSION_ID: "session-approval-owner"
+  };
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "--approval", "on-request", "run the tests"], {
     cwd: repo,
     env
@@ -905,16 +914,29 @@ test("background task stores approval requests and resumes after approve", async
   assert.equal(status.status, 0, status.stderr);
   assert.match(status.stdout, new RegExp(`/codex:approve ${pending.id}`));
 
+  const missingId = run("node", [SCRIPT, "approve", "--json"], { cwd: repo, env });
+  assert.notEqual(missingId.status, 0);
+  assert.match(missingId.stderr, /Provide an approval id/);
+
+  const wrongSession = run("node", [SCRIPT, "approve", pending.id, "--json"], {
+    cwd: repo,
+    env: {
+      ...env,
+      CODEX_COMPANION_SESSION_ID: "session-approval-other"
+    }
+  });
+  assert.notEqual(wrongSession.status, 0);
+  assert.match(wrongSession.stderr, /No pending approval found/);
+
   const approved = run("node", [SCRIPT, "approve", pending.id, "--json"], { cwd: repo, env });
   assert.equal(approved.status, 0, approved.stderr);
   assert.equal(JSON.parse(approved.stdout).approval.status, "approved");
 
-  const waited = run("node", [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "60000", "--json"], {
-    cwd: repo,
-    env
-  });
-  assert.equal(waited.status, 0, waited.stderr);
-  assert.equal(JSON.parse(waited.stdout).job.status, "completed");
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.status === "completed" ? job : null;
+  }, { timeoutMs: 120000, intervalMs: 500 });
 
   const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
   assert.equal(fakeState.lastThreadStart.approvalPolicy, "on-request");
@@ -944,6 +966,7 @@ test("continue steers an active background Codex turn", async () => {
     const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
     return job?.status === "running" && job.threadId && job.turnId ? job : null;
   }, { timeoutMs: 30000 });
+  const startsBeforeContinue = JSON.parse(fs.readFileSync(fakeStatePath, "utf8")).appServerStarts;
 
   const continued = run("node", [SCRIPT, "continue", "--job", launchPayload.jobId, "focus on the failing assertion"], {
     cwd: repo,
@@ -954,8 +977,133 @@ test("continue steers an active background Codex turn", async () => {
 
   const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
   assert.equal(fakeState.lastTurnSteer.prompt, "focus on the failing assertion");
+  assert.equal(fakeState.appServerStarts, startsBeforeContinue);
 
   run("node", [SCRIPT, "cancel", launchPayload.jobId, "--json"], { cwd: repo, env });
+});
+
+test("continue refuses to steer a task that is waiting for approval", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "approval-command");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "--approval", "on-request", "run the tests"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const stateDir = resolveStateDir(repo);
+  const pending = await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.pendingApprovals?.find((approval) => approval.status === "pending") ?? null;
+  }, { timeoutMs: 30000 });
+
+  const continued = run("node", [SCRIPT, "continue", "--job", launchPayload.jobId, "do something else"], {
+    cwd: repo,
+    env
+  });
+  assert.notEqual(continued.status, 0);
+  assert.match(continued.stderr, new RegExp(pending.id));
+
+  run("node", [SCRIPT, "cancel", launchPayload.jobId, "--json"], { cwd: repo, env });
+});
+
+test("cancel clears pending approvals so they cannot be approved later", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "approval-command");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "--approval", "on-request", "run the tests"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const stateDir = resolveStateDir(repo);
+  const pending = await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.pendingApprovals?.find((approval) => approval.status === "pending") ?? null;
+  }, { timeoutMs: 30000 });
+
+  const cancelled = run("node", [SCRIPT, "cancel", launchPayload.jobId, "--json"], { cwd: repo, env });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+
+  const approvedAfterCancel = run("node", [SCRIPT, "approve", pending.id, "--json"], { cwd: repo, env });
+  assert.notEqual(approvedAfterCancel.status, 0);
+  assert.match(approvedAfterCancel.stderr, /No pending approval found/);
+});
+
+test("auth refresh server requests are surfaced as response-json approvals", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "auth-refresh-request");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "--approval", "on-request", "refresh auth"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const stateDir = resolveStateDir(repo);
+  const pending = await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.pendingApprovals?.find((approval) => approval.status === "pending") ?? null;
+  }, { timeoutMs: 30000 });
+
+  assert.equal(pending.method, "account/chatgptAuthTokens/refresh");
+  assert.match(pending.summary, /ChatGPT auth token refresh requested/);
+
+  const approved = run(
+    "node",
+    [
+      SCRIPT,
+      "approve",
+      pending.id,
+      "--json",
+      "--response-json",
+      JSON.stringify({
+        accessToken: "test-access-token",
+        chatgptAccountId: "acct_test",
+        chatgptPlanType: "plus"
+      })
+    ],
+    { cwd: repo, env }
+  );
+  assert.equal(approved.status, 0, approved.stderr);
+
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.status === "completed" ? job : null;
+  }, { timeoutMs: 120000, intervalMs: 500 });
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.deepEqual(fakeState.lastApprovalResponse, {
+    accessToken: "test-access-token",
+    chatgptAccountId: "acct_test",
+    chatgptPlanType: "plus"
+  });
+  assert.doesNotMatch(fs.readFileSync(resolveJobFile(repo, launchPayload.jobId), "utf8"), /test-access-token/);
 });
 
 test("review rejects focus text because it is native-review only", () => {
