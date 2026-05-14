@@ -874,6 +874,90 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.equal(fakeState.lastThreadStart.sandbox, "danger-full-access");
 });
 
+test("background task stores approval requests and resumes after approve", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "approval-command");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "--approval", "on-request", "run the tests"], {
+    cwd: repo,
+    env
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const stateDir = resolveStateDir(repo);
+  const pending = await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.pendingApprovals?.find((approval) => approval.status === "pending") ?? null;
+  }, { timeoutMs: 30000 });
+
+  assert.match(pending.summary, /npm test/);
+
+  const status = run("node", [SCRIPT, "status", launchPayload.jobId], { cwd: repo, env });
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, new RegExp(`/codex:approve ${pending.id}`));
+
+  const approved = run("node", [SCRIPT, "approve", pending.id, "--json"], { cwd: repo, env });
+  assert.equal(approved.status, 0, approved.stderr);
+  assert.equal(JSON.parse(approved.stdout).approval.status, "approved");
+
+  const waited = run("node", [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "60000", "--json"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(waited.status, 0, waited.stderr);
+  assert.equal(JSON.parse(waited.stdout).job.status, "completed");
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.equal(fakeState.lastThreadStart.approvalPolicy, "on-request");
+  assert.deepEqual(fakeState.lastApprovalResponse, { decision: "accept" });
+});
+
+test("continue steers an active background Codex turn", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "interruptible-slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const env = buildEnv(binDir);
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the active task"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  const stateDir = resolveStateDir(repo);
+  await waitFor(() => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const job = state.jobs.find((candidate) => candidate.id === launchPayload.jobId);
+    return job?.status === "running" && job.threadId && job.turnId ? job : null;
+  }, { timeoutMs: 30000 });
+
+  const continued = run("node", [SCRIPT, "continue", "--job", launchPayload.jobId, "focus on the failing assertion"], {
+    cwd: repo,
+    env
+  });
+  assert.equal(continued.status, 0, continued.stderr);
+  assert.match(continued.stdout, /Steered active Codex turn/);
+
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.equal(fakeState.lastTurnSteer.prompt, "focus on the failing assertion");
+
+  run("node", [SCRIPT, "cancel", launchPayload.jobId, "--json"], { cwd: repo, env });
+});
+
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

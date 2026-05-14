@@ -70,17 +70,26 @@ test("adversarial review command uses AskUserQuestion and background Bash while 
   assert.match(source, /can still take extra focus text after the flags/i);
 });
 
-test("continue is not exposed as a user-facing command", () => {
+test("agent control commands are exposed as deterministic runtime entrypoints", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [
     "adversarial-review.md",
+    "agent.md",
+    "approve.md",
     "cancel.md",
+    "continue.md",
+    "deny.md",
     "rescue.md",
     "result.md",
     "review.md",
     "setup.md",
     "status.md"
   ]);
+  assert.match(read("commands/agent.md"), /codex-companion\.mjs" agent "\$ARGUMENTS"/);
+  assert.match(read("commands/agent.md"), /approval on-request/i);
+  assert.match(read("commands/continue.md"), /codex-companion\.mjs" continue "\$ARGUMENTS"/);
+  assert.match(read("commands/approve.md"), /codex-companion\.mjs" approve "\$ARGUMENTS"/);
+  assert.match(read("commands/deny.md"), /codex-companion\.mjs" deny "\$ARGUMENTS"/);
 });
 
 test("rescue command absorbs continue semantics", () => {
@@ -166,6 +175,9 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /uses the same review target selection as `\/codex:review`/i);
   assert.match(readme, /--base main challenge whether this was the right caching and retry design/);
   assert.match(readme, /### `\/codex:rescue`/);
+  assert.match(readme, /### `\/codex:agent`/);
+  assert.match(readme, /### `\/codex:continue`/);
+  assert.match(readme, /### `\/codex:approve` and `\/codex:deny`/);
   assert.match(readme, /### `\/codex:status`/);
   assert.match(readme, /### `\/codex:result`/);
   assert.match(readme, /### `\/codex:cancel`/);

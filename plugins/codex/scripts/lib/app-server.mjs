@@ -128,7 +128,7 @@ class AppServerClientBase {
     }
 
     if (message.id !== undefined && message.method) {
-      this.handleServerRequest(message);
+      void this.handleServerRequest(message);
       return;
     }
 
@@ -152,11 +152,25 @@ class AppServerClientBase {
     }
   }
 
-  handleServerRequest(message) {
-    this.sendMessage({
-      id: message.id,
-      error: buildJsonRpcError(-32601, `Unsupported server request: ${message.method}`)
-    });
+  async handleServerRequest(message) {
+    const handler = this.options.serverRequestHandler ?? null;
+    if (!handler) {
+      this.sendMessage({
+        id: message.id,
+        error: buildJsonRpcError(-32601, `Unsupported server request: ${message.method}`)
+      });
+      return;
+    }
+
+    try {
+      const result = await handler(message, this);
+      this.sendMessage({ id: message.id, result: result ?? {} });
+    } catch (error) {
+      this.sendMessage({
+        id: message.id,
+        error: buildJsonRpcError(error?.rpcCode ?? -32000, error instanceof Error ? error.message : String(error))
+      });
+    }
   }
 
   handleExit(error) {

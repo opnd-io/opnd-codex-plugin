@@ -148,6 +148,17 @@ function pushJobDetails(lines, job, options = {}) {
   if ((job.status === "queued" || job.status === "running") && options.showCancelHint) {
     lines.push(`  Cancel: /codex:cancel ${job.id}`);
   }
+  const pendingApprovals = Array.isArray(job.pendingApprovals)
+    ? job.pendingApprovals.filter((approval) => approval.status === "pending")
+    : [];
+  if (pendingApprovals.length > 0) {
+    lines.push("  Pending approvals:");
+    for (const approval of pendingApprovals) {
+      lines.push(`    - ${approval.id} [${approval.risk ?? "unknown"}] ${approval.summary ?? approval.method}`);
+      lines.push(`      Approve: /codex:approve ${approval.id}`);
+      lines.push(`      Deny: /codex:deny ${approval.id}`);
+    }
+  }
   if (job.status !== "queued" && job.status !== "running" && options.showResultHint) {
     lines.push(`  Result: /codex:result ${job.id}`);
   }

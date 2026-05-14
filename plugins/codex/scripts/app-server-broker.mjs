@@ -65,11 +65,44 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
-  const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const sockets = new Set();
+  const pendingServerRequests = new Map();
+  let nextServerRequestId = 1;
+
+  function rejectSocketServerRequests(socket, error) {
+    for (const [id, pending] of pendingServerRequests.entries()) {
+      if (pending.socket !== socket) {
+        continue;
+      }
+      pendingServerRequests.delete(id);
+      pending.reject(error);
+    }
+  }
+
+  function forwardServerRequest(message) {
+    const target = activeStreamSocket ?? activeRequestSocket;
+    if (!target || target.destroyed) {
+      throw new Error(`No active broker client can handle server request: ${message.method}`);
+    }
+
+    const id = `server-${nextServerRequestId++}`;
+    return new Promise((resolve, reject) => {
+      pendingServerRequests.set(id, { socket: target, resolve, reject });
+      send(target, {
+        id,
+        method: message.method,
+        params: message.params ?? {}
+      });
+    });
+  }
+
+  const appClient = await CodexAppServerClient.connect(cwd, {
+    disableBroker: true,
+    serverRequestHandler: forwardServerRequest
+  });
 
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
@@ -157,6 +190,20 @@ async function main() {
           continue;
         }
 
+        if (message.id !== undefined && message.method === undefined) {
+          const pending = pendingServerRequests.get(message.id);
+          if (!pending || pending.socket !== socket) {
+            continue;
+          }
+          pendingServerRequests.delete(message.id);
+          if (message.error) {
+            pending.reject(new Error(message.error.message ?? "Broker server request failed."));
+          } else {
+            pending.resolve(message.result ?? {});
+          }
+          continue;
+        }
+
         if (message.id !== undefined && message.method === "broker/shutdown") {
           send(socket, { id: message.id, result: {} });
           await shutdown(server);
@@ -224,11 +271,13 @@ async function main() {
 
     socket.on("close", () => {
       sockets.delete(socket);
+      rejectSocketServerRequests(socket, new Error("Broker client disconnected before server request was resolved."));
       clearSocketOwnership(socket);
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
+      rejectSocketServerRequests(socket, new Error("Broker client errored before server request was resolved."));
       clearSocketOwnership(socket);
     });
   });

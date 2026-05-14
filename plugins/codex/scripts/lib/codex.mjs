@@ -603,10 +603,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   }
 }
 
-async function withAppServer(cwd, fn) {
+async function withAppServer(cwd, fn, options = {}) {
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd);
+    client = await CodexAppServerClient.connect(cwd, {
+      serverRequestHandler: options.serverRequestHandler
+    });
     const result = await fn(client);
     await client.close();
     return result;
@@ -625,7 +627,10 @@ async function withAppServer(cwd, fn) {
       throw error;
     }
 
-    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+    const directClient = await CodexAppServerClient.connect(cwd, {
+      disableBroker: true,
+      serverRequestHandler: options.serverRequestHandler
+    });
     try {
       return await fn(directClient);
     } finally {
@@ -973,6 +978,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
+        approvalPolicy: options.approvalPolicy,
         sandbox: options.sandbox,
         ephemeral: false
       });
@@ -981,6 +987,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
         model: options.model,
+        approvalPolicy: options.approvalPolicy,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
@@ -1006,6 +1013,7 @@ export async function runAppServerTurn(cwd, options = {}) {
           input: buildTurnInput(prompt),
           model: options.model ?? null,
           effort: options.effort ?? null,
+          approvalPolicy: options.approvalPolicy ?? null,
           outputSchema: options.outputSchema ?? null
         }),
       { onProgress: options.onProgress }
@@ -1024,7 +1032,39 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  });
+  }, { serverRequestHandler: options.serverRequestHandler });
+}
+
+export async function steerAppServerTurn(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+  }
+  if (!options.threadId || !options.turnId) {
+    throw new Error("A thread id and active turn id are required to steer Codex.");
+  }
+  const prompt = options.prompt?.trim();
+  if (!prompt) {
+    throw new Error("A prompt is required to continue the active Codex turn.");
+  }
+
+  return withAppServer(
+    cwd,
+    async (client) => {
+      const response = await client.request("turn/steer", {
+        threadId: options.threadId,
+        expectedTurnId: options.turnId,
+        input: buildTurnInput(prompt)
+      });
+      return {
+        status: 0,
+        threadId: options.threadId,
+        turnId: response.turnId ?? options.turnId,
+        stderr: cleanCodexStderr(client.stderr)
+      };
+    },
+    { serverRequestHandler: options.serverRequestHandler }
+  );
 }
 
 export async function findLatestTaskThread(cwd) {

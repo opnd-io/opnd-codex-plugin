@@ -3,6 +3,7 @@ import type {
   InitializeCapabilities,
   InitializeParams,
   InitializeResponse,
+  ServerRequest,
   ServerNotification
 } from "../../.generated/app-server-types/index.js";
 import type {
@@ -24,6 +25,8 @@ import type {
   TurnInterruptResponse,
   TurnStartParams,
   TurnStartResponse,
+  TurnSteerParams,
+  TurnSteerResponse,
   UserInput
 } from "../../.generated/app-server-types/v2/index.js";
 
@@ -33,12 +36,14 @@ export type {
   InitializeParams,
   InitializeResponse,
   ReviewTarget,
+  ServerRequest,
   Thread,
   ThreadItem,
   ThreadListParams,
   Turn,
   TurnInterruptParams,
   TurnStartParams,
+  TurnSteerParams,
   UserInput
 };
 
@@ -52,6 +57,7 @@ export interface CodexAppServerClientOptions {
   brokerEndpoint?: string;
   disableBroker?: boolean;
   reuseExistingBroker?: boolean;
+  serverRequestHandler?: (message: ServerRequest, client: unknown) => Promise<unknown> | unknown;
 }
 
 export interface AppServerMethodMap {
@@ -62,6 +68,7 @@ export interface AppServerMethodMap {
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "review/start": { params: ReviewStartParams; result: ReviewStartResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };
+  "turn/steer": { params: TurnSteerParams; result: TurnSteerResponse };
   "turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResponse };
 }
 

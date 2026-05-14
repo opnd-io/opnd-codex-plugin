@@ -15,6 +15,7 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+	const pendingApprovalRequests = new Map();
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -268,6 +269,21 @@ rl.on("line", (line) => {
   const state = loadState();
 
   try {
+    if (message.id !== undefined && message.method === undefined) {
+      const pending = pendingApprovalRequests.get(message.id);
+      if (pending) {
+        pendingApprovalRequests.delete(message.id);
+        state.lastApprovalResponse = message.result ?? null;
+        saveState(state);
+        emitTurnCompleted(pending.threadId, pending.turnId, [
+          {
+            completed: { type: "agentMessage", id: "msg_" + pending.turnId, text: pending.payload, phase: "final_answer" }
+          }
+        ]);
+      }
+      return;
+    }
+
     switch (message.method) {
       case "initialize":
         state.capabilities = message.params.capabilities || null;
@@ -300,6 +316,7 @@ rl.on("line", (line) => {
           cwd: message.params.cwd ?? null,
           model: message.params.model ?? null,
           sandbox: message.params.sandbox ?? null,
+          approvalPolicy: message.params.approvalPolicy ?? null,
           ephemeral: message.params.ephemeral ?? null
         };
         saveState(state);
@@ -339,7 +356,8 @@ rl.on("line", (line) => {
           threadId: message.params.threadId ?? null,
           cwd: message.params.cwd ?? null,
           model: message.params.model ?? null,
-          sandbox: message.params.sandbox ?? null
+          sandbox: message.params.sandbox ?? null,
+          approvalPolicy: message.params.approvalPolicy ?? null
         };
         saveState(state);
         const thread = ensureThread(state, message.params.threadId);
@@ -394,6 +412,7 @@ rl.on("line", (line) => {
 	          turnId,
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
+	          approvalPolicy: message.params.approvalPolicy ?? null,
 	          prompt
 	        };
 	        saveState(state);
@@ -530,7 +549,37 @@ rl.on("line", (line) => {
           }
         ];
 
-	        if (BEHAVIOR === "interruptible-slow-task") {
+	        if (BEHAVIOR === "approval-command") {
+	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+	          send({
+	            method: "item/started",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              item: { type: "commandExecution", id: "cmd_" + turnId, command: "npm test", status: "inProgress" }
+	            }
+	          });
+	          const requestId = "approval_" + turnId;
+	          pendingApprovalRequests.set(requestId, {
+	            threadId: thread.id,
+	            turnId,
+	            payload
+	          });
+	          send({
+	            id: requestId,
+	            method: "item/commandExecution/requestApproval",
+	            params: {
+	              threadId: thread.id,
+	              turnId,
+	              itemId: "cmd_" + turnId,
+	              startedAtMs: Date.now(),
+	              reason: "Need to run verification",
+	              command: "npm test",
+	              cwd: thread.cwd,
+	              commandActions: null
+	            }
+	          });
+	        } else if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          const timer = setTimeout(() => {
 	            if (!interruptibleTurns.has(turnId)) {
@@ -550,6 +599,17 @@ rl.on("line", (line) => {
 	        } else {
 	          emitTurnCompleted(thread.id, turnId, items);
 	        }
+	        break;
+	      }
+
+	      case "turn/steer": {
+	        state.lastTurnSteer = {
+	          threadId: message.params.threadId,
+	          expectedTurnId: message.params.expectedTurnId,
+	          prompt: (message.params.input || []).filter((item) => item.type === "text").map((item) => item.text).join("\\n")
+	        };
+	        saveState(state);
+	        send({ id: message.id, result: { turnId: message.params.expectedTurnId } });
 	        break;
 	      }
 

@@ -18,8 +18,16 @@ import {
     parseStructuredOutput,
     readOutputSchema,
     runAppServerReview,
-    runAppServerTurn
+    runAppServerTurn,
+    steerAppServerTurn
   } from "./lib/codex.mjs";
+import {
+  buildApprovalResponse,
+  createPendingApprovalRecord,
+  isApprovalRequestMethod,
+  normalizeApprovalPolicy,
+  pendingApprovalCount
+} from "./lib/approvals.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
@@ -78,7 +86,11 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs agent [--wait|--background] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs continue [--job <job-id>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs approve [approval-id] [--session] [--response-json <json>] [--json]",
+      "  node scripts/codex-companion.mjs deny [approval-id] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -191,6 +203,168 @@ function firstMeaningfulLine(text, fallback) {
     .map((value) => value.trim())
     .find(Boolean);
   return line ?? fallback;
+}
+
+function normalizeApprovals(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function readStoredJobRequired(workspaceRoot, jobId) {
+  const storedJob = readStoredJob(workspaceRoot, jobId);
+  if (!storedJob) {
+    throw new Error(`No stored job found for ${jobId}.`);
+  }
+  return storedJob;
+}
+
+function summarizePendingApprovals(approvals) {
+  return normalizeApprovals(approvals).map((approval) => ({
+    id: approval.id,
+    method: approval.method,
+    status: approval.status,
+    summary: approval.summary,
+    risk: approval.risk,
+    createdAt: approval.createdAt,
+    decidedAt: approval.decision?.decidedAt ?? null
+  }));
+}
+
+function writeStoredJobWithApprovals(workspaceRoot, jobId, storedJob) {
+  const approvals = normalizeApprovals(storedJob.pendingApprovals);
+  const count = pendingApprovalCount(approvals);
+  const activePhase =
+    storedJob.status === "queued" || storedJob.status === "running" ? (count > 0 ? "waiting-approval" : "running") : null;
+  writeJobFile(workspaceRoot, jobId, {
+    ...storedJob,
+    pendingApprovals: approvals,
+    ...(activePhase ? { phase: activePhase } : {})
+  });
+  upsertJob(workspaceRoot, {
+    id: jobId,
+    pendingApprovals: summarizePendingApprovals(approvals),
+    pendingApprovalCount: count,
+    ...(activePhase ? { phase: activePhase } : {})
+  });
+}
+
+function appendPendingApproval(workspaceRoot, jobId, approval) {
+  const storedJob = readStoredJobRequired(workspaceRoot, jobId);
+  const approvals = normalizeApprovals(storedJob.pendingApprovals);
+  const nextApprovals = [...approvals.filter((candidate) => candidate.id !== approval.id), approval];
+  writeStoredJobWithApprovals(workspaceRoot, jobId, {
+    ...storedJob,
+    pendingApprovals: nextApprovals
+  });
+}
+
+function updateApprovalDecision(workspaceRoot, approvalReference, decision) {
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const matches = [];
+  for (const job of jobs) {
+    const storedJob = readStoredJob(workspaceRoot, job.id) ?? job;
+    for (const approval of normalizeApprovals(storedJob.pendingApprovals)) {
+      if (approval.status !== "pending") {
+        continue;
+      }
+      if (!approvalReference || approval.id === approvalReference || approval.id.startsWith(approvalReference)) {
+        matches.push({ job, storedJob, approval });
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    throw new Error(approvalReference ? `No pending approval found for "${approvalReference}".` : "No pending Codex approvals found.");
+  }
+  if (matches.length > 1) {
+    throw new Error(`Approval reference "${approvalReference ?? ""}" is ambiguous. Use a longer approval id.`);
+  }
+
+  const { job, storedJob, approval } = matches[0];
+  const decidedApproval = {
+    ...approval,
+    status: decision.action === "deny" ? "denied" : "approved",
+    decision: {
+      ...decision,
+      decidedAt: nowIso()
+    },
+    responseJson: decision.responseJson ?? null,
+    updatedAt: nowIso()
+  };
+  const nextApprovals = normalizeApprovals(storedJob.pendingApprovals).map((candidate) =>
+    candidate.id === approval.id ? decidedApproval : candidate
+  );
+  writeStoredJobWithApprovals(workspaceRoot, job.id, {
+    ...storedJob,
+    pendingApprovals: nextApprovals
+  });
+  appendLogLine(storedJob.logFile, `Approval ${decidedApproval.status}: ${decidedApproval.id}.`);
+
+  return { jobId: job.id, approval: decidedApproval };
+}
+
+async function waitForApprovalDecision(workspaceRoot, jobId, approvalId) {
+  while (true) {
+    const storedJob = readStoredJobRequired(workspaceRoot, jobId);
+    const approval = normalizeApprovals(storedJob.pendingApprovals).find((candidate) => candidate.id === approvalId);
+    if (!approval) {
+      throw new Error(`Pending approval ${approvalId} disappeared.`);
+    }
+    if (approval.status !== "pending") {
+      return buildApprovalResponse(approval);
+    }
+    await sleep(1000);
+  }
+}
+
+function createJobServerRequestHandler({ workspaceRoot, jobId, onProgress }) {
+  return async (message) => {
+    if (!isApprovalRequestMethod(message.method)) {
+      const error = new Error(`Unsupported server request: ${message.method}`);
+      error.rpcCode = -32601;
+      throw error;
+    }
+
+    const approval = createPendingApprovalRecord(message);
+    appendPendingApproval(workspaceRoot, jobId, approval);
+
+    const progressMessage = approval.hardDeny
+      ? `Approval hard-denied: ${approval.summary}`
+      : `Approval required: ${approval.id} - ${approval.summary}`;
+    onProgress?.({
+      message: progressMessage,
+      phase: approval.hardDeny ? "running" : "waiting-approval",
+      logTitle: approval.hardDeny ? "Approval hard-denied" : "Approval required",
+      logBody: [
+        `ID: ${approval.id}`,
+        `Method: ${approval.method}`,
+        `Risk: ${approval.risk}`,
+        approval.reason ? `Reason: ${approval.reason}` : null,
+        approval.hardDenyReason ? `Hard deny: ${approval.hardDenyReason}` : null,
+        `Summary: ${approval.summary}`
+      ]
+        .filter(Boolean)
+        .join("\n")
+    });
+
+    if (approval.hardDeny) {
+      return buildApprovalResponse(approval);
+    }
+
+    return waitForApprovalDecision(workspaceRoot, jobId, approval.id);
+  };
+}
+
+function renderApprovalDecisionResult(payload) {
+  const lines = [
+    `# Codex ${payload.action === "deny" ? "Deny" : "Approve"}`,
+    "",
+    `${payload.action === "deny" ? "Denied" : "Approved"} ${payload.approval.id}.`,
+    "",
+    `- Job: ${payload.jobId}`,
+    `- Method: ${payload.approval.method}`,
+    `- Summary: ${payload.approval.summary}`
+  ];
+  return `${lines.join("\n")}\n`;
 }
 
 async function buildSetupReport(cwd, actionsTaken = []) {
@@ -476,6 +650,7 @@ async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureCodexAvailable(request.cwd);
   const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
+  const approvalPolicy = request.approvalPolicy ?? "never";
   const writeCapable = sandbox !== "read-only";
 
   const taskMetadata = buildTaskRunMetadata({
@@ -483,8 +658,8 @@ async function executeTaskRun(request) {
     resumeLast: request.resumeLast
   });
 
-  let resumeThreadId = null;
-  if (request.resumeLast) {
+  let resumeThreadId = request.threadId ?? null;
+  if (!resumeThreadId && request.resumeLast) {
     const latestThread = await resolveLatestTrackedTaskThread(workspaceRoot, {
       excludeJobId: request.jobId
     });
@@ -504,8 +679,16 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
+    approvalPolicy,
     sandbox,
     onProgress: request.onProgress,
+    serverRequestHandler: request.jobId
+      ? createJobServerRequestHandler({
+          workspaceRoot,
+          jobId: request.jobId,
+          onProgress: request.onProgress
+        })
+      : null,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   });
@@ -617,7 +800,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, approvalPolicy, resumeLast, threadId, jobId }) {
   return {
     cwd,
     model,
@@ -625,7 +808,9 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, resumeLa
     prompt,
     write,
     sandbox,
+    approvalPolicy,
     resumeLast,
+    threadId,
     jobId
   };
 }
@@ -751,7 +936,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
@@ -763,6 +948,7 @@ async function handleTask(argv) {
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const sandbox = normalizeSandboxMode(options.sandbox);
+  const approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
@@ -782,7 +968,11 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, writeCapable);
+    const job = {
+      ...buildTaskJob(workspaceRoot, taskMetadata, writeCapable),
+      sandbox: effectiveSandbox,
+      approvalPolicy
+    };
     const request = buildTaskRequest({
       cwd,
       model,
@@ -790,6 +980,7 @@ async function handleTask(argv) {
       prompt,
       write,
       sandbox,
+      approvalPolicy,
       resumeLast,
       jobId: job.id
     });
@@ -798,7 +989,11 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, writeCapable);
+  const job = {
+    ...buildTaskJob(workspaceRoot, taskMetadata, writeCapable),
+    sandbox: effectiveSandbox,
+    approvalPolicy
+  };
   await runForegroundCommand(
     job,
     (progress) =>
@@ -809,6 +1004,7 @@ async function handleTask(argv) {
         prompt,
         write,
         sandbox,
+        approvalPolicy,
         resumeLast,
         jobId: job.id,
         onProgress: progress
@@ -860,6 +1056,188 @@ async function handleTaskWorker(argv) {
       }),
     { logFile }
   );
+}
+
+function argvHasOption(argv, name) {
+  const long = `--${name}`;
+  return normalizeArgv(argv).some((token) => token === long || token.startsWith(`${long}=`));
+}
+
+async function handleAgent(argv) {
+  const normalized = normalizeArgv(argv);
+  const nextArgv = [];
+  let waitRequested = false;
+  let backgroundRequested = false;
+
+  for (const token of normalized) {
+    if (token === "--wait") {
+      waitRequested = true;
+      continue;
+    }
+    if (token === "--background") {
+      backgroundRequested = true;
+    }
+    nextArgv.push(token);
+  }
+
+  if (!argvHasOption(normalized, "approval")) {
+    nextArgv.unshift("on-request");
+    nextArgv.unshift("--approval");
+  }
+  if (!argvHasOption(normalized, "sandbox") && !argvHasOption(normalized, "write")) {
+    nextArgv.unshift("--write");
+  }
+  if (!waitRequested && !backgroundRequested) {
+    nextArgv.unshift("--background");
+  }
+
+  await handleTask(nextArgv);
+}
+
+function getCurrentSessionId() {
+  return process.env[SESSION_ID_ENV] ?? null;
+}
+
+function matchJobReferenceLocal(jobs, reference) {
+  if (!reference) {
+    return jobs[0] ?? null;
+  }
+  const exact = jobs.find((job) => job.id === reference);
+  if (exact) {
+    return exact;
+  }
+  const matches = jobs.filter((job) => job.id.startsWith(reference));
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  if (matches.length > 1) {
+    throw new Error(`Job reference "${reference}" is ambiguous. Use a longer job id.`);
+  }
+  return null;
+}
+
+function resolveTaskJobForContinue(workspaceRoot, reference) {
+  const sessionId = getCurrentSessionId();
+  let jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.jobClass === "task");
+  if (!reference && sessionId) {
+    jobs = jobs.filter((job) => job.sessionId === sessionId);
+  }
+  const selected = matchJobReferenceLocal(jobs, reference);
+  if (!selected) {
+    throw new Error(reference ? `No Codex task job found for "${reference}".` : "No Codex task job found for this session.");
+  }
+  return selected;
+}
+
+async function handleContinue(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "job"],
+    booleanOptions: ["json", "background"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeReasoningEffort(options.effort);
+  const prompt = readTaskPrompt(cwd, options, positionals);
+  if (!prompt) {
+    throw new Error("Provide a prompt, a prompt file, or piped stdin for continue.");
+  }
+
+  const selected = resolveTaskJobForContinue(workspaceRoot, options.job ?? null);
+  if ((selected.status === "queued" || selected.status === "running") && selected.threadId && selected.turnId) {
+    const result = await steerAppServerTurn(cwd, {
+      threadId: selected.threadId,
+      turnId: selected.turnId,
+      prompt
+    });
+    appendLogLine(selected.logFile, `Steered active turn ${selected.turnId}: ${shorten(prompt)}`);
+    const payload = {
+      jobId: selected.id,
+      status: "steered",
+      threadId: selected.threadId,
+      turnId: result.turnId,
+      prompt
+    };
+    outputCommandResult(payload, `Steered active Codex turn for ${selected.id}.\n`, options.json);
+    return;
+  }
+
+  if (!selected.threadId) {
+    throw new Error(`Codex task ${selected.id} does not have a thread id to continue.`);
+  }
+
+  const taskMetadata = buildTaskRunMetadata({ prompt, resumeLast: true });
+  const job = {
+    ...buildTaskJob(workspaceRoot, taskMetadata, selected.write !== false),
+    sandbox: selected.sandbox ?? null,
+    approvalPolicy: selected.approvalPolicy ?? "never"
+  };
+  const request = buildTaskRequest({
+    cwd,
+    model,
+    effort,
+    prompt,
+    write: selected.write !== false,
+    sandbox: selected.sandbox ?? null,
+    approvalPolicy: selected.approvalPolicy ?? "never",
+    resumeLast: true,
+    threadId: selected.threadId,
+    jobId: job.id
+  });
+
+  if (options.background) {
+    const { payload } = enqueueBackgroundTask(cwd, job, request);
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeTaskRun({
+        ...request,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
+function parseResponseJson(value) {
+  if (value == null) {
+    return null;
+  }
+  try {
+    return JSON.parse(String(value));
+  } catch (error) {
+    throw new Error(`Invalid --response-json: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function handleApprovalDecision(argv, action) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "response-json"],
+    booleanOptions: ["json", "session"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const decision = {
+    action: action === "approve" && options.session ? "approve-session" : action,
+    responseJson: parseResponseJson(options["response-json"])
+  };
+  const result = updateApprovalDecision(workspaceRoot, positionals[0] ?? "", decision);
+  const payload = {
+    action,
+    jobId: result.jobId,
+    approval: {
+      id: result.approval.id,
+      method: result.approval.method,
+      status: result.approval.status,
+      summary: result.approval.summary
+    }
+  };
+  outputCommandResult(payload, renderApprovalDecisionResult(payload), options.json);
 }
 
 async function handleStatus(argv) {
@@ -1022,11 +1400,23 @@ async function main() {
         reviewName: "Adversarial Review"
       });
       break;
+    case "agent":
+      await handleAgent(argv);
+      break;
     case "task":
       await handleTask(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);
+      break;
+    case "continue":
+      await handleContinue(argv);
+      break;
+    case "approve":
+      handleApprovalDecision(argv, "approve");
+      break;
+    case "deny":
+      handleApprovalDecision(argv, "deny");
       break;
     case "status":
       await handleStatus(argv);

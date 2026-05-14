@@ -11,7 +11,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
-- `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
+- `/codex:agent`, `/codex:continue`, `/codex:approve`, `/codex:deny`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate and control long-running Codex work
 
 ## Requirements
 
@@ -165,6 +165,51 @@ Ask Codex to redesign the database connection to be more resilient.
 - follow-up rescue requests can continue the latest Codex task in the repo
 - if you do not pass `--sandbox`, task runs remain `read-only` by default and become `workspace-write` only for write-capable rescue requests
 - `danger-full-access` should only be used when the machine or surrounding environment is already sandboxed
+
+### `/codex:agent`
+
+Starts Codex as a long-running, approval-aware task agent. This is the preferred command when you want Claude Code to delegate substantial implementation or debugging work and keep controlling it from Claude.
+
+By default, `/codex:agent` starts a write-capable background task with `--approval on-request`. Codex can pause for command, file-change, permission, or tool approval, and `/codex:status` will show the pending approval IDs.
+
+Examples:
+
+```bash
+/codex:agent fix the failing integration test end to end
+/codex:agent --sandbox danger-full-access run the migration in this externally sandboxed environment
+/codex:agent --wait --approval never inspect the current failure without stopping for approval
+```
+
+When Codex requests approval:
+
+```bash
+/codex:status
+/codex:approve approval-abc123
+/codex:deny approval-abc123
+```
+
+### `/codex:continue`
+
+Sends a follow-up instruction to a Codex task. If the task is still running, the command steers the active turn. If it already finished, it starts a new turn on the same Codex thread.
+
+Examples:
+
+```bash
+/codex:continue focus on the failing assertion and rerun the narrow test
+/codex:continue --job task-abc123 apply the smaller fix instead
+```
+
+### `/codex:approve` and `/codex:deny`
+
+Resolves a pending Codex approval request. Use `/codex:status` to find the approval ID.
+
+Examples:
+
+```bash
+/codex:approve approval-abc123
+/codex:approve approval-abc123 --session
+/codex:deny approval-abc123
+```
 
 ### `/codex:status`
 

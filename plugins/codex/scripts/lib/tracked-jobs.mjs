@@ -155,8 +155,9 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
+    const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
     writeJobFile(job.workspaceRoot, job.id, {
-      ...runningRecord,
+      ...existing,
       status: completionStatus,
       threadId: execution.threadId ?? null,
       turnId: execution.turnId ?? null,
