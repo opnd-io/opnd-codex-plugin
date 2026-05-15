@@ -33,6 +33,36 @@ function normalizeProgressEvent(value) {
   };
 }
 
+// Truncate per-block body to keep job log files bounded. Long agent transcripts can run
+// into MB of structured output; we keep the head with an explicit truncation marker.
+const MAX_LOG_BLOCK_BYTES = 64 * 1024;
+// Per-job stored `rendered` text. Headroom is generous so review/audit Markdown fits
+// without truncation in the common case, but pathological multi-MB results stay bounded.
+const MAX_RENDERED_BYTES = 1024 * 1024;
+
+function truncateForLog(text, max = MAX_LOG_BLOCK_BYTES) {
+  if (!text) {
+    return "";
+  }
+  const str = String(text);
+  if (str.length <= max) {
+    return str;
+  }
+  const omitted = str.length - max;
+  return `${str.slice(0, max)}\n[…${omitted} bytes truncated by tracked-jobs cap]`;
+}
+
+function truncateRendered(text, max = MAX_RENDERED_BYTES) {
+  if (text == null) {
+    return text;
+  }
+  const str = String(text);
+  if (str.length <= max) {
+    return str;
+  }
+  return `${str.slice(0, max)}\n[…${str.length - max} bytes truncated]`;
+}
+
 export function appendLogLine(logFile, message) {
   const normalized = String(message ?? "").trim();
   if (!logFile || !normalized) {
@@ -45,7 +75,8 @@ export function appendLogBlock(logFile, title, body) {
   if (!logFile || !body) {
     return;
   }
-  fs.appendFileSync(logFile, `\n[${nowIso()}] ${title}\n${String(body).trimEnd()}\n`, "utf8");
+  const safeBody = truncateForLog(String(body).trimEnd());
+  fs.appendFileSync(logFile, `\n[${nowIso()}] ${title}\n${safeBody}\n`, "utf8");
 }
 
 export function createJobLogFile(workspaceRoot, jobId, title) {
@@ -156,7 +187,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: completionStatus === "completed" ? "done" : "failed",
       completedAt,
       result: execution.payload,
-      rendered: execution.rendered
+      rendered: truncateRendered(execution.rendered)
     });
     upsertJob(job.workspaceRoot, {
       id: job.id,

@@ -94,7 +94,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs deny <approval-id> [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs cancel [job-id] [--dry-run] [--json]"
     ].join("\n")
   );
 }
@@ -897,7 +897,11 @@ function enqueueBackgroundTask(cwd, job, request) {
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
-  upsertJob(job.workspaceRoot, queuedRecord);
+  // The state.json index is keyed by-job and read on every status/list call. Strip the
+  // large `request` payload (full prompts, focus text) so the index stays bounded; the
+  // per-job file above still has the full record for the worker to consume.
+  const { request: _request, ...indexRecord } = queuedRecord;
+  upsertJob(job.workspaceRoot, indexRecord);
 
   const child = spawnDetachedTaskWorker(cwd, job.id);
   const spawnedPid = child.pid ?? null;
@@ -1364,12 +1368,31 @@ function handleTaskResumeCandidate(argv) {
 async function handleCancel(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "dry-run"]
   });
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
+
+  if (options["dry-run"]) {
+    const payload = { dryRun: true, target: job };
+    const rendered = [
+      "# Codex Cancel (dry run)",
+      "",
+      `Would cancel ${job.id}.`,
+      job.title ? `- Title: ${job.title}` : null,
+      job.kindLabel ? `- Kind: ${job.kindLabel}` : null,
+      job.summary ? `- Summary: ${job.summary}` : null,
+      "",
+      "Re-run without `--dry-run` to actually cancel."
+    ]
+      .filter(Boolean)
+      .join("\n");
+    outputCommandResult(payload, rendered, options.json);
+    return;
+  }
+
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;

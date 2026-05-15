@@ -41,6 +41,9 @@ import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
+// Cap notifications buffered before the initial turn id is known. Drops the oldest entry on
+// overflow so a stuck startRequest cannot grow the queue without bound.
+const MAX_BUFFERED_NOTIFICATIONS = 4096;
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 
@@ -363,6 +366,15 @@ function completeTurn(state, turn = null, options = {}) {
   state.resolveCompletion(state);
 }
 
+function failTurn(state, error) {
+  if (state.completed) {
+    return;
+  }
+  clearCompletionTimer(state);
+  state.completed = true;
+  state.rejectCompletion?.(error);
+}
+
 function scheduleInferredCompletion(state) {
   if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
     return;
@@ -527,10 +539,19 @@ function applyTurnNotification(state, message) {
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
       break;
-    case "error":
-      state.error = message.params.error;
-      emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
+    case "error": {
+      const codexErr = message.params.error;
+      state.error = codexErr;
+      emitProgress(state.onProgress, `Codex error: ${codexErr.message}`, "failed");
+      // Without settling, captureTurn()'s `await state.completion` hangs forever when the
+      // app-server emits a terminal error without a subsequent `turn/completed`.
+      const wrapped = Object.assign(
+        new Error(`Codex app-server error: ${codexErr.message ?? "unknown"}`),
+        { cause: codexErr, code: codexErr.code ?? null }
+      );
+      failTurn(state, wrapped);
       break;
+    }
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
         state.activeSubagentTurns.delete(message.params.threadId);
@@ -555,6 +576,11 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
+      // Bound the buffered-notification queue. If startRequest never returns a turn id
+      // (e.g., a stuck app-server), the buffer would otherwise grow without limit.
+      if (state.bufferedNotifications.length >= MAX_BUFFERED_NOTIFICATIONS) {
+        state.bufferedNotifications.shift();
+      }
       state.bufferedNotifications.push(message);
       return;
     }

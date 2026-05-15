@@ -11,6 +11,15 @@ import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
+// Cap accumulated JSONL bytes per client socket to bound broker heap if a peer sends
+// an unterminated huge frame. Real Codex messages stay well under this in practice.
+const MAX_JSONL_LINE_BYTES = 16 * 1024 * 1024;
+
+// Maximum wait for a broker→client RPC roundtrip. The client should answer interactive
+// approval / patch / tool requests quickly; if the socket stays alive but silent the
+// pending promise would otherwise leak forever.
+const SERVER_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
   if (params?.threadId) {
@@ -77,6 +86,9 @@ async function main() {
       if (pending.socket !== socket) {
         continue;
       }
+      if (pending.timeoutHandle) {
+        clearTimeout(pending.timeoutHandle);
+      }
       pendingServerRequests.delete(id);
       pending.reject(error);
     }
@@ -90,7 +102,20 @@ async function main() {
 
     const id = `server-${nextServerRequestId++}`;
     return new Promise((resolve, reject) => {
-      pendingServerRequests.set(id, { socket: target, resolve, reject });
+      const timeoutHandle = setTimeout(() => {
+        const pending = pendingServerRequests.get(id);
+        if (!pending) {
+          return;
+        }
+        pendingServerRequests.delete(id);
+        pending.reject(
+          new Error(
+            `Broker server request "${message.method}" timed out after ${SERVER_REQUEST_TIMEOUT_MS}ms.`
+          )
+        );
+      }, SERVER_REQUEST_TIMEOUT_MS);
+      timeoutHandle.unref?.();
+      pendingServerRequests.set(id, { socket: target, resolve, reject, timeoutHandle });
       send(target, {
         id,
         method: message.method,
@@ -155,6 +180,15 @@ async function main() {
 
     socket.on("data", async (chunk) => {
       buffer += chunk;
+      if (buffer.length > MAX_JSONL_LINE_BYTES && buffer.indexOf("\n") === -1) {
+        send(socket, {
+          id: null,
+          error: buildJsonRpcError(-32700, `JSONL frame exceeds ${MAX_JSONL_LINE_BYTES} bytes without a newline.`)
+        });
+        buffer = "";
+        socket.destroy();
+        return;
+      }
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
         const line = buffer.slice(0, newlineIndex);
@@ -292,7 +326,40 @@ async function main() {
     process.exit(0);
   });
 
+  startIdleWatchdog({ sockets, shutdown: () => shutdown(server) });
+
   server.listen(listenTarget.path);
+}
+
+// Self-exit when the broker has been idle (no connected sockets) for a long stretch. The
+// broker is `detached: true` + `child.unref()`-d, so when the parent Claude session is
+// killed hard (no SessionEnd fired) the broker would otherwise persist forever. This is
+// the fallback safety net; SessionEnd still drives graceful shutdown in the normal path.
+const IDLE_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
+const IDLE_WATCHDOG_GRACE_MS = 30 * 60 * 1000;
+
+function startIdleWatchdog({ sockets, shutdown }) {
+  let lastActiveAt = Date.now();
+  const refresh = () => {
+    lastActiveAt = Date.now();
+  };
+  const timer = setInterval(async () => {
+    if (sockets.size > 0) {
+      refresh();
+      return;
+    }
+    if (Date.now() - lastActiveAt < IDLE_WATCHDOG_GRACE_MS) {
+      return;
+    }
+    process.stderr.write(`broker idle for ${IDLE_WATCHDOG_GRACE_MS}ms — self-exiting\n`);
+    try {
+      await shutdown();
+    } catch {
+      // ignore — best-effort, process.exit forces termination below
+    }
+    process.exit(0);
+  }, IDLE_WATCHDOG_INTERVAL_MS);
+  timer.unref?.();
 }
 
 main().catch((error) => {

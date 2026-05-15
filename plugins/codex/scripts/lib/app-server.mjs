@@ -40,8 +40,22 @@ const DEFAULT_CAPABILITIES = {
   ]
 };
 
+// Cap accumulated JSONL bytes to bound heap if the peer sends an unterminated huge frame.
+const MAX_JSONL_LINE_BYTES = 16 * 1024 * 1024;
+// Retain only the trailing slice of the child process stderr so a long-running broker
+// does not accumulate stderr forever. 64 KiB is enough to capture the recent failure context.
+const MAX_STDERR_BYTES = 64 * 1024;
+// Maximum wait for an app-server RPC response. Long-running turn requests are normal,
+// but a truly non-responsive child should not pin pending promises forever.
+const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
+
 function buildJsonRpcError(code, message, data) {
   return data === undefined ? { code, message } : { code, message, data };
+}
+
+function appendBoundedStderr(existing, chunk, max = MAX_STDERR_BYTES) {
+  const merged = existing + chunk;
+  return merged.length > max ? merged.slice(merged.length - max) : merged;
 }
 
 function createProtocolError(message, data) {
@@ -91,7 +105,18 @@ class AppServerClientBase {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
+      const timeoutHandle = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) {
+          return;
+        }
+        this.pending.delete(id);
+        pending.reject(
+          createProtocolError(`codex app-server ${method} timed out after ${DEFAULT_REQUEST_TIMEOUT_MS}ms.`)
+        );
+      }, DEFAULT_REQUEST_TIMEOUT_MS);
+      timeoutHandle.unref?.();
+      this.pending.set(id, { resolve, reject, method, timeoutHandle });
       this.sendMessage({ id, method, params });
     });
   }
@@ -105,6 +130,15 @@ class AppServerClientBase {
 
   handleChunk(chunk) {
     this.lineBuffer += chunk;
+    if (this.lineBuffer.length > MAX_JSONL_LINE_BYTES && this.lineBuffer.indexOf("\n") === -1) {
+      const overflowError = createProtocolError(
+        `Codex app-server JSONL frame exceeds ${MAX_JSONL_LINE_BYTES} bytes without a newline.`,
+        { code: -32700 }
+      );
+      this.lineBuffer = "";
+      this.handleExit(overflowError);
+      return;
+    }
     let newlineIndex = this.lineBuffer.indexOf("\n");
     while (newlineIndex !== -1) {
       const line = this.lineBuffer.slice(0, newlineIndex);
@@ -138,6 +172,9 @@ class AppServerClientBase {
         return;
       }
       this.pending.delete(message.id);
+      if (pending.timeoutHandle) {
+        clearTimeout(pending.timeoutHandle);
+      }
 
       if (message.error) {
         pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
@@ -182,6 +219,9 @@ class AppServerClientBase {
     this.exitError = error ?? null;
 
     for (const pending of this.pending.values()) {
+      if (pending.timeoutHandle) {
+        clearTimeout(pending.timeoutHandle);
+      }
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
@@ -216,7 +256,7 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     this.proc.stderr.setEncoding("utf8");
 
     this.proc.stderr.on("data", (chunk) => {
-      this.stderr += chunk;
+      this.stderr = appendBoundedStderr(this.stderr, chunk);
     });
 
     this.proc.on("error", (error) => {

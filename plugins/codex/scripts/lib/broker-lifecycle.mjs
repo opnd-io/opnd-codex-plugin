@@ -40,33 +40,63 @@ export async function waitForBrokerEndpoint(endpoint, timeoutMs = 2000) {
   return false;
 }
 
-export async function sendBrokerShutdown(endpoint) {
+// Bound the shutdown wait so a hung broker cannot block SessionEnd indefinitely; if the
+// RPC does not respond within this window the caller falls through to teardown anyway.
+const BROKER_SHUTDOWN_TIMEOUT_MS = 5000;
+
+export async function sendBrokerShutdown(endpoint, timeoutMs = BROKER_SHUTDOWN_TIMEOUT_MS) {
   await new Promise((resolve) => {
     const socket = connectToEndpoint(endpoint);
     socket.setEncoding("utf8");
+    let settled = false;
+    const settle = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        // ignore — best effort
+      }
+      resolve();
+    };
+    const timer = setTimeout(settle, timeoutMs);
+    timer.unref?.();
     socket.on("connect", () => {
       socket.write(`${JSON.stringify({ id: 1, method: "broker/shutdown", params: {} })}\n`);
     });
     socket.on("data", () => {
+      clearTimeout(timer);
       socket.end();
-      resolve();
+      settle();
     });
-    socket.on("error", resolve);
-    socket.on("close", resolve);
+    socket.on("error", () => {
+      clearTimeout(timer);
+      settle();
+    });
+    socket.on("close", () => {
+      clearTimeout(timer);
+      settle();
+    });
   });
 }
 
 export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process.env }) {
   const logFd = fs.openSync(logFile, "a");
-  const child = spawn(process.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
-    cwd,
-    env,
-    detached: true,
-    stdio: ["ignore", logFd, logFd]
-  });
-  child.unref();
-  fs.closeSync(logFd);
-  return child;
+  try {
+    const child = spawn(process.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
+      cwd,
+      env,
+      detached: true,
+      stdio: ["ignore", logFd, logFd]
+    });
+    child.unref();
+    return child;
+  } finally {
+    // Always close the parent-side fd; the child inherits its own dup via stdio[1]/[2].
+    fs.closeSync(logFd);
+  }
 }
 
 function resolveBrokerStateFile(cwd) {
