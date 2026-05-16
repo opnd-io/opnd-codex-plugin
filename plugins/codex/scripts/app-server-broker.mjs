@@ -389,8 +389,28 @@ async function main() {
 // broker is `detached: true` + `child.unref()`-d, so when the parent Claude session is
 // killed hard (no SessionEnd fired) the broker would otherwise persist forever. This is
 // the fallback safety net; SessionEnd still drives graceful shutdown in the normal path.
-const IDLE_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
-const IDLE_WATCHDOG_GRACE_MS = 30 * 60 * 1000;
+//
+// PR-1.7 (#193) — defaults tightened from 30→10min grace + 5→2min interval so an orphan
+// broker is reaped within ~12min instead of ~35min in the worst case. Both knobs are
+// configurable via env so deployments with very long-running brokers can opt out:
+//
+//   CODEX_BROKER_IDLE_GRACE_MS=<ms>       (default 600000 — 10 min)
+//   CODEX_BROKER_IDLE_INTERVAL_MS=<ms>    (default 120000 — 2 min)
+function clampPositiveInt(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback;
+  }
+  return numeric;
+}
+const IDLE_WATCHDOG_INTERVAL_MS = clampPositiveInt(
+  process.env.CODEX_BROKER_IDLE_INTERVAL_MS,
+  2 * 60 * 1000
+);
+const IDLE_WATCHDOG_GRACE_MS = clampPositiveInt(
+  process.env.CODEX_BROKER_IDLE_GRACE_MS,
+  10 * 60 * 1000
+);
 
 function startIdleWatchdog({ sockets, shutdown }) {
   let lastActiveAt = Date.now();
