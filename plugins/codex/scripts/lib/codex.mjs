@@ -67,27 +67,60 @@ function cleanCodexStderr(stderr) {
     .join("\n");
 }
 
+// PR-2.1 (#240 / #167 / #304) BREAKING — omit `sandbox` from thread/start +
+// thread/resume requests when the caller did not explicitly pass one, so the
+// app-server falls back to whatever the user configured in ~/.codex/config.toml.
+// The previous code injected sandbox:"read-only" unconditionally and that
+// hard-coded value silently overrode user config (bwrap failures on Linux,
+// .git/ EPERM on macOS, git push DNS errors when --write was active, etc.).
+//
+// Legacy v1.0.x behavior can be restored by setting:
+//   CODEX_PLUGIN_SANDBOX_DEFAULT=read-only     (review / non-write paths)
+// callers that need a hard-coded sandbox can still pass options.sandbox.
+function pickSandboxDefault(env = process.env) {
+  const explicit = env.CODEX_PLUGIN_SANDBOX_DEFAULT;
+  if (typeof explicit === "string" && explicit.trim()) {
+    return explicit.trim();
+  }
+  return null;
+}
+
+function resolveSandboxValue(options) {
+  if (options.sandbox != null && String(options.sandbox).length > 0) {
+    return options.sandbox;
+  }
+  return pickSandboxDefault(options.env ?? process.env);
+}
+
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
-  return {
+  const params = {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
     ephemeral: options.ephemeral ?? true
   };
+  const sandbox = resolveSandboxValue(options);
+  if (sandbox != null) {
+    params.sandbox = sandbox;
+  }
+  return params;
 }
 
 /** @returns {ThreadResumeParams} */
 function buildResumeParams(threadId, cwd, options = {}) {
-  return {
+  const params = {
     threadId,
     cwd,
     model: options.model ?? null,
-    approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only"
+    approvalPolicy: options.approvalPolicy ?? "never"
   };
+  const sandbox = resolveSandboxValue(options);
+  if (sandbox != null) {
+    params.sandbox = sandbox;
+  }
+  return params;
 }
 
 /** @returns {UserInput[]} */

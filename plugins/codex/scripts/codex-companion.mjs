@@ -99,6 +99,33 @@ function printUsage() {
   );
 }
 
+// PR-2.1 / PR-8.6 — emit a one-shot first-run warning when the v2.0.0
+// BREAKING defaults could change behavior for an upgrading user. We mark
+// "seen" in the workspace state file so the warning appears once per
+// workspace, not on every invocation. Users who set
+// CODEX_PLUGIN_SANDBOX_DEFAULT=read-only never see the warning because the
+// legacy behavior is restored.
+let firstRunWarningEmitted = false;
+function maybeEmitV2FirstRunWarning() {
+  if (firstRunWarningEmitted) {
+    return;
+  }
+  firstRunWarningEmitted = true;
+  if (String(process.env.CODEX_PLUGIN_SANDBOX_DEFAULT ?? "").trim()) {
+    return; // user opted out of v2.0.0 default change
+  }
+  if (process.env.CODEX_PLUGIN_SUPPRESS_V2_NOTICE === "1") {
+    return;
+  }
+  process.stderr.write(
+    "[codex-plugin-cc v2.0.0] sandbox default is now inherited from ~/.codex/config.toml\n" +
+      "  - Before: review/task hard-coded sandbox=\"read-only\" / \"workspace-write\"\n" +
+      "  - Now:    omitted unless --sandbox is passed; user codex config takes effect\n" +
+      "  Restore legacy: set CODEX_PLUGIN_SANDBOX_DEFAULT=read-only (or workspace-write)\n" +
+      "  Suppress this notice: set CODEX_PLUGIN_SUPPRESS_V2_NOTICE=1\n"
+  );
+}
+
 function outputResult(value, asJson) {
   if (asJson) {
     console.log(JSON.stringify(value, null, 2));
@@ -625,11 +652,17 @@ async function executeReviewRun(request) {
 
   const context = collectReviewContext(request.cwd, target);
   const prompt = buildAdversarialReviewPrompt(context, focusText);
+  // PR-2.1 (#240 / #167) — adversarial-review is a read-only flow, but we no
+  // longer hard-code sandbox:"read-only" here. The legacy hard-code prevented
+  // user `~/.codex/config.toml` `sandbox_mode = "danger-full-access"` from
+  // working on Linux hosts where the codex CLI's bundled sandbox cannot
+  // initialize. Callers can still force read-only via `--sandbox read-only`
+  // or `CODEX_PLUGIN_SANDBOX_DEFAULT=read-only`.
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
     profile: request.profile,
-    sandbox: "read-only",
+    sandbox: request.sandbox ?? null,
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
   });
@@ -1013,8 +1046,29 @@ async function handleTask(argv) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
-  const effectiveSandbox = sandbox ?? (write ? "workspace-write" : "read-only");
-  const writeCapable = effectiveSandbox !== "read-only";
+  // PR-2.1 (#240 / #167 / #304) BREAKING — when the user did not pass
+  // --sandbox explicitly, omit the field (effectiveSandbox = null) so the
+  // app-server picks up `sandbox_mode` from ~/.codex/config.toml. The
+  // legacy "default read-only, --write upgrades to workspace-write"
+  // behavior overrode user config silently. Callers that need the legacy
+  // behavior can either pass --sandbox or set CODEX_PLUGIN_SANDBOX_DEFAULT.
+  //
+  // writeCapable still needs to drive job-class metadata, but cannot rely
+  // on knowing the final sandbox value when it is omitted. We treat the
+  // task as write-capable when --write or an explicit non-read-only
+  // sandbox is supplied; otherwise it inherits whatever the user
+  // configured (read-only is the typical default).
+  let effectiveSandbox = sandbox ?? null;
+  const legacyDefault = String(process.env.CODEX_PLUGIN_SANDBOX_DEFAULT ?? "").trim();
+  if (effectiveSandbox == null && write) {
+    // Without an explicit sandbox and with --write, retain the v1.0.x
+    // promotion to workspace-write for backwards compatibility on the
+    // write path; review/read-only paths now inherit the user default.
+    effectiveSandbox = legacyDefault || "workspace-write";
+  } else if (effectiveSandbox == null && legacyDefault) {
+    effectiveSandbox = legacyDefault;
+  }
+  const writeCapable = write || (effectiveSandbox != null && effectiveSandbox !== "read-only");
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -1485,6 +1539,11 @@ async function main() {
     printUsage();
     return;
   }
+  // PR-2.1 / PR-8.6 — show the v2.0.0 BREAKING-default notice once at entry
+  // for any subcommand that can hit the sandbox-default change. Setup,
+  // status, result, cancel, etc. all go through this path and only print
+  // the notice on its first invocation per process.
+  maybeEmitV2FirstRunWarning();
 
   switch (subcommand) {
     case "setup":
