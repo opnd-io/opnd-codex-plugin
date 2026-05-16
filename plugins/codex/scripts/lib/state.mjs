@@ -13,6 +13,7 @@ const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 const LOCK_DIR_NAME = ".lock";
+const BROKER_LOCK_DIR_NAME = ".broker.lock";
 const READ_RETRY_COUNT = 5;
 const READ_RETRY_DELAY_MS = 20;
 const LOCK_RETRY_COUNT = 100;
@@ -249,38 +250,97 @@ function writeFileAtomic(filePath, content) {
   }
 }
 
-function acquireStateLock(cwd) {
+function tryAcquireLockOnce(cwd, lockDirName) {
   ensureStateDir(cwd);
-  const lockDir = resolveLockDir(cwd);
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
-    try {
-      fs.mkdirSync(lockDir);
-      fs.writeFileSync(path.join(lockDir, "owner"), `${process.pid}\n${new Date().toISOString()}\n`, "utf8");
-      return () => {
+  const lockDir = path.join(resolveStateDir(cwd), lockDirName);
+  try {
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, "owner"), `${process.pid}\n${new Date().toISOString()}\n`, "utf8");
+    return {
+      acquired: true,
+      release: () => {
         try {
           fs.rmSync(lockDir, { recursive: true, force: true });
         } catch {
           // Best-effort cleanup. A stale lock is handled on the next acquire.
         }
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") {
-        throw error;
       }
-      try {
-        const ownerPid = readLockOwnerPid(lockDir);
-        const ageMs = Date.now() - fs.statSync(lockDir).mtimeMs;
-        if (!isPidRunning(ownerPid) || ageMs > STALE_LOCK_MS) {
-          fs.rmSync(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // The lock may have disappeared between attempts.
-      }
-      sleepSync(LOCK_RETRY_DELAY_MS);
+    };
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      throw error;
     }
+    try {
+      const ownerPid = readLockOwnerPid(lockDir);
+      const ageMs = Date.now() - fs.statSync(lockDir).mtimeMs;
+      if (!isPidRunning(ownerPid) || ageMs > STALE_LOCK_MS) {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+      }
+    } catch {
+      // The lock may have disappeared between attempts.
+    }
+    return { acquired: false, lockDir };
   }
-  throw new Error(`Timed out waiting for Codex companion state lock at ${lockDir}.`);
+}
+
+function acquireMkdirLock(cwd, lockDirName, errorLabel) {
+  let lockDir = null;
+  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
+    const result = tryAcquireLockOnce(cwd, lockDirName);
+    if (result.acquired) {
+      return result.release;
+    }
+    lockDir = result.lockDir;
+    sleepSync(LOCK_RETRY_DELAY_MS);
+  }
+  throw new Error(`Timed out waiting for ${errorLabel} at ${lockDir}.`);
+}
+
+// PR-1.4 — async lock acquirer. Same retry budget as the sync flavor but uses
+// setTimeout so concurrent async callers in the SAME process can interleave
+// (the sync path uses Atomics.wait which blocks the event loop and would
+// deadlock when an async lock holder yields with `await`).
+async function acquireMkdirLockAsync(cwd, lockDirName, errorLabel) {
+  let lockDir = null;
+  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
+    const result = tryAcquireLockOnce(cwd, lockDirName);
+    if (result.acquired) {
+      return result.release;
+    }
+    lockDir = result.lockDir;
+    await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS));
+  }
+  throw new Error(`Timed out waiting for ${errorLabel} at ${lockDir}.`);
+}
+
+function acquireStateLock(cwd) {
+  return acquireMkdirLock(cwd, LOCK_DIR_NAME, "Codex companion state lock");
+}
+
+// PR-1.4 (#286 race 3) — broker.json was previously read-modify-written without
+// any cross-process synchronization. Two parallel /codex:* invocations from
+// the same cwd both saw "no existing broker", both spawned a new app-server,
+// and both wrote broker.json — last writer winning. The orphan broker process
+// then sat in `/tmp/cxc-*` until the idle watchdog timed out. This dedicated
+// lock dir (.broker.lock) gives broker-lifecycle.mjs the same mkdir-atomicity
+// guarantee as the state lock while remaining independent (state writes and
+// broker writes never block each other).
+export function withBrokerLock(cwd, fn) {
+  const release = acquireMkdirLock(cwd, BROKER_LOCK_DIR_NAME, "Codex companion broker lock");
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
+export async function withBrokerLockAsync(cwd, fn) {
+  const release = await acquireMkdirLockAsync(cwd, BROKER_LOCK_DIR_NAME, "Codex companion broker lock");
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 function withStateLock(cwd, fn) {
