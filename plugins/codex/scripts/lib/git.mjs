@@ -90,6 +90,35 @@ export function getRepoRoot(cwd) {
   return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
 
+// PR-4.7 (#280) — detect whether cwd is a git worktree (i.e. .git is a
+// pointer file rather than a directory). Returns null when not a worktree
+// or the lookup fails; the caller surfaces this in the review prompt so
+// Codex does not waste sandbox-declined commands probing `.git`, `safe.directory`,
+// or `--git-dir=` tricks before its first `git diff` succeeds.
+export function detectWorktreeContext(cwd) {
+  try {
+    const gitDir = git(cwd, ["rev-parse", "--git-dir"]);
+    const commonDir = git(cwd, ["rev-parse", "--git-common-dir"]);
+    if (gitDir.status !== 0 || commonDir.status !== 0) {
+      return null;
+    }
+    const gitDirPath = gitDir.stdout.trim();
+    const commonDirPath = commonDir.stdout.trim();
+    // A linked worktree's git-dir lives under .git/worktrees/<name>/ of the
+    // common dir. When gitDir and commonDir agree, this is the main worktree.
+    const isLinkedWorktree = gitDirPath !== commonDirPath && /[\\/]worktrees[\\/]/.test(gitDirPath);
+    if (!isLinkedWorktree) {
+      return null;
+    }
+    return {
+      gitDir: gitDirPath,
+      commonDir: commonDirPath
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function detectDefaultBranch(cwd) {
   const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {
@@ -289,16 +318,34 @@ function collectBranchContext(cwd, baseRef, options = {}) {
 }
 
 function buildAdversarialCollectionGuidance(options = {}) {
+  const lines = [];
   if (options.includeDiff !== false) {
-    return "Use the repository context below as primary evidence.";
+    lines.push("Use the repository context below as primary evidence.");
+  } else {
+    lines.push(
+      "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings."
+    );
   }
 
-  return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
+  // PR-4.7 (#280) — when the workspace is a git worktree, surface that fact
+  // up front so Codex does not waste 10+ sandbox-declined commands probing
+  // for the gitdir pointer file and trying --git-dir / safe.directory tricks.
+  // The worktree's git operations already work in plain form (`git diff`,
+  // `git status`) because the worktree shares the parent repo's object store.
+  if (options.worktreeContext) {
+    lines.push(
+      "Note: this workspace is a git linked worktree. Plain git commands (e.g. `git diff <ref>`, `git status`) work directly from this cwd; the worktree shares objects with the parent repository. Do NOT pass `--git-dir=...`, `--work-tree=...`, or `safe.directory` overrides — they are unnecessary and the sandbox will decline most of them."
+    );
+  }
+  return lines.join("\n");
 }
 
 export function collectReviewContext(cwd, target, options = {}) {
   const repoRoot = getRepoRoot(cwd);
   const currentBranch = getCurrentBranch(repoRoot);
+  // PR-4.7 (#280) — detect from the user-provided cwd, not the resolved
+  // repoRoot, so the worktree pointer hits before we normalize away.
+  const worktreeContext = detectWorktreeContext(cwd);
   const maxInlineFiles = normalizeMaxInlineFiles(options.maxInlineFiles);
   const maxInlineDiffBytes = normalizeMaxInlineDiffBytes(options.maxInlineDiffBytes);
   let details;
@@ -340,7 +387,8 @@ export function collectReviewContext(cwd, target, options = {}) {
     fileCount: details.changedFiles.length,
     diffBytes,
     inputMode: includeDiff ? "inline-diff" : "self-collect",
-    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }),
+    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff, worktreeContext }),
+    worktreeContext,
     ...details
   };
 }
