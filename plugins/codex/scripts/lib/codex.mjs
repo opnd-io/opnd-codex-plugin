@@ -733,12 +733,18 @@ async function withAppServer(cwd, fn, options = {}) {
   // --profile takes effect for this single command. Multi-command broker
   // sharing for the same profile remains unchanged.
   const wantsProfile = typeof options.profile === "string" && options.profile.trim().length > 0;
+  const wantsFast = Boolean(options.fast);
+  // PR-7.6 (#210) — fast tier is a per-invocation knob, so force a direct
+  // codex spawn (broker bypass) when requested. Sharing a broker between
+  // a fast and non-fast caller would silently apply the first tier choice
+  // to both.
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd, {
       serverRequestHandler: options.serverRequestHandler,
       profile: options.profile,
-      disableBroker: wantsProfile || options.disableBroker === true
+      fast: options.fast,
+      disableBroker: wantsProfile || wantsFast || options.disableBroker === true
     });
     const result = await fn(client);
     await client.close();
@@ -761,6 +767,7 @@ async function withAppServer(cwd, fn, options = {}) {
     const directClient = await CodexAppServerClient.connect(cwd, {
       disableBroker: true,
       profile: options.profile,
+      fast: options.fast,
       serverRequestHandler: options.serverRequestHandler
     });
     try {
@@ -1220,7 +1227,7 @@ export async function runAppServerReview(cwd, options = {}) {
         error: annotateStaleAuthCacheError(turnState.error),
         stderr: cleanCodexStderr(client.stderr)
       };
-    }, { profile: options.profile });
+    }, { profile: options.profile, fast: options.fast });
   }
 
   const firstAttempt = await executeReviewWithModel(undefined);
@@ -1312,7 +1319,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile });
+  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile, fast: options.fast });
 }
 
 export async function steerAppServerTurn(cwd, options = {}) {

@@ -327,6 +327,12 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     if (typeof this.options.profile === "string" && this.options.profile.trim()) {
       codexArgs.push("-c", `profile=${this.options.profile.trim()}`);
     }
+    // PR-7.6 (#210) — pass through the Codex fast service tier via the
+    // `-c service_tier=fast` config override, matching the codex CLI's
+    // own /fast on equivalent. Trade ~2x credits for ~1.5x speed.
+    if (this.options.fast) {
+      codexArgs.push("-c", `service_tier=fast`);
+    }
     // PR-5.6 (#282) BREAKING — plugin-launched codex children get a dedicated
     // CODEX_HOME so their sessions / history feed do not pollute the user's
     // Codex Desktop view. Default: $HOME/.codex/claude-code/. Restore legacy

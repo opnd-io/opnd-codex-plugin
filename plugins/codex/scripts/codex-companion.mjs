@@ -766,6 +766,7 @@ async function executeTaskRun(request) {
     model: request.model,
     effort: request.effort,
     profile: request.profile,
+    fast: request.fast,
     approvalPolicy,
     sandbox,
     onProgress: request.onProgress,
@@ -1124,7 +1125,11 @@ async function handleTask(argv) {
       "dangerously-skip-permissions",
       // PR-3.2 (#308) — explicit stdin marker so callers that pipe a
       // multi-KB prompt can disambiguate from positional args.
-      "prompt-stdin"
+      "prompt-stdin",
+      // PR-7.6 (#210) — request the Codex fast service tier for this
+      // single invocation, equivalent to `-c service_tier=fast` in the
+      // upstream codex CLI. Trade ~2x credits for ~1.5x speed.
+      "fast"
     ],
     aliasMap: {
       m: "model"
@@ -1249,6 +1254,7 @@ async function handleTask(argv) {
         model,
         effort,
         profile: options.profile,
+        fast: Boolean(options.fast),
         prompt,
         write,
         sandbox,
