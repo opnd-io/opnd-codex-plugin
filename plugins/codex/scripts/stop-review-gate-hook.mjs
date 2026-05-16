@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import fs from "node:fs";
 import process from "node:process";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { getCodexAvailability } from "./lib/codex.mjs";
+import { readHookStdinJsonAsync } from "./lib/fs.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import { getConfig, listJobs } from "./lib/state.mjs";
 import { sortJobsNewestFirst } from "./lib/job-control.mjs";
@@ -18,12 +18,13 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
-function readHookInput() {
-  const raw = fs.readFileSync(0, "utf8").trim();
-  if (!raw) {
-    return {};
-  }
-  return JSON.parse(raw);
+// PR-1.6 (#120 / #191) — sync fs.readFileSync(0) blocks the Stop hook on
+// Windows when stdin is never closed by the parent and crashes with EAGAIN
+// on parallel sessions sharing a non-blocking pipe. Switch to event-based
+// async drain with a 5s fallback so both failure modes degrade to an
+// empty-input run instead of stalling for the 900s hook timeout.
+async function readHookInput() {
+  return readHookStdinJsonAsync({ timeoutMs: 5000 });
 }
 
 function emitDecision(payload) {
@@ -139,8 +140,8 @@ function runStopReview(cwd, input = {}) {
   }
 }
 
-function main() {
-  const input = readHookInput();
+async function main() {
+  const input = await readHookInput();
   const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
@@ -175,10 +176,8 @@ function main() {
   logNote(runningTaskNote);
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
-}
+});

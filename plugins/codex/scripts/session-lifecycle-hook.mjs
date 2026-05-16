@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
+import { readHookStdinJsonAsync } from "./lib/fs.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
 import {
@@ -19,12 +20,12 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 
-function readHookInput() {
-  const raw = fs.readFileSync(0, "utf8").trim();
-  if (!raw) {
-    return {};
-  }
-  return JSON.parse(raw);
+// PR-1.6 (#120 / #247) — sync fs.readFileSync(0) crashes with EAGAIN whenever
+// the parent passes a non-blocking stdin fd. Switch to event-based async drain
+// with a 5s fallback so the hook degrades to an empty-input run instead of
+// killing the whole session lifecycle.
+async function readHookInput() {
+  return readHookStdinJsonAsync({ timeoutMs: 5000 });
 }
 
 function shellEscape(value) {
@@ -112,7 +113,7 @@ async function handleSessionEnd(input) {
 }
 
 async function main() {
-  const input = readHookInput();
+  const input = await readHookInput();
   const eventName = process.argv[2] ?? input.hook_event_name ?? "";
 
   if (eventName === "SessionStart") {
