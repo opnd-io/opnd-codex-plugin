@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { readJobFile, resolveJobFile, resolveJobLogFile, updateJobFile, upsertJob, writeJobFile } from "./state.mjs";
+import { getProcessStartTimeRaw, readJobFile, resolveJobFile, resolveJobLogFile, updateJobFile, upsertJob, writeJobFile } from "./state.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -253,6 +253,10 @@ export async function runTrackedJob(job, runner, options = {}) {
     startedAt: nowIso(),
     phase: "starting",
     pid: process.pid,
+    // PR-1.1 (#222) — record the OS-reported birth time so the reaper can
+    // detect PID reuse (kill(pid,0) succeeds against a recycled PID, but the
+    // birth time of the new process will not match this recorded value).
+    processStartedAt: getProcessStartTimeRaw(process.pid),
     logFile: options.logFile ?? job.logFile ?? null
   };
   writeJobFile(job.workspaceRoot, job.id, runningRecord);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync as nodeSpawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -70,8 +71,8 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(buffer), 0, 0, ms);
 }
 
-function isPidRunning(pid) {
-  if (!Number.isFinite(pid)) {
+export function isPidRunning(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) {
     return false;
   }
   try {
@@ -83,6 +84,111 @@ function isPidRunning(pid) {
     }
     return true;
   }
+}
+
+// PR-1.1 (#222 / #164 / #202 / #264) — OS-level process birth time, used as a
+// PID-reuse guard alongside isPidRunning. Returns the raw OS-reported value as
+// a string (no parsing required since we only need equality comparison between
+// the recorded value and the current value). Returns null on any error so
+// callers can degrade gracefully.
+//
+// Per Codex audit C9 mitigation: kill(pid,0) alone is insufficient because the
+// OS may have recycled the PID for an unrelated process. Comparing recorded vs.
+// current birth time catches the recycle case without requiring kernel-level
+// process tokens.
+export function getProcessStartTimeRaw(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+
+  try {
+    if (process.platform === "linux") {
+      // /proc/<pid>/stat field 22 is "starttime" (jiffies since boot). The
+      // command field (#2) is wrapped in parentheses and may contain spaces, so
+      // split on the LAST `)` to skip past it.
+      const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const tail = raw.slice(raw.lastIndexOf(")") + 1).trim().split(/\s+/);
+      // Field 22 of the original line == index 19 of `tail` (fields 3..52).
+      return tail[19] ?? null;
+    }
+  } catch {
+    return null;
+  }
+
+  try {
+    if (process.platform === "darwin") {
+      const result = childProcessSpawnSync("ps", ["-o", "lstart=", "-p", String(pid)]);
+      if (result?.status === 0) {
+        const text = String(result.stdout ?? "").trim();
+        return text || null;
+      }
+    } else if (process.platform === "win32") {
+      // wmic is being deprecated but is universally available on supported
+      // Windows hosts. Powershell's Get-Process .StartTime is more durable but
+      // launching it costs ~300ms; reaper hot path stays cheap with wmic.
+      const result = childProcessSpawnSync("wmic", [
+        "process",
+        "where",
+        `ProcessId=${pid}`,
+        "get",
+        "CreationDate",
+        "/format:value"
+      ]);
+      if (result?.status === 0) {
+        const match = String(result.stdout ?? "").match(/CreationDate=(\S+)/);
+        return match?.[1] ?? null;
+      }
+    } else if (process.platform !== "linux") {
+      // Other POSIX (FreeBSD, etc.) — best-effort lstart.
+      const result = childProcessSpawnSync("ps", ["-o", "lstart=", "-p", String(pid)]);
+      if (result?.status === 0) {
+        const text = String(result.stdout ?? "").trim();
+        return text || null;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+// Helper indirection — exposed so tests can inject a fake spawnSync without
+// real subprocess overhead. Default uses node:child_process spawnSync with a
+// short timeout so a slow ps/wmic call cannot stall the reaper hot path.
+const defaultSpawnSync = (cmd, args) =>
+  nodeSpawnSync(cmd, args, { encoding: "utf8", windowsHide: true, timeout: 2000 });
+let childProcessSpawnSync = defaultSpawnSync;
+
+export function __setSpawnSyncForTests(fn) {
+  childProcessSpawnSync = typeof fn === "function" ? fn : defaultSpawnSync;
+}
+
+// PR-1.1 — given a stored job entry, decide whether the recorded pid still
+// belongs to the same Codex worker. Returns true only when isPidRunning AND
+// (no recorded processStartedAt OR current matches recorded). Otherwise the
+// caller should reap the entry as failed.
+export function isJobProcessAlive(job) {
+  const pid = Number(job?.pid);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return false;
+  }
+  if (!isPidRunning(pid)) {
+    return false;
+  }
+  const recordedStart = job?.processStartedAt ?? null;
+  if (!recordedStart) {
+    // Legacy jobs predating PR-1.1 don't carry a recorded birth time. Trust
+    // isPidRunning for those — the reaper will only reap when kill(pid,0) fails.
+    return true;
+  }
+  const currentStart = getProcessStartTimeRaw(pid);
+  if (!currentStart) {
+    // OS-level lookup failed (unsupported platform, transient error). Fall back
+    // to liveness only; this matches v1.0.4 behavior.
+    return true;
+  }
+  return String(currentStart) === String(recordedStart);
 }
 
 function readLockOwnerPid(lockDir) {
@@ -266,8 +372,83 @@ export function upsertJob(cwd, jobPatch) {
   });
 }
 
-export function listJobs(cwd) {
+export function listJobs(cwd, options = {}) {
+  if (options.reap) {
+    reapDeadJobs(cwd, options);
+  }
   return loadState(cwd).jobs;
+}
+
+// PR-1.1 (#222 / #164 / #202 / #264) — sweep any job recorded as
+// running/queued whose pid is no longer alive (or whose pid was recycled by
+// the OS, detected via processStartedAt mismatch). Marks each as
+// status="failed" + phase="terminated" + failureReason so subsequent
+// /codex:status, /codex:result, --resume-last calls see a terminal state
+// instead of an indefinitely "running" zombie.
+//
+// Idempotent. Safe to call from any read entrypoint. Best-effort: if the
+// state lock is contested we skip rather than block, since the next read
+// will reap on its own.
+export function reapDeadJobs(cwd, options = {}) {
+  const aliveCheck = options.aliveCheck ?? isJobProcessAlive;
+  let reaped = [];
+  try {
+    updateState(cwd, (state) => {
+      const completedAt = nowIso();
+      for (const job of state.jobs) {
+        if (job.status !== "running" && job.status !== "queued") {
+          continue;
+        }
+        if (aliveCheck(job)) {
+          continue;
+        }
+        const reason = !Number.isFinite(Number(job.pid))
+          ? "no_pid_recorded"
+          : isPidRunning(Number(job.pid))
+          ? "pid_reused"
+          : "process_died";
+        job.status = "failed";
+        job.phase = "terminated";
+        job.pid = null;
+        job.completedAt = completedAt;
+        job.errorMessage = job.errorMessage ?? `Job reaped by liveness check (${reason}).`;
+        job.failureReason = job.failureReason ?? `reaper:${reason}`;
+        reaped.push({ id: job.id, reason });
+      }
+    });
+  } catch {
+    // Best-effort: another process may hold the state lock. Skip — the next
+    // reader will reap. We never want the reaper to bubble an error up to the
+    // status / result rendering path.
+    return [];
+  }
+  // Mirror the terminal state into per-job files so individual /codex:result
+  // calls see the same thing the index says. Done outside the lock to keep
+  // the critical section short; if a per-job write fails we tolerate it.
+  for (const { id, reason } of reaped) {
+    try {
+      updateJobFile(cwd, id, (storedJob) => {
+        if (!storedJob) {
+          return null;
+        }
+        if (storedJob.status === "completed" || storedJob.status === "failed") {
+          return storedJob;
+        }
+        return {
+          ...storedJob,
+          status: "failed",
+          phase: "terminated",
+          pid: null,
+          completedAt: nowIso(),
+          errorMessage: storedJob.errorMessage ?? `Job reaped by liveness check (${reason}).`,
+          failureReason: storedJob.failureReason ?? `reaper:${reason}`
+        };
+      });
+    } catch {
+      // tolerate
+    }
+  }
+  return reaped;
 }
 
 export function setConfig(cwd, key, value) {

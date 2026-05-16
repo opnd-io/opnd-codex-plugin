@@ -270,7 +270,7 @@ function updateApprovalDecision(workspaceRoot, approvalReference, decision, opti
   if (!approvalReference) {
     throw new Error("Provide an approval id. Run /codex:status to list pending approvals.");
   }
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot, { reap: true }));
   const matches = [];
   for (const job of jobs) {
     if (options.sessionId && job.sessionId !== options.sessionId) {
@@ -552,7 +552,7 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
 async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const sessionId = getCurrentClaudeSessionId();
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.id !== options.excludeJobId);
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot, { reap: true })).filter((job) => job.id !== options.excludeJobId);
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
   const activeTask = visibleJobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
@@ -1156,7 +1156,7 @@ function matchJobReferenceLocal(jobs, reference) {
 
 function resolveTaskJobForContinue(workspaceRoot, reference) {
   const sessionId = getCurrentClaudeSessionId();
-  let jobs = sortJobsNewestFirst(listJobs(workspaceRoot)).filter((job) => job.jobClass === "task");
+  let jobs = sortJobsNewestFirst(listJobs(workspaceRoot, { reap: true })).filter((job) => job.jobClass === "task");
   if (!reference && sessionId) {
     jobs = jobs.filter((job) => job.sessionId === sessionId);
   }
@@ -1339,7 +1339,7 @@ function handleTaskResumeCandidate(argv) {
 
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = getCurrentClaudeSessionId();
-  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot)));
+  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot, { reap: true })));
   const candidate = findLatestResumableTaskJob(jobs);
 
   const payload = {
