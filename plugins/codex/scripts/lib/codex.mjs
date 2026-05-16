@@ -34,6 +34,8 @@
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
+import fs from "node:fs";
+
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
@@ -929,6 +931,48 @@ export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) 
   };
 }
 
+// PR-5.4 (#233) — when the user points Codex at a non-OpenAI endpoint via
+// `openai_base_url` in ~/.codex/config.toml, the auth gate fails because
+// `codex login status` requires the official OpenAI auth flow. The codex
+// subprocess itself runs fine against the custom endpoint (proxy / self-host)
+// so the gate is just a false negative.
+//
+// We bypass when either:
+//   - env CODEX_PLUGIN_SKIP_AUTH=1 (explicit user override; honors both
+//     "1" and "true" / "yes" for ergonomics)
+//   - ~/.codex/config.toml is parseable and contains a non-empty
+//     `openai_base_url` key at the top level (heuristic; if the file uses
+//     profiles only, the user must set the env var)
+function shouldBypassCodexAuthCheck(env = process.env) {
+  const flag = String(env.CODEX_PLUGIN_SKIP_AUTH ?? "").trim().toLowerCase();
+  if (flag === "1" || flag === "true" || flag === "yes") {
+    return { bypass: true, reason: "env CODEX_PLUGIN_SKIP_AUTH" };
+  }
+  const home = env.HOME ?? env.USERPROFILE;
+  if (!home) {
+    return { bypass: false, reason: null };
+  }
+  try {
+    const configPath = `${home}/.codex/config.toml`;
+    const raw = readFileSyncSafe(configPath);
+    if (raw && /^\s*openai_base_url\s*=\s*["'][^"']+["']/m.test(raw)) {
+      return { bypass: true, reason: "openai_base_url detected in ~/.codex/config.toml" };
+    }
+  } catch {
+    // Best-effort. If we cannot read the config, fall through to the
+    // normal auth check.
+  }
+  return { bypass: false, reason: null };
+}
+
+function readFileSyncSafe(filePath) {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 export async function getCodexAuthStatus(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -941,6 +985,20 @@ export async function getCodexAuthStatus(cwd, options = {}) {
       verified: null,
       requiresOpenaiAuth: null,
       provider: null
+    };
+  }
+
+  const bypass = shouldBypassCodexAuthCheck(options.env ?? process.env);
+  if (bypass.bypass) {
+    return {
+      available: true,
+      loggedIn: true,
+      detail: `Auth check bypassed (${bypass.reason}). Codex must be configured correctly for the custom endpoint.`,
+      source: "bypass",
+      authMethod: "custom",
+      verified: false,
+      requiresOpenaiAuth: false,
+      provider: "custom"
     };
   }
 
