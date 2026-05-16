@@ -96,6 +96,60 @@ function parseStopReviewOutput(rawOutput) {
   };
 }
 
+// PR-3.1 (#306 / #248 / #273) — separate infrastructure failures from
+// real BLOCK decisions. The old code returned ok:false for every non-zero
+// exit, every timeout, every parse error, and EVERY rate-limit response.
+// main() then unconditionally emitted decision:"block", which Claude Code
+// re-waked on, which re-spawned the gate, which re-hit the rate limit...
+// burning the user's session token budget while no actual review ran.
+//
+// This commit classifies the outcome into three buckets:
+//
+//   (a) Codex emitted a structured ALLOW / BLOCK → return ok / block
+//       per the user's policy (unchanged)
+//   (b) Infrastructure failure (timeout, status≠0, empty payload, invalid
+//       JSON, rate-limit / quota signatures) → return decision:"allow"
+//       with a stderr warning so the user knows the gate skipped, but
+//       the session can still end without a rewake loop
+//   (c) Codex finished cleanly but parseStopReviewOutput returned an
+//       "unexpected" shape → keep the existing block behavior so a real
+//       BLOCK never leaks through
+const RATE_LIMIT_SIGNATURES = [
+  /\brate.?limit/i,
+  /\b429\b/,
+  /\busage\s+limit/i,
+  /\bquota[ _]?exceeded/i,
+  /rate[ _]?limited/i,
+  /\bquota\b/i
+];
+
+function detectInfrastructureFailure(result) {
+  const stderrText = String(result.stderr ?? "");
+  const stdoutText = String(result.stdout ?? "");
+  const combined = `${stderrText}\n${stdoutText}`;
+  for (const pattern of RATE_LIMIT_SIGNATURES) {
+    if (pattern.test(combined)) {
+      return { type: "rate-limit", excerpt: combined.slice(0, 240) };
+    }
+  }
+  if (result.error?.code === "ETIMEDOUT") {
+    return { type: "timeout", excerpt: "stop-time review timed out after 15 minutes" };
+  }
+  // Empty stdout AND non-zero exit is the canonical "review never ran" shape.
+  if ((result.status ?? 1) !== 0 && !stdoutText.trim()) {
+    return { type: "non-zero-exit-empty", excerpt: stderrText.trim().slice(0, 240) };
+  }
+  return null;
+}
+
+function buildAllowSkip(reason) {
+  return {
+    ok: true,
+    skipped: true,
+    skipReason: reason
+  };
+}
+
 function runStopReview(cwd, input = {}) {
   const scriptPath = path.join(SCRIPT_DIR, "codex-companion.mjs");
   const prompt = buildStopReviewPrompt(input);
@@ -110,12 +164,9 @@ function runStopReview(cwd, input = {}) {
     timeout: STOP_REVIEW_TIMEOUT_MS
   });
 
-  if (result.error?.code === "ETIMEDOUT") {
-    return {
-      ok: false,
-      reason:
-        "The stop-time Codex review task timed out after 15 minutes. Run /codex:review --wait manually or bypass the gate."
-    };
+  const infra = detectInfrastructureFailure(result);
+  if (infra) {
+    return buildAllowSkip(`Stop-time review skipped (${infra.type}): ${infra.excerpt}`);
   }
 
   if (result.status !== 0) {
@@ -132,11 +183,12 @@ function runStopReview(cwd, input = {}) {
     const payload = JSON.parse(result.stdout);
     return parseStopReviewOutput(payload?.rawOutput);
   } catch {
-    return {
-      ok: false,
-      reason:
-        "The stop-time Codex review task returned invalid JSON. Run /codex:review --wait manually or bypass the gate."
-    };
+    // Invalid JSON after a clean exit is also an infrastructure failure
+    // pattern (broker emitted partial output, MCP crashed mid-turn, etc.).
+    // Treat as allow-skip so we never block on parse glitches alone.
+    return buildAllowSkip(
+      "Stop-time review returned invalid JSON. Allowing session end; re-run /codex:review --wait manually to inspect."
+    );
   }
 }
 
@@ -165,6 +217,13 @@ async function main() {
   }
 
   const review = runStopReview(cwd, input);
+  if (review.skipped) {
+    // PR-3.1 — infrastructure failure path. Allow session end + warn so the
+    // user sees what happened, instead of triggering a Claude rewake loop.
+    logNote(review.skipReason);
+    logNote(runningTaskNote);
+    return;
+  }
   if (!review.ok) {
     emitDecision({
       decision: "block",
