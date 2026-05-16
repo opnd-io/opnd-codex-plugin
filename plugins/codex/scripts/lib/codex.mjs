@@ -46,6 +46,16 @@ const TASK_THREAD_PREFIX = "Codex Companion Task";
 const MAX_BUFFERED_NOTIFICATIONS = 4096;
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
+// PR-1.3 (#183) — bound the "finalizing" phase so a hung spark-model turn or
+// cancel-without-interrupt cannot leave the job pinned at status=running forever.
+// Override via CODEX_FINALIZING_PHASE_TIMEOUT_MS for slow CI / sandboxed reviews.
+const FINALIZING_PHASE_TIMEOUT_MS = (() => {
+  const override = Number(process.env.CODEX_FINALIZING_PHASE_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) {
+    return override;
+  }
+  return 5 * 60 * 1000;
+})();
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -184,7 +194,10 @@ function mergeReasoningSections(existingSections, nextSections) {
  * @param {string | null | undefined} message
  * @param {string | null | undefined} [phase]
  */
-function emitProgress(onProgress, message, phase = null, extra = {}) {
+function emitProgress(onProgress, message, phase = null, extra = {}, state = null) {
+  if (state) {
+    armFinalizingPhaseTimerIfNeeded(state, phase);
+  }
   if (!onProgress || !message) {
     return;
   }
@@ -196,6 +209,9 @@ function emitProgress(onProgress, message, phase = null, extra = {}) {
 }
 
 function emitLogEvent(onProgress, options = {}) {
+  // Note: log-event paths that carry phase="finalizing" should still arm the
+  // finalizing gate via the parallel emitProgress call sites (see callers that
+  // pass state). Keep this helper purely log-shaped to avoid coupling.
   if (!onProgress) {
     return;
   }
@@ -321,6 +337,9 @@ function createTurnCaptureState(threadId, options = {}) {
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
+    finalizingPhaseTimer: null,
+    finalizingStartedAt: null,
+    finalizingTimeoutMs: options.finalizingTimeoutMs ?? FINALIZING_PHASE_TIMEOUT_MS,
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -330,6 +349,40 @@ function createTurnCaptureState(threadId, options = {}) {
     commandExecutions: [],
     onProgress: options.onProgress ?? null
   };
+}
+
+function clearFinalizingPhaseTimer(state) {
+  if (state.finalizingPhaseTimer) {
+    clearTimeout(state.finalizingPhaseTimer);
+    state.finalizingPhaseTimer = null;
+  }
+}
+
+function armFinalizingPhaseTimerIfNeeded(state, phase) {
+  if (phase !== "finalizing" || state.completed || state.finalizingPhaseTimer) {
+    return;
+  }
+  // Disable when caller sets a non-positive timeout. Useful for tests that
+  // intentionally exercise long-running finalizing flows without firing the gate.
+  if (!Number.isFinite(state.finalizingTimeoutMs) || state.finalizingTimeoutMs <= 0) {
+    return;
+  }
+  state.finalizingStartedAt = Date.now();
+  state.finalizingPhaseTimer = setTimeout(() => {
+    state.finalizingPhaseTimer = null;
+    if (state.completed) {
+      return;
+    }
+    const seconds = Math.round(state.finalizingTimeoutMs / 1000);
+    failTurn(
+      state,
+      new Error(
+        `Codex turn stuck in phase=finalizing for ${seconds}s without producing a final turn. ` +
+          `Aborting to release the running state.`
+      )
+    );
+  }, state.finalizingTimeoutMs);
+  state.finalizingPhaseTimer.unref?.();
 }
 
 function clearCompletionTimer(state) {
@@ -345,6 +398,7 @@ function completeTurn(state, turn = null, options = {}) {
   }
 
   clearCompletionTimer(state);
+  clearFinalizingPhaseTimer(state);
   state.completed = true;
 
   if (turn) {
@@ -360,6 +414,8 @@ function completeTurn(state, turn = null, options = {}) {
   }
 
   if (options.inferred) {
+    // completeTurn was just called so finalizingPhaseTimer is already cleared;
+    // it is safe to call emitProgress without state-side arming here.
     emitProgress(state.onProgress, "Turn completion inferred after the main thread finished and subagent work drained.", "finalizing");
   }
 
@@ -371,6 +427,7 @@ function failTurn(state, error) {
     return;
   }
   clearCompletionTimer(state);
+  clearFinalizingPhaseTimer(state);
   state.completed = true;
   state.rejectCompletion?.(error);
 }
@@ -439,6 +496,9 @@ function recordItem(state, item, lifecycle, threadId = null) {
       }
       if (lifecycle === "completed") {
         const sourceLabel = labelForThread(state, threadId);
+        if (item.phase === "final_answer") {
+          armFinalizingPhaseTimerIfNeeded(state, "finalizing");
+        }
         emitLogEvent(state.onProgress, {
           message: sourceLabel ? `Subagent ${sourceLabel}: ${shorten(item.text, 96)}` : `Assistant message captured: ${shorten(item.text, 96)}`,
           stderrMessage: null,
@@ -454,6 +514,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
   if (item.type === "exitedReviewMode") {
     state.reviewText = item.review ?? "";
     if (lifecycle === "completed" && item.review) {
+      armFinalizingPhaseTimerIfNeeded(state, "finalizing");
       emitLogEvent(state.onProgress, {
         message: "Review output captured.",
         stderrMessage: null,
@@ -529,14 +590,14 @@ function applyTurnNotification(state, message) {
       recordItem(state, message.params.item, "started", message.params.threadId ?? null);
       {
         const update = describeStartedItem(state, message.params.item);
-        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null, {}, state);
       }
       break;
     case "item/completed":
       recordItem(state, message.params.item, "completed", message.params.threadId ?? null);
       {
         const update = describeCompletedItem(state, message.params.item);
-        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null, {}, state);
       }
       break;
     case "error": {
@@ -1167,3 +1228,14 @@ export function readOutputSchema(schemaPath) {
 }
 
 export { DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX };
+
+// PR-1.3 (#183) — exposed for the finalizing-timeout contract test. Internal
+// only; callers outside the test suite should treat these as private.
+export const __testHooks = {
+  createTurnCaptureState,
+  armFinalizingPhaseTimerIfNeeded,
+  clearFinalizingPhaseTimer,
+  completeTurn,
+  failTurn,
+  FINALIZING_PHASE_TIMEOUT_MS
+};
