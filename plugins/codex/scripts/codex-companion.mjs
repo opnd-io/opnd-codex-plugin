@@ -1026,7 +1026,19 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    booleanOptions: [
+      "json",
+      "write",
+      "resume-last",
+      "resume",
+      "fresh",
+      "background",
+      // PR-2.2 (#124 / #145) — convenience aliases that imply both an
+      // approval policy and a sandbox mode. handleTask resolves them
+      // after argv parsing so they cannot conflict with explicit values.
+      "full-access",
+      "dangerously-skip-permissions"
+    ],
     aliasMap: {
       m: "model"
     }
@@ -1036,8 +1048,27 @@ async function handleTask(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
-  const sandbox = normalizeSandboxMode(options.sandbox);
-  const approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
+  let sandbox = normalizeSandboxMode(options.sandbox);
+  let approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
+  // PR-2.2 (#124 / #145) — `--full-access` and `--dangerously-skip-permissions`
+  // (Claude Code naming convention) are convenience aliases that set both
+  // `--sandbox danger-full-access` and `--approval never`. When the user
+  // supplied an explicit sandbox / approval, the explicit choice wins so
+  // the flag never silently overrides a deliberate decision.
+  const fullAccessAlias = Boolean(options["full-access"] || options["dangerously-skip-permissions"]);
+  if (fullAccessAlias) {
+    if (sandbox == null) {
+      sandbox = "danger-full-access";
+    }
+    if (!options.approval) {
+      approvalPolicy = "never";
+    }
+    process.stderr.write(
+      "[codex-plugin-cc] WARNING: running without sandbox or approvals. " +
+        "Only use --full-access / --dangerously-skip-permissions when the " +
+        "surrounding machine is already isolated.\n"
+    );
+  }
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
