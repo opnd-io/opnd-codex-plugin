@@ -691,10 +691,19 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
 }
 
 async function withAppServer(cwd, fn, options = {}) {
+  // PR-5.5 (#251) — when the caller selected a Codex profile, the only
+  // codex-cli invocation path that picks it up is the direct-spawn one
+  // (BrokerCodexAppServerClient talks to a pre-existing app-server whose
+  // profile was fixed at broker spawn). Force a direct spawn so the user's
+  // --profile takes effect for this single command. Multi-command broker
+  // sharing for the same profile remains unchanged.
+  const wantsProfile = typeof options.profile === "string" && options.profile.trim().length > 0;
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd, {
-      serverRequestHandler: options.serverRequestHandler
+      serverRequestHandler: options.serverRequestHandler,
+      profile: options.profile,
+      disableBroker: wantsProfile || options.disableBroker === true
     });
     const result = await fn(client);
     await client.close();
@@ -716,6 +725,7 @@ async function withAppServer(cwd, fn, options = {}) {
 
     const directClient = await CodexAppServerClient.connect(cwd, {
       disableBroker: true,
+      profile: options.profile,
       serverRequestHandler: options.serverRequestHandler
     });
     try {
@@ -1084,7 +1094,7 @@ export async function runAppServerReview(cwd, options = {}) {
         error: turnState.error,
         stderr: cleanCodexStderr(client.stderr)
       };
-    });
+    }, { profile: options.profile });
   }
 
   const firstAttempt = await executeReviewWithModel(undefined);
@@ -1111,7 +1121,9 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  return withAppServer(cwd, async (client) => {
+  return withAppServer(
+    cwd,
+    async (client) => {
     let threadId;
 
     if (options.resumeThreadId) {
@@ -1172,7 +1184,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  }, { serverRequestHandler: options.serverRequestHandler });
+  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile });
 }
 
 export async function steerAppServerTurn(cwd, options = {}) {

@@ -290,7 +290,15 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async initialize() {
-    const invocation = buildCommandInvocation("codex", ["app-server"], {
+    // PR-5.5 (#251) — when the caller selected a Codex profile, pass it through
+    // to the codex CLI via the `-c profile=<name>` config-override syntax so
+    // the app-server picks up `[profiles.<name>]` from ~/.codex/config.toml
+    // without requiring the user to flip their global default first.
+    const codexArgs = ["app-server"];
+    if (typeof this.options.profile === "string" && this.options.profile.trim()) {
+      codexArgs.push("-c", `profile=${this.options.profile.trim()}`);
+    }
+    const invocation = buildCommandInvocation("codex", codexArgs, {
       env: this.options.env ?? process.env
     });
     this.proc = spawn(invocation.command, invocation.args, {

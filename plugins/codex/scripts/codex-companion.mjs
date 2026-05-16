@@ -586,6 +586,7 @@ async function executeReviewRun(request) {
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
+      profile: request.profile,
       onProgress: request.onProgress
     });
     const payload = {
@@ -627,6 +628,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
+    profile: request.profile,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
@@ -707,6 +709,7 @@ async function executeTaskRun(request) {
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
+    profile: request.profile,
     approvalPolicy,
     sandbox,
     onProgress: request.onProgress,
@@ -938,7 +941,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "cwd", "profile"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -971,6 +974,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model: options.model,
+        profile: options.profile,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -988,7 +992,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
@@ -1053,6 +1057,7 @@ async function handleTask(argv) {
         cwd,
         model,
         effort,
+        profile: options.profile,
         prompt,
         write,
         sandbox,
