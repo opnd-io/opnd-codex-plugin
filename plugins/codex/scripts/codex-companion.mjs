@@ -1109,7 +1109,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile", "resume-id"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile", "resume-id", "context"],
     booleanOptions: [
       "json",
       "write",
@@ -1156,7 +1156,16 @@ async function handleTask(argv) {
         "surrounding machine is already isolated.\n"
     );
   }
-  const prompt = readTaskPrompt(cwd, options, positionals);
+  let prompt = readTaskPrompt(cwd, options, positionals);
+  // PR-7.3 (#284) — --context <text> prepends a small context block to the
+  // user prompt so callers can pass orientation (module, working area, etc.)
+  // without inlining it into every Bash forward. Empty / whitespace-only
+  // values are ignored. The context is wrapped in <context>…</context> so
+  // it is structurally distinguishable from the user's task text.
+  const explicitContext = options.context ? String(options.context).trim() : "";
+  if (explicitContext) {
+    prompt = `<context>\n${explicitContext}\n</context>\n\n${prompt}`;
+  }
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
