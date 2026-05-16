@@ -1012,60 +1012,97 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   }
 }
 
+// PR-5.8 (#270) — when the user's top-level Codex config defaults to a newer
+// model (e.g. gpt-5.5) that the structured-review path cannot use yet, the
+// app-server returns 400 invalid_request_error with the literal message
+// "The 'gpt-5.5' model requires a newer version of Codex". We detect that
+// signature once per review and retry with the documented stable fallback
+// (`gpt-5.4`) plus a warning so the user sees what happened.
+const REVIEW_MODEL_FALLBACK = "gpt-5.4";
+
+function isModelRequiresNewerCodexError(error) {
+  if (!error) {
+    return false;
+  }
+  const text = typeof error === "string" ? error : error.message ?? "";
+  // Match the upstream phrasing; keep the regex loose enough that minor
+  // wording changes (e.g. CLI vs app suggestion variants) still trip it.
+  return /requires a newer version of Codex/i.test(String(text));
+}
+
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  return withAppServer(cwd, async (client) => {
-    emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
-    const thread = await startThread(client, cwd, {
-      model: options.model,
-      sandbox: "read-only",
-      ephemeral: true,
-      threadName: options.threadName
-    });
-    const sourceThreadId = thread.thread.id;
-    emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
-      threadId: sourceThreadId
-    });
-    const delivery = options.delivery ?? "inline";
+  async function executeReviewWithModel(modelOverride) {
+    return withAppServer(cwd, async (client) => {
+      emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
+      const thread = await startThread(client, cwd, {
+        model: modelOverride ?? options.model,
+        sandbox: "read-only",
+        ephemeral: true,
+        threadName: options.threadName
+      });
+      const sourceThreadId = thread.thread.id;
+      emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
+        threadId: sourceThreadId
+      });
+      const delivery = options.delivery ?? "inline";
 
-    const turnState = await captureTurn(
-      client,
-      sourceThreadId,
-      () =>
-        client.request("review/start", {
-          threadId: sourceThreadId,
-          delivery,
-          target: options.target
-        }),
-      {
-        onProgress: options.onProgress,
-        onResponse(response, state) {
-          if (response.reviewThreadId) {
-            state.threadIds.add(response.reviewThreadId);
-            if (delivery === "detached") {
-              state.threadId = response.reviewThreadId;
+      const turnState = await captureTurn(
+        client,
+        sourceThreadId,
+        () =>
+          client.request("review/start", {
+            threadId: sourceThreadId,
+            delivery,
+            target: options.target
+          }),
+        {
+          onProgress: options.onProgress,
+          onResponse(response, state) {
+            if (response.reviewThreadId) {
+              state.threadIds.add(response.reviewThreadId);
+              if (delivery === "detached") {
+                state.threadId = response.reviewThreadId;
+              }
             }
           }
         }
-      }
-    );
+      );
 
-    return {
-      status: buildResultStatus(turnState),
-      threadId: turnState.threadId,
-      sourceThreadId,
-      turnId: turnState.turnId,
-      reviewText: turnState.reviewText,
-      reasoningSummary: turnState.reasoningSummary,
-      turn: turnState.finalTurn,
-      error: turnState.error,
-      stderr: cleanCodexStderr(client.stderr)
-    };
-  });
+      return {
+        status: buildResultStatus(turnState),
+        threadId: turnState.threadId,
+        sourceThreadId,
+        turnId: turnState.turnId,
+        reviewText: turnState.reviewText,
+        reasoningSummary: turnState.reasoningSummary,
+        turn: turnState.finalTurn,
+        error: turnState.error,
+        stderr: cleanCodexStderr(client.stderr)
+      };
+    });
+  }
+
+  const firstAttempt = await executeReviewWithModel(undefined);
+  // Only auto-fallback when the user did NOT explicitly select a model (so
+  // we never silently override an intentional choice). The condition is:
+  //   - no options.model provided
+  //   - the failure signature matches the "requires newer Codex" wording
+  const explicitModel = options.model != null && String(options.model).length > 0;
+  if (!explicitModel && isModelRequiresNewerCodexError(firstAttempt.error)) {
+    emitProgress(
+      options.onProgress,
+      `Codex review failed: default model unavailable for structured review. Retrying with model="${REVIEW_MODEL_FALLBACK}".`,
+      "warn"
+    );
+    const retry = await executeReviewWithModel(REVIEW_MODEL_FALLBACK);
+    return retry;
+  }
+  return firstAttempt;
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
