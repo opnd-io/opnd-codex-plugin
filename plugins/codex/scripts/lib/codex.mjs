@@ -1088,6 +1088,38 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
 // (`gpt-5.4`) plus a warning so the user sees what happened.
 const REVIEW_MODEL_FALLBACK = "gpt-5.4";
 
+// PR-5.2 (#281) — `codex app-server` keeps its access token in memory after
+// startup and does not re-read ~/.codex/auth.json when the user runs
+// `codex logout && codex login`. Subsequent companion-mediated calls fail
+// with "Your access token could not be refreshed because you have since
+// logged out or signed in to another account. Please sign in again." even
+// though `codex exec` from the same shell works fine. We detect that
+// signature and surface a structured hint so the user knows to restart the
+// broker instead of seeing a generic Codex error.
+function isStaleAuthCacheError(error) {
+  if (!error) {
+    return false;
+  }
+  const text = typeof error === "string" ? error : error.message ?? "";
+  return /access token could not be refreshed|Please sign in again/i.test(String(text));
+}
+
+function annotateStaleAuthCacheError(error) {
+  if (!error || !isStaleAuthCacheError(error)) {
+    return error;
+  }
+  const original = typeof error === "string" ? error : error.message ?? "";
+  const guidance =
+    "\n\nThe Codex app-server has cached an invalidated session. Run /codex:cancel to drain " +
+    "any in-flight jobs, then restart Claude Code (or run `pkill -f \"codex app-server\"`) so " +
+    "the next invocation re-reads ~/.codex/auth.json. If the problem persists after a fresh " +
+    "login, file an upstream codex-cli bug.";
+  if (typeof error === "string") {
+    return original + guidance;
+  }
+  return Object.assign(new Error(original + guidance), { cause: error, code: error.code ?? null });
+}
+
 function isModelRequiresNewerCodexError(error) {
   if (!error) {
     return false;
@@ -1149,7 +1181,10 @@ export async function runAppServerReview(cwd, options = {}) {
         reviewText: turnState.reviewText,
         reasoningSummary: turnState.reasoningSummary,
         turn: turnState.finalTurn,
-        error: turnState.error,
+        // PR-5.2 (#281) — annotate the stale-auth-cache error with a
+        // structured hint so the user knows to restart the broker rather
+        // than seeing a bare Codex error.
+        error: annotateStaleAuthCacheError(turnState.error),
         stderr: cleanCodexStderr(client.stderr)
       };
     }, { profile: options.profile });
@@ -1236,7 +1271,9 @@ export async function runAppServerTurn(cwd, options = {}) {
       finalMessage: turnState.lastAgentMessage,
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
-      error: turnState.error,
+      // PR-5.2 (#281) — annotate the stale-auth-cache error path so the
+      // user sees a clear restart hint, not a bare Codex error.
+      error: annotateStaleAuthCacheError(turnState.error),
       stderr: cleanCodexStderr(client.stderr),
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
