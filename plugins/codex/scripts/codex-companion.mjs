@@ -999,6 +999,35 @@ async function handleReviewCommand(argv, config) {
     jobClass: "review",
     summary: metadata.summary
   });
+
+  // PR-3.4 (#279 / #207) — `--background` was declared in the option set
+  // but never read by handleReviewCommand, so /codex:review --background
+  // silently ran foreground and the caller (Claude Code) got the raw log
+  // stream instead of the queued-job JSON it was waiting for. Wire the
+  // background queue the same way handleTask does so review/adversarial
+  // -review can run async without the bridge breaking.
+  if (options.background) {
+    const reviewRequest = {
+      cwd,
+      base: options.base,
+      scope: options.scope,
+      model: options.model,
+      profile: options.profile,
+      focusText,
+      reviewName: config.reviewName,
+      validateRequestKey: config.validateRequestKey ?? null
+    };
+    const queued = {
+      ...job,
+      sandbox: null,
+      approvalPolicy: "never",
+      request: reviewRequest
+    };
+    const { payload } = enqueueBackgroundTask(cwd, queued, reviewRequest);
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
   await runForegroundCommand(
     job,
     (progress) =>
@@ -1185,6 +1214,12 @@ async function handleTaskWorker(argv) {
       logFile: storedJob.logFile ?? null
     }
   );
+  // PR-3.4 (#279) — the task-worker now dispatches reviews when the
+  // queued request was created by handleReviewCommand's background path.
+  // Reviews carry `reviewName` (e.g. "Review" / "Adversarial Review") on
+  // the stored request; tasks do not. This lets the same worker entry
+  // point serve both queue types without duplicating runTrackedJob.
+  const isReviewRun = typeof request.reviewName === "string" && request.reviewName.length > 0;
   await runTrackedJob(
     {
       ...storedJob,
@@ -1192,10 +1227,15 @@ async function handleTaskWorker(argv) {
       logFile
     },
     () =>
-      executeTaskRun({
-        ...request,
-        onProgress: progress
-      }),
+      isReviewRun
+        ? executeReviewRun({
+            ...request,
+            onProgress: progress
+          })
+        : executeTaskRun({
+            ...request,
+            onProgress: progress
+          }),
     { logFile }
   );
 }
