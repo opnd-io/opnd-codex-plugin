@@ -23,9 +23,19 @@ export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
 
 /** @type {ClientInfo} */
+//
+// PR-5.1 (#199 / #276) — the previous default `name: "Claude Code"` collided
+// with the upstream Codex CLI's allow-list for newer models. gpt-5.5 responded
+// with 400 invalid_request_error when the plugin identified itself as a host
+// product rather than its own client surface. The codex-namespaced identifier
+// lets the upstream allow-list / telemetry treat the plugin as a first-class
+// client without leaking the host app name through the API.
+//
+// `title` keeps "Codex Plugin" so users still see a recognizable label in any
+// UI that surfaces it.
 const DEFAULT_CLIENT_INFO = {
   title: "Codex Plugin",
-  name: "Claude Code",
+  name: "codex-plugin-cc",
   version: PLUGIN_MANIFEST.version ?? "0.0.0"
 };
 
