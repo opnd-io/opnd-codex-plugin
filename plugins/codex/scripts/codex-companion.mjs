@@ -908,12 +908,42 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, approval
   };
 }
 
+// PR-3.2 (#308) — when the parent agent forwards a ~6KB+ prompt as an
+// inline argv string, the Claude Code Bash tool silently rejects the call
+// with the "user denied tool use" wording — there is no actual user prompt
+// shown and the rescue agent has no way to recover. The plugin already
+// supports --prompt-file but the codex-rescue prompt template did not use
+// it. Two mitigations land in this PR:
+//
+//   1. A --prompt-stdin flag for callers that prefer piping over a tmpfile.
+//      stdin is still drained when no other source is supplied, but
+//      --prompt-stdin makes that intent explicit and skips the positional
+//      / prompt-file branches even when they happen to be set to empty
+//      strings.
+//   2. A PROMPT_INLINE_SIZE_WARN_BYTES heuristic that emits a one-shot
+//      stderr warning when the user passed > 3KB of inline positionals.
+//      The warning tells them to switch to --prompt-file or --prompt-stdin
+//      so the next invocation does not trip the upstream rejection.
+const PROMPT_INLINE_SIZE_WARN_BYTES = 3 * 1024;
+let inlinePromptWarningEmitted = false;
+
 function readTaskPrompt(cwd, options, positionals) {
+  if (options["prompt-stdin"]) {
+    return readStdinIfPiped();
+  }
   if (options["prompt-file"]) {
     return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
   }
 
   const positionalPrompt = positionals.join(" ");
+  if (positionalPrompt && positionalPrompt.length > PROMPT_INLINE_SIZE_WARN_BYTES && !inlinePromptWarningEmitted) {
+    inlinePromptWarningEmitted = true;
+    process.stderr.write(
+      `[codex-plugin-cc] inline prompt is ${positionalPrompt.length} bytes (>${PROMPT_INLINE_SIZE_WARN_BYTES}). ` +
+        "Consider --prompt-file <path> or --prompt-stdin to avoid the upstream " +
+        "argv-size rejection that surfaces as a generic 'user denied' error (#308).\n"
+    );
+  }
   return positionalPrompt || readStdinIfPiped();
 }
 
@@ -1087,7 +1117,10 @@ async function handleTask(argv) {
       // approval policy and a sandbox mode. handleTask resolves them
       // after argv parsing so they cannot conflict with explicit values.
       "full-access",
-      "dangerously-skip-permissions"
+      "dangerously-skip-permissions",
+      // PR-3.2 (#308) — explicit stdin marker so callers that pipe a
+      // multi-KB prompt can disambiguate from positional args.
+      "prompt-stdin"
     ],
     aliasMap: {
       m: "model"
