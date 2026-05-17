@@ -138,8 +138,15 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /--resume/);
   assert.match(agent, /--fresh/);
   assert.match(agent, /thin forwarding wrapper/i);
-  assert.match(agent, /prefer foreground for a small, clearly bounded rescue request/i);
-  assert.match(agent, /If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution/i);
+  // PR-3.3 (#324) unified rule: honor user explicit choice, never auto-promote.
+  assert.match(agent, /Background policy \(#324 — unified rule\)/i);
+  assert.match(agent, /honor the user's explicit `--background` or `--wait` choice/i);
+  assert.match(agent, /When neither is present, always run foreground/i);
+  assert.match(agent, /Never auto-promote a foreground request to background based on perceived task complexity/i);
+  assert.match(agent, /600 ?s Bash limit applies to foreground rescues/i);
+  // Old contradictory wording must be gone (regression guard).
+  assert.doesNotMatch(agent, /prefer foreground for a small, clearly bounded rescue request/i);
+  assert.doesNotMatch(agent, /looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution/i);
   assert.match(agent, /Use exactly one `Bash` call/i);
   assert.match(agent, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(agent, /Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`/i);
@@ -161,8 +168,21 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Leave model unset by default/i);
   assert.match(runtimeSkill, /Map `spark` to `--model gpt-5\.3-codex-spark`/i);
   assert.match(runtimeSkill, /`--sandbox`: accepted values are `read-only`, `workspace-write`, `danger-full-access`/i);
-  assert.match(runtimeSkill, /If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only/i);
-  assert.match(runtimeSkill, /Strip it before calling `task`/i);
+  // PR-3.3 (#324) unified rule on the SKILL side: command-layer routing only,
+  // never forwarded to `task`, never inferred by the subagent.
+  assert.match(runtimeSkill, /`--background` \/ `--wait` policy \(#324 — unified rule\)/i);
+  assert.match(runtimeSkill, /command-layer routing flags/i);
+  assert.match(runtimeSkill, /Strip both `--background` and `--wait` from the natural-language task text/i);
+  assert.match(runtimeSkill, /Strip both from the argv passed to `task`/i);
+  assert.match(runtimeSkill, /Do not infer `--background` from prompt length, perceived complexity/i);
+  assert.match(runtimeSkill, /The subagent must never independently choose `run_in_background: true`/i);
+  // Long-running foreground hint surface
+  assert.match(runtimeSkill, /Foreground runtime hint/i);
+  assert.match(runtimeSkill, /600 ?s/);
+  assert.match(runtimeSkill, /never auto-switch on the user's behalf/i);
+  // Old contradictory wording must be gone (regression guard).
+  assert.doesNotMatch(runtimeSkill, /If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only/i);
+  assert.doesNotMatch(runtimeSkill, /^[^\n]*Strip it before calling `task`[^\n]*$/m);
   assert.match(runtimeSkill, /`--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`/i);
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);

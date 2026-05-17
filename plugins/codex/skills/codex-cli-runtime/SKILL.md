@@ -26,7 +26,11 @@ Execution rules:
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
-- If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text.
+- **`--background` / `--wait` policy (#324 — unified rule):** these tokens are command-layer routing flags. The `/codex:rescue` command consumes them to decide whether to invoke the rescue subagent with `run_in_background: true` (for `--background`) or foreground (for `--wait` or neither). They are NOT forwarded to the `task` subcommand of `codex-companion.mjs`.
+  - Strip both `--background` and `--wait` from the natural-language task text — they are not prompt content.
+  - Strip both from the argv passed to `task`. The companion `task` subcommand also supports `--background` for direct invocations, but in the rescue chain backgrounding is handled at the Agent layer (the parent `/codex:rescue` command runs the subagent with `run_in_background: true`); adding `--background` again to `task` would double up and break job tracking.
+  - When the user passed neither flag, run foreground exactly as the command layer requests. Do not infer `--background` from prompt length, perceived complexity, multi-step phrasing, or estimated runtime. The rescue subagent is a forwarder, not a scheduler; mode selection belongs to the user via the `/codex:rescue` command.
+  - The subagent must never independently choose `run_in_background: true` for its own Bash call. The `/codex:rescue` command already mapped `--background` to the Agent invocation; the subagent simply runs the Bash call in whatever mode the parent passed.
 - If the forwarded request includes `--model`, normalize `spark` to `gpt-5.3-codex-spark` and pass it through to `task`.
 - If the forwarded request includes `--effort`, pass it through to `task`.
 - If the forwarded request includes `--sandbox`, pass it through to `task`.
@@ -46,4 +50,9 @@ Safety rules:
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
 - If the Bash call fails or Codex cannot be invoked, return nothing.
-- **Worktree isolation guard (#198):** when the parent invoked the rescue subagent inside a worktree (cwd matches `.git/worktrees/*` or `*/.claude/worktrees/*`, or the parent passed `isolation: "worktree"`), never use `--background` and never `run_in_background` the Bash call. Run foreground only. Otherwise the host harness cleans the worktree as soon as the subagent returns, leaving Codex pinned in a deleted directory. Foreground keeps the Bash alive so cleanup waits for the result.
+- **Worktree isolation guard (#198):** when the parent invoked the rescue subagent inside a worktree (cwd matches `.git/worktrees/*` or `*/.claude/worktrees/*`, or the parent passed `isolation: "worktree"`), never use `--background` and never `run_in_background` the Bash call — even if the user passed `--background`. Drop the flag and run foreground only. Otherwise the host harness cleans the worktree as soon as the subagent returns, leaving Codex pinned in a deleted directory. Foreground keeps the Bash alive so cleanup waits for the result. This is the only situation in which an explicit user `--background` is overridden.
+
+Foreground runtime hint:
+- The upstream Claude Code Bash tool times out at ~600 s. A long-running foreground rescue (deep refactor, multi-file rewrite, full repo audit) will hit that limit and leave the user with no jobId to resume.
+- When the forwarded request reads as long-running and the user did not pass `--background`, surface a single line before the `task` call: tell the user about the 600 s Bash limit and recommend they re-issue with `--background` so the job can be polled via `/codex:status` and `/codex:result`. Then forward as foreground anyway — never auto-switch on the user's behalf.
+- If the user already passed `--background`, no hint is needed: forward as background and let `enqueueBackgroundTask` return the jobId.
