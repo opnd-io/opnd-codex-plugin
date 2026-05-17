@@ -86,14 +86,17 @@ Use it when you want:
 - a review of your current uncommitted changes
 - a review of your branch compared to a base branch like `main`
 
-Use `--base <ref>` for branch review. It also supports `--wait` and `--background`. It is not steerable and does not take custom focus text. Use [`/codex:adversarial-review`](#codexadversarial-review) when you want to challenge a specific decision or risk area.
+Use `--base <ref>` for branch review or `--branch <ref>` to review a remote branch (e.g. `origin/feature-x`) **without checking it out locally**. Also supports `--wait`, `--background`, `--max-findings <N>` (default 20, hard cap 100), `--profile <name>`, and `--fast`. It is not steerable and does not take custom focus text. Use [`/codex:adversarial-review`](#codexadversarial-review) when you want to challenge a specific decision or risk area.
 
 Examples:
 
 ```bash
 /codex:review
 /codex:review --base main
+/codex:review --branch origin/feature-x  # remote-branch review, no checkout
 /codex:review --background
+/codex:review --max-findings 50          # lift the implicit 2-3 cap on large diffs
+/codex:review --fast                     # ~1.5x speed, ~2x credits
 ```
 
 This command is read-only and will not perform any changes. When run in the background you can use [`/codex:status`](#codexstatus) to check on the progress and [`/codex:cancel`](#codexcancel) to cancel the ongoing task.
@@ -137,8 +140,16 @@ Use it when you want Codex to:
 > [!NOTE]
 > Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
 
-It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
-It also supports `--sandbox <read-only|workspace-write|danger-full-access>` when you explicitly need to change the Codex runtime constraints for a task.
+It supports `--background`, `--wait`, `--resume`, `--resume-id <thread-id>`, and `--fresh`. If you omit all of these, the plugin can offer to continue the latest rescue thread for this repo.
+
+Runtime control flags (all per-invocation, never modify your config):
+
+- `--sandbox <read-only|workspace-write|danger-full-access>` — explicit sandbox override
+- `--full-access` / `--dangerously-skip-permissions` — shorthand for `--sandbox danger-full-access --approval never` (prints a stderr warning)
+- `--profile <name>` — select a `[profiles.<name>]` block from `~/.codex/config.toml`. Forces a direct codex spawn (broker is bypassed)
+- `--fast` — request the Codex fast service tier (~1.5x speed / ~2x credits) via `-c service_tier=fast`
+- `--context <text>` — prepend a `<context>...</context>` block before the prompt for cheap orientation
+- `--prompt-file <path>` / `--prompt-stdin` — use a file or stdin for the prompt. Required when the prompt exceeds ~3 KB to avoid the upstream argv-size rejection
 
 Examples:
 
@@ -146,10 +157,14 @@ Examples:
 /codex:rescue investigate why the tests started failing
 /codex:rescue fix the failing test with the smallest safe patch
 /codex:rescue --resume apply the top fix from the last run
+/codex:rescue --resume-id 019e2ed4-73c7-7530-aaa5-8a0f4167a4c5 keep going on that thread
 /codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
-/codex:rescue --model spark fix the issue quickly
+/codex:rescue --model spark --fast fix the issue quickly
+/codex:rescue --profile review-fast --background look for races
 /codex:rescue --sandbox danger-full-access run the migration in this externally sandboxed environment
-/codex:rescue --background investigate the regression
+/codex:rescue --full-access run the migration in this externally sandboxed environment
+/codex:rescue --context "working on auth module" investigate the 401 loop
+/codex:rescue --prompt-file ./big-prompt.md investigate the regression
 ```
 
 You can also just ask for a task to be delegated to Codex:
@@ -163,7 +178,7 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
-- if you do not pass `--sandbox`, task runs remain `read-only` by default and become `workspace-write` only for write-capable rescue requests
+- **(v2.0.0)** if you do not pass `--sandbox`, the plugin inherits `sandbox_mode` from your `~/.codex/config.toml` (was hard-coded to `read-only` / `workspace-write` in v1.x). See [docs/MIGRATION_v2.0.md](docs/MIGRATION_v2.0.md) to restore legacy behavior with `CODEX_PLUGIN_SANDBOX_DEFAULT=read-only`
 - `danger-full-access` should only be used when the machine or surrounding environment is already sandboxed
 
 ### `/codex:agent`
