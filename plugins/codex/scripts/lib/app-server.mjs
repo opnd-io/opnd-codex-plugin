@@ -23,32 +23,156 @@ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"))
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
 
+// PR-4.5 mitigation (#310) — detect a non-UTF-8 host locale and inject a
+// UTF-8 locale into the spawned codex env so its internal JSONL parser does
+// not crash on a Big5 / GBK / EUC-* byte sequence emitted by some Codex
+// CLI builds. The upstream root cause lives in the codex CLI itself
+// (zh-TW reproducer is the most cited), but the plugin can mitigate
+// end-to-end by forcing the codex subprocess to a UTF-8 locale even when
+// the user's shell is something else.
+//
+// Behavior:
+//   - Default ON. If the host LANG / LC_ALL is missing or non-UTF-8, the
+//     spawned codex gets `LANG=C.UTF-8` and `LC_ALL=C.UTF-8`. The user's
+//     own shell env is untouched (we only mutate the child env).
+//   - Opt out with `CODEX_PLUGIN_PRESERVE_LOCALE=1`. Users who depend on
+//     localized codex output (translated messages, region-specific
+//     formats) keep their original locale at the cost of the #310 crash
+//     risk on non-UTF-8 systems.
+//   - Idempotent. A pre-set UTF-8 locale (LANG=ja_JP.UTF-8, LC_ALL=…)
+//     passes through unchanged — we only override when the existing
+//     value is missing or non-UTF-8.
+//
+// Returns `{ env, applied }` where `applied` is true iff this call
+// actually injected the override. Callers (the spawn path) can use the
+// `applied` flag to surface a one-shot stderr notice the first time the
+// override fires, so the user is not surprised by a silent locale
+// rewrite affecting codex output.
+const LOCALE_PRESERVE_ENV = "CODEX_PLUGIN_PRESERVE_LOCALE";
+
+function looksUtf8Locale(value) {
+  if (value == null) return false;
+  const trimmed = String(value).trim();
+  if (trimmed === "") return false;
+  return /\.utf-?8\b/i.test(trimmed) || trimmed.toUpperCase() === "C.UTF-8" || trimmed === "POSIX.UTF-8";
+}
+
+// Audit finding #1 (HIGH) — POSIX precedence: LC_ALL > LC_CTYPE > LANG.
+// LC_ALL=C with LANG=en_US.UTF-8 gives codex an effective C (non-UTF-8)
+// locale, but the old `looksUtf8Locale(LC_ALL) || looksUtf8Locale(LANG)`
+// check would short-circuit on LANG and skip the mitigation. Walk the
+// precedence ladder explicitly and only consult the next variable when
+// the current one is unset or empty.
+function effectiveLocaleIsUtf8(baseEnv) {
+  for (const key of ["LC_ALL", "LC_CTYPE", "LANG"]) {
+    const value = baseEnv[key];
+    if (value == null || String(value).trim() === "") continue;
+    return looksUtf8Locale(value);
+  }
+  // Nothing set at all — codex CLI then reads the OS default. We treat
+  // that as non-UTF-8 (the conservative choice) so the mitigation fires
+  // on bare-bones shells too.
+  return false;
+}
+
+export function applyUtf8LocaleOverride(targetEnv, baseEnv = targetEnv) {
+  if (String(baseEnv[LOCALE_PRESERVE_ENV] ?? "").trim() === "1") {
+    return { env: targetEnv, applied: false };
+  }
+  if (effectiveLocaleIsUtf8(baseEnv)) {
+    return { env: targetEnv, applied: false };
+  }
+  // Audit finding #3 (LOW) — `C.UTF-8` is a glibc-ism. Modern Windows 10+
+  // accepts it via the UCRT, but the codex CLI on Windows runs through
+  // its own runtime layer that historically prefers `en_US.UTF-8`. On
+  // POSIX `C.UTF-8` is the most portable UTF-8 sentinel (no locale data
+  // files required). Use the platform-appropriate value.
+  const override = process.platform === "win32" ? "en_US.UTF-8" : "C.UTF-8";
+  return {
+    env: { ...targetEnv, LC_ALL: override, LANG: override },
+    applied: true
+  };
+}
+
+// Module-level guard so the locale-override notice prints at most once per
+// process even if buildPluginCodexEnv is called repeatedly (broker init +
+// every retry path).
+let localeOverrideNoticeEmitted = false;
+
+// Test-only: reset the warn-once latch + the locale-override notice.
+// Production callers never invoke this; tests use it to keep cases isolated.
+//
+// Audit finding #5 (LOW) — exposed from production source on purpose.
+// The double-underscore prefix follows the repo's existing test-helper
+// convention (see e.g. tests/state.test.mjs callers in lib/state.mjs).
+// We do NOT gate behind NODE_ENV because the repo's normal test entrypoint
+// (`node --test`) does not set it, and a NODE_ENV check would silently
+// break the test suite without producing an actionable error.
+export function __resetAppServerNoticeCache() {
+  localeOverrideNoticeEmitted = false;
+}
+
 // PR-5.6 (#282) BREAKING — build the env we hand to plugin-spawned codex
 // children. Adds CODEX_HOME=$HOME/.codex/claude-code/ so plugin sessions
 // land in a dedicated home that Codex Desktop ignores. Restoring the
 // shared home is a single env var: CODEX_PLUGIN_USE_DEFAULT_HOME=1.
 //
 // Exposed so the broker spawn path (broker-lifecycle.mjs) can build the
-// same env. Pure function — no side effects, safe to call repeatedly.
+// same env. Pure function — no side effects, safe to call repeatedly
+// (notice emission is gated by the module-level latch above).
 export function buildPluginCodexEnv(baseEnv = process.env) {
+  // Compose the home-isolation transform first, then the locale-override
+  // transform on top. Both transforms are idempotent and only mutate the
+  // child env (never the caller's).
+  let result;
   if (String(baseEnv.CODEX_PLUGIN_USE_DEFAULT_HOME ?? "").trim() === "1") {
-    return { ...baseEnv };
+    result = { ...baseEnv };
+  } else if (baseEnv.CODEX_HOME && String(baseEnv.CODEX_HOME).trim()) {
+    // Honor a pre-set CODEX_HOME so the user can pin a custom location.
+    result = { ...baseEnv };
+  } else {
+    const home = baseEnv.HOME ?? baseEnv.USERPROFILE;
+    if (!home) {
+      result = { ...baseEnv };
+    } else {
+      const pluginCodexHome = path.join(home, ".codex", "claude-code");
+      try {
+        fs.mkdirSync(pluginCodexHome, { recursive: true });
+      } catch {
+        // best-effort; codex CLI will surface a real error if it cannot use it
+      }
+      result = { ...baseEnv, CODEX_HOME: pluginCodexHome };
+    }
   }
-  // Honor a pre-set CODEX_HOME so the user can pin a custom location.
-  if (baseEnv.CODEX_HOME && String(baseEnv.CODEX_HOME).trim()) {
-    return { ...baseEnv };
+
+  // PR-4.5 mitigation — overlay the UTF-8 locale override.
+  //
+  // Audit finding #2 (MEDIUM) trade-off: the broker reuses one running
+  // codex child for many requests, so this override is captured at broker
+  // start and frozen for the broker's lifetime. Mid-session changes to
+  // LANG / LC_ALL / CODEX_PLUGIN_PRESERVE_LOCALE require a broker restart
+  // (sendBrokerShutdown or the idle-watchdog) to take effect. Documented
+  // limitation; the realistic case is "user fixes locale, then resumes"
+  // for which a restart is already needed.
+  const localeResult = applyUtf8LocaleOverride(result, baseEnv);
+  if (localeResult.applied && !localeOverrideNoticeEmitted) {
+    // Audit finding #4 (LOW) trade-off: flip the latch BEFORE the write
+    // so even a broken stderr collapses the notice attempt to "happens
+    // once" rather than "retries forever and pollutes the log". The
+    // "attempted-once" wording is intentional — see the helper comment.
+    localeOverrideNoticeEmitted = true;
+    const overrideTarget = process.platform === "win32" ? "en_US.UTF-8" : "C.UTF-8";
+    try {
+      process.stderr.write(
+        `[codex-plugin-cc] non-UTF-8 host locale detected (LANG=${baseEnv.LANG ?? "<unset>"}, LC_ALL=${baseEnv.LC_ALL ?? "<unset>"}). ` +
+          `Spawning codex with LANG=${overrideTarget} + LC_ALL=${overrideTarget} to avoid the #310 JSONL parser crash. ` +
+          `Restore your host locale with CODEX_PLUGIN_PRESERVE_LOCALE=1.\n`
+      );
+    } catch {
+      // best-effort; never break the spawn path because stderr is broken
+    }
   }
-  const home = baseEnv.HOME ?? baseEnv.USERPROFILE;
-  if (!home) {
-    return { ...baseEnv };
-  }
-  const pluginCodexHome = path.join(home, ".codex", "claude-code");
-  try {
-    fs.mkdirSync(pluginCodexHome, { recursive: true });
-  } catch {
-    // best-effort; codex CLI will surface a real error if it cannot use it
-  }
-  return { ...baseEnv, CODEX_HOME: pluginCodexHome };
+  return localeResult.env;
 }
 
 /** @type {ClientInfo} */

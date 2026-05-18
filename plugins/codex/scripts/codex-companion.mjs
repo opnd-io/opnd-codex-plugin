@@ -61,6 +61,7 @@ import {
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { getUserDefault } from "./lib/user-config.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
@@ -71,11 +72,18 @@ import {
   renderStatusReport,
   renderTaskResult
 } from "./lib/render.mjs";
+import { createTraceId, emitEvent } from "./lib/telemetry.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
+// PR-3.5 (#264 / #237) — defaults for `status --tail` / `--watch`. The tail
+// count is intentionally small because the per-job log can hold MBs of
+// prompt + completion text; users that want the whole file can just `cat`
+// the path printed by `/codex:status <jobId>`.
+const DEFAULT_STATUS_TAIL_LINES = 20;
+const DEFAULT_STATUS_WATCH_INTERVAL_MS = 1500;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
@@ -93,7 +101,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs continue [--job <job-id>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs approve <approval-id> [--session] [--response-json <json>] [--json]",
       "  node scripts/codex-companion.mjs deny <approval-id> [--json]",
-      "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
+      "  node scripts/codex-companion.mjs status [job-id] [--all] [--wait [--timeout-ms <ms>] [--poll-interval-ms <ms>]] [--tail [--tail-lines <N>]] [--watch [--tail-lines <N>] [--watch-interval-ms <ms>]] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--dry-run] [--json]"
     ].join("\n")
@@ -184,6 +192,64 @@ function normalizeSandboxMode(sandbox) {
     );
   }
   return normalized;
+}
+
+// PR-7.7 (#213) — resolvers that prefer the CLI value, then the user-level
+// config default, then null. The CLI must always win — the merge happens
+// here (not inside the normalize helpers) so the normalize functions stay
+// pure single-input validators.
+//
+// Each resolver runs the same normalize that the explicit-CLI path uses, so
+// an invalid user-config value (e.g. `defaultEffort: "ultra"`) raises the
+// same human-readable error a bad `--effort ultra` would — the user sees a
+// pointer to the config file via the surrounding context.
+// PR-7.7 audit finding #5 — an explicit CLI flag (even with an empty value
+// like `--model ""`) is still a user choice. Treat it as "explicitly clear
+// the default" rather than letting the user-config silently fill it in,
+// which would violate the "CLI always wins" contract. `null`/`undefined`
+// means "the flag was never passed" and is the only case where the
+// user-config fallback fires.
+function cliExplicitlyPassed(cliValue) {
+  return cliValue !== null && cliValue !== undefined;
+}
+
+function resolveModel(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeRequestedModel(cliValue);
+  }
+  const configDefault = getUserDefault("defaultModel", { env });
+  if (configDefault === undefined) return null;
+  return normalizeRequestedModel(configDefault);
+}
+
+function resolveEffort(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeReasoningEffort(cliValue);
+  }
+  const configDefault = getUserDefault("defaultEffort", { env });
+  if (configDefault === undefined) return null;
+  try {
+    return normalizeReasoningEffort(configDefault);
+  } catch (error) {
+    throw new Error(
+      `Invalid defaultEffort in user config: ${error?.message ?? error}. Edit your codex-plugin-cc config or unset the key.`
+    );
+  }
+}
+
+function resolveSandbox(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeSandboxMode(cliValue);
+  }
+  const configDefault = getUserDefault("defaultSandbox", { env });
+  if (configDefault === undefined) return null;
+  try {
+    return normalizeSandboxMode(configDefault);
+  } catch (error) {
+    throw new Error(
+      `Invalid defaultSandbox in user config: ${error?.message ?? error}. Edit your codex-plugin-cc config or unset the key.`
+    );
+  }
 }
 
 function normalizeArgv(argv) {
@@ -989,13 +1055,23 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
+  // PR-9.2 — generate a correlation id at enqueue time so every downstream
+  // event (start / progress / completion) can be stitched back to this run.
+  // The id is also surfaced in the job log header for ad-hoc grep, and
+  // stashed inside the request payload so the detached worker inherits it
+  // without an extra plumbing channel.
+  const traceId = createTraceId();
+  appendLogLine(logFile, `trace.id=${traceId}`);
+  const requestWithTrace = { ...request, traceId };
+
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
     pid: null,
     logFile,
-    request
+    traceId,
+    request: requestWithTrace
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   // The state.json index is keyed by-job and read on every status/list call. Strip the
@@ -1015,15 +1091,30 @@ function enqueueBackgroundTask(cwd, job, request) {
     pid: spawnedPid
   });
 
+  // PR-9.1 — every queued job emits one `enqueued` event with the
+  // identifying metadata. Failure-tolerant: a swallowed write is logged to
+  // stderr only when CODEX_PLUGIN_TELEMETRY_DEBUG=1.
+  emitEvent("enqueued", {
+    traceId,
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "queued",
+    cwd,
+    model: request?.model,
+    effort: request?.effort
+  });
+
   return {
     payload: {
       jobId: job.id,
       status: "queued",
       title: job.title,
       summary: job.summary,
-      logFile
+      logFile,
+      traceId
     },
-    logFile
+    logFile,
+    traceId
   };
 }
 
@@ -1143,9 +1234,12 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
-  let sandbox = normalizeSandboxMode(options.sandbox);
+  // PR-7.7 (#213) — resolveModel/Effort/Sandbox respect the user-level
+  // config defaults from ~/.config/codex-plugin-cc/config.json when the
+  // CLI option is not supplied. CLI always wins.
+  const model = resolveModel(options.model);
+  const effort = resolveEffort(options.effort);
+  let sandbox = resolveSandbox(options.sandbox);
   let approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
   // PR-2.2 (#124 / #145) — `--full-access` and `--dangerously-skip-permissions`
   // (Claude Code naming convention) are convenience aliases that set both
@@ -1404,8 +1498,11 @@ async function handleContinue(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
+  // PR-7.7 (#213) — same user-config defaults for /codex:continue. Sandbox
+  // is not a continue option (the existing job's sandbox is reused), so
+  // only model + effort flow through the resolvers here.
+  const model = resolveModel(options.model);
+  const effort = resolveEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
   if (!prompt) {
     throw new Error("Provide a prompt, a prompt file, or piped stdin for continue.");
@@ -1515,14 +1612,290 @@ function handleApprovalDecision(argv, action) {
   outputCommandResult(payload, renderApprovalDecisionResult(payload), options.json);
 }
 
+// PR-3.5 (#264 / #237) — helpers for `status --tail` / `--watch`.
+//
+// `readLogTail(logFile, lines)` reads the last `lines` lines of the per-job
+// log file. Implemented as a full file read + slice on purpose: per-job logs
+// are bounded (see MAX_LOG_BLOCK_BYTES in tracked-jobs.mjs), the common case
+// reads under 200 KB, and a streaming tail would have to handle multi-byte
+// boundaries that can shift if a writer is mid-line — for the 20-line
+// default that complexity is not worth it.
+//
+// Audit finding #2 mitigation: stat-size guard so a pathological multi-MB
+// log file does not block the event loop on a sync read. The 8 MB cap is
+// 8× the per-job `rendered` cap (`MAX_RENDERED_BYTES` in tracked-jobs.mjs)
+// so practical workloads stay under it; oversize falls back to reading
+// only the trailing slice from the file end.
+const READ_LOG_TAIL_FULL_READ_CAP_BYTES = 8 * 1024 * 1024;
+const READ_LOG_TAIL_PARTIAL_READ_BYTES = 256 * 1024;
+
+function readLogTail(logFile, lines) {
+  if (!logFile) return [];
+  let raw;
+  try {
+    const stat = fs.statSync(logFile);
+    if (stat.size > READ_LOG_TAIL_FULL_READ_CAP_BYTES) {
+      // Partial read from end. Open + read the last 256 KB only. The first
+      // line in that slice may be a torn fragment of a longer line — drop
+      // it to avoid emitting garbage. UTF-8 is self-synchronizing so a
+      // continuation byte at the start decodes as the U+FFFD replacement,
+      // which is recognizably wrong but safe.
+      const fd = fs.openSync(logFile, "r");
+      try {
+        const start = stat.size - READ_LOG_TAIL_PARTIAL_READ_BYTES;
+        const buf = Buffer.alloc(READ_LOG_TAIL_PARTIAL_READ_BYTES);
+        fs.readSync(fd, buf, 0, READ_LOG_TAIL_PARTIAL_READ_BYTES, start);
+        raw = buf.toString("utf8");
+        // Drop the leading partial line.
+        const firstNewline = raw.indexOf("\n");
+        if (firstNewline >= 0) raw = raw.slice(firstNewline + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      raw = fs.readFileSync(logFile, "utf8");
+    }
+  } catch {
+    return [];
+  }
+  const all = raw.replace(/\r\n/g, "\n").split("\n");
+  // strip trailing blank line if the file ends with a newline.
+  if (all.length && all[all.length - 1] === "") all.pop();
+  const requested = Math.max(0, Math.floor(Number(lines) || DEFAULT_STATUS_TAIL_LINES));
+  if (requested === 0) return all;
+  return all.slice(-requested);
+}
+
+// Filter the telemetry stream to events for the given traceId. Best-effort:
+// if the events file does not exist, returns []. Never throws.
+//
+// Audit finding #3 mitigation: stat-size guard before the full-file read.
+// For a normal install (6 events/job × 100 jobs ≈ 60 KB) this is a no-op.
+// For pathological streams over the cap we fall back to a tail-byte slice
+// the same way readLogTail does. The 8 MB cap matches readLogTail's cap;
+// the trailing slice is 1 MB which fits ~6000 events.
+const READ_TRACE_EVENTS_FULL_READ_CAP_BYTES = 8 * 1024 * 1024;
+const READ_TRACE_EVENTS_PARTIAL_READ_BYTES = 1024 * 1024;
+
+function readTraceEvents(traceId, { env = process.env, maxEvents = 50 } = {}) {
+  if (!traceId) return [];
+  const dataDir = env.CLAUDE_PLUGIN_DATA;
+  if (!dataDir) return [];
+  const file = path.join(dataDir, "telemetry", "events.jsonl");
+  if (!fs.existsSync(file)) return [];
+  let raw;
+  try {
+    const stat = fs.statSync(file);
+    if (stat.size > READ_TRACE_EVENTS_FULL_READ_CAP_BYTES) {
+      const fd = fs.openSync(file, "r");
+      try {
+        const start = stat.size - READ_TRACE_EVENTS_PARTIAL_READ_BYTES;
+        const buf = Buffer.alloc(READ_TRACE_EVENTS_PARTIAL_READ_BYTES);
+        fs.readSync(fd, buf, 0, READ_TRACE_EVENTS_PARTIAL_READ_BYTES, start);
+        raw = buf.toString("utf8");
+        const firstNewline = raw.indexOf("\n");
+        if (firstNewline >= 0) raw = raw.slice(firstNewline + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      raw = fs.readFileSync(file, "utf8");
+    }
+  } catch {
+    return [];
+  }
+  const matches = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const record = JSON.parse(trimmed);
+      if (record.traceId === traceId) {
+        matches.push(record);
+      }
+    } catch {
+      // Skip a malformed line — telemetry is best-effort on the read path too.
+    }
+  }
+  if (matches.length <= maxEvents) return matches;
+  return matches.slice(-maxEvents);
+}
+
+// PR-3.5 audit finding #4 — strict validation of --tail-lines so negative
+// values, NaN, and absurd magnitudes are rejected instead of silently
+// coerced into "show everything" (`requested === 0`) or "show the whole
+// universe" (`1e9` -> slice(-1e9) = full read).
+const TAIL_LINES_MAX = 10000;
+
+function parseTailLinesValue(raw, { fallback = DEFAULT_STATUS_TAIL_LINES, allowZero = false } = {}) {
+  if (raw === undefined || raw === null || raw === "" || raw === true) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    throw new Error(`Invalid --tail-lines value "${raw}" — expected a positive integer.`);
+  }
+  if (n < (allowZero ? 0 : 1)) {
+    throw new Error(`Invalid --tail-lines value "${raw}" — must be a positive integer.`);
+  }
+  if (n > TAIL_LINES_MAX) {
+    throw new Error(`--tail-lines value ${n} exceeds the maximum (${TAIL_LINES_MAX}).`);
+  }
+  return Math.floor(n);
+}
+
+function renderStatusTailReport(snapshot, tailLines, traceEvents) {
+  const job = snapshot.job;
+  const parts = [];
+  parts.push(`# Codex Job Tail — ${job.id}`);
+  parts.push(`Status: ${job.status} | Phase: ${job.phase ?? "-"} | Trace: ${job.traceId ?? "-"}`);
+  parts.push("");
+  if (job.logFile) {
+    parts.push(`Log: ${job.logFile}`);
+  }
+  parts.push(`Tail (${tailLines.length} lines):`);
+  if (tailLines.length === 0) {
+    parts.push("  (no log lines yet)");
+  } else {
+    for (const line of tailLines) {
+      parts.push(`  ${line}`);
+    }
+  }
+  if (traceEvents.length > 0) {
+    parts.push("");
+    parts.push(`Trace events (${traceEvents.length}):`);
+    for (const ev of traceEvents) {
+      const elapsed = typeof ev.elapsedMs === "number" ? ` ${ev.elapsedMs}ms` : "";
+      const phase = ev.phase ? ` phase=${ev.phase}` : "";
+      parts.push(`  ${ev.ts} ${ev.event}${phase}${elapsed}`);
+    }
+  }
+  return parts.join("\n") + "\n";
+}
+
+async function runStatusWatch(cwd, reference, { tailLines, intervalMs, env = process.env, output = process.stdout, isTty = process.stdout.isTTY === true }) {
+  const interval = Math.max(250, Number(intervalMs) || DEFAULT_STATUS_WATCH_INTERVAL_MS);
+  // Track which lines have already been printed so the watch loop only emits
+  // new lines as they arrive — otherwise every tick would re-print the full
+  // tail and the terminal would scroll uncontrollably.
+  let lastPrinted = new Set();
+  let lastEventTs = "";
+  let firstTick = true;
+  while (true) {
+    // PR-3.5 audit finding #1 — request inline reap on every tick so a
+    // worker that died between ticks (SIGKILL / OOM / host crash) flips
+    // from `running` -> `failed/terminated` and the watch exits instead
+    // of spinning forever against the dead PID.
+    const snapshot = buildSingleJobSnapshot(cwd, reference, { reap: true });
+    const tail = readLogTail(snapshot.job.logFile, tailLines);
+    const traceEvents = readTraceEvents(snapshot.job.traceId, { env });
+
+    if (firstTick) {
+      output.write(`# Codex Job Watch — ${snapshot.job.id}\n`);
+      output.write(`Status: ${snapshot.job.status} | Phase: ${snapshot.job.phase ?? "-"} | Trace: ${snapshot.job.traceId ?? "-"}\n`);
+      if (snapshot.job.logFile) {
+        output.write(`Log: ${snapshot.job.logFile}\n`);
+      }
+      output.write(`Watch interval: ${interval}ms\n\n`);
+      firstTick = false;
+    }
+
+    for (const line of tail) {
+      if (!lastPrinted.has(line)) {
+        output.write(`${line}\n`);
+        lastPrinted.add(line);
+      }
+    }
+    for (const ev of traceEvents) {
+      if (ev.ts > lastEventTs) {
+        const elapsed = typeof ev.elapsedMs === "number" ? ` ${ev.elapsedMs}ms` : "";
+        const phase = ev.phase ? ` phase=${ev.phase}` : "";
+        output.write(`[trace] ${ev.ts} ${ev.event}${phase}${elapsed}\n`);
+        lastEventTs = ev.ts;
+      }
+    }
+
+    if (!isActiveJobStatus(snapshot.job.status)) {
+      output.write(`\nJob ${snapshot.job.id} reached terminal status: ${snapshot.job.status}\n`);
+      return { exitedBecause: "terminal", snapshot, tail, traceEvents };
+    }
+    // Avoid unbounded set growth on extremely chatty jobs — keep the most
+    // recent ~1000 unique lines so the dedup still works for the visible
+    // window without leaking memory on multi-hour watches.
+    if (lastPrinted.size > 1000) {
+      lastPrinted = new Set(Array.from(lastPrinted).slice(-500));
+    }
+    // TTY-only: stop watching cleanly on a single Ctrl+C — outside a TTY we
+    // assume the caller (CI / scripted invocation) wants to read until the
+    // job terminates and would prefer a hard signal-exit.
+    if (isTty) {
+      // No special handling here; SIGINT default behavior already exits.
+    }
+    await sleep(interval);
+  }
+}
+
 async function handleStatus(argv) {
+  // PR-3.5 — `--tail` is a boolean ("use default count"), `--tail-lines <N>`
+  // is the value-bearing form. Keeping them split avoids the parseArgs
+  // ambiguity around bare `--tail` followed by a positional that looks
+  // numeric (would otherwise be consumed as the count).
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "all", "wait"]
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms", "tail-lines", "watch-interval-ms"],
+    booleanOptions: ["json", "all", "wait", "tail", "watch"]
   });
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
+
+  const tailRequested = options.tail === true || options["tail-lines"] !== undefined;
+
+  // PR-3.5 — `--tail` and `--watch` both require a single job id. The
+  // contract test enforces these errors; the messages match the existing
+  // `--wait requires a job id` style so the user sees consistent guidance.
+  if (!reference && (tailRequested || options.watch)) {
+    throw new Error("`status --tail` and `status --watch` require a job id.");
+  }
+  if (options.wait && options.watch) {
+    throw new Error("`status --wait` and `status --watch` are mutually exclusive — pick one.");
+  }
+  // PR-3.5 audit finding #5 — `--wait` + `--tail` had no defined semantics
+  // (the `--tail` path ran first and silently ignored `--wait`). Reject
+  // explicitly so the user picks one rather than getting surprising
+  // immediate output when they asked to wait. If you want "wait then tail",
+  // run them as two commands.
+  if (options.wait && tailRequested) {
+    throw new Error("`status --wait` and `status --tail` are mutually exclusive — run --wait first, then --tail.");
+  }
+
+  if (options.watch) {
+    // PR-3.5 audit finding #4 — validate --tail-lines BEFORE any FS work so
+    // bogus input fails fast with the documented error, regardless of
+    // whether the job reference resolves to a real job.
+    const tailLines = parseTailLinesValue(options["tail-lines"]);
+    // Initial snapshot validates the reference is a real job (and surfaces
+    // the same error renderStatusReport would). Reap is on for both the
+    // initial snapshot and every tick (handled inside runStatusWatch).
+    buildSingleJobSnapshot(cwd, reference, { reap: true });
+    const intervalMs = options["watch-interval-ms"];
+    await runStatusWatch(cwd, reference, { tailLines, intervalMs });
+    return;
+  }
+
+  if (tailRequested) {
+    // Audit finding #4 — same precedence as the --watch branch above.
+    const lines = parseTailLinesValue(options["tail-lines"]);
+    const snapshot = buildSingleJobSnapshot(cwd, reference, { reap: true });
+    const tail = readLogTail(snapshot.job.logFile, lines);
+    const traceEvents = readTraceEvents(snapshot.job.traceId);
+    const payload = {
+      job: snapshot.job,
+      tail,
+      tailLines: tail.length,
+      traceEvents
+    };
+    outputCommandResult(payload, renderStatusTailReport(snapshot, tail, traceEvents), options.json);
+    return;
+  }
+
   if (reference) {
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
@@ -1680,6 +2053,30 @@ async function handleCancel(argv) {
     pendingApprovalCount: 0,
     errorMessage: "Cancelled by user.",
     completedAt
+  });
+
+  // PR-9.1 — cancelled event. elapsedMs is best-effort; if the job never
+  // recorded a startedAt (cancelled while still queued) it stays undefined
+  // rather than zero so dashboards do not confuse the two.
+  //
+  // PR-9.1 audit finding #3 — when both `existing.traceId` and
+  // `job.traceId` are absent (job cancelled before runTrackedJob's start
+  // emit had a chance to attach one), synthesize a fresh trace id so the
+  // event still satisfies the "every event has a traceId" invariant
+  // documented in TROUBLESHOOTING.md. The synthesized id is single-use
+  // (this event only) and intentionally not persisted back to the job
+  // record — downstream correlation against a missing-from-the-start job
+  // is impossible by construction.
+  const startedAtMs = Date.parse(existing.startedAt ?? job.startedAt ?? "");
+  emitEvent("cancelled", {
+    traceId: existing.traceId ?? job.traceId ?? createTraceId(),
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "cancelled",
+    cwd: workspaceRoot,
+    elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
+    turnInterruptAttempted: interrupt.attempted,
+    turnInterrupted: interrupt.interrupted
   });
 
   // PR-7.4 (#134) — cancel is a terminal state, so the bell fires here
