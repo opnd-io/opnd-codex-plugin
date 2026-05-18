@@ -143,6 +143,48 @@ These all default to v1.x behavior unless you explicitly opt in:
 | `CODEX_BROKER_IDLE_INTERVAL_MS` | Override broker idle poll interval (default 2 min, was 5 min in v1.x) |
 | `CODEX_FINALIZING_PHASE_TIMEOUT_MS` | Override the finalizing-phase fail-fast timeout (default 5 min; disable with `0`) |
 
+## New v2.1.0 env vars
+
+| Env var | Effect |
+|---|---|
+| `CODEX_PLUGIN_USER_CONFIG` | Path to a user-level JSON config file (PR-7.7, #213). Overrides the XDG / legacy discovery order. Primarily for tests and ad-hoc per-invocation overrides — see "User-level config defaults" below. |
+
+## User-level config defaults (PR-7.7, #213)
+
+The plugin reads a small JSON file for plugin-level defaults so users do not have to retype `--model gpt-5.4-mini --effort medium --sandbox workspace-write` on every rescue / review / task call. CLI flags **always** win — the config only fills in values that were not passed.
+
+Discovery order (first file that exists wins):
+
+1. `$CODEX_PLUGIN_USER_CONFIG` (explicit override path)
+2. `$XDG_CONFIG_HOME/codex-plugin-cc/config.json` (or `~/.config/codex-plugin-cc/config.json` if `XDG_CONFIG_HOME` is unset)
+3. `~/.codex/plugin-cc.json` (legacy fallback — no need to relocate)
+
+Supported keys (everything else is ignored — additions stay additive):
+
+| Key | Type | Maps to |
+|---|---|---|
+| `defaultModel` | string | `--model` default (alias `spark` → `gpt-5.3-codex-spark` still applies) |
+| `defaultEffort` | one of `none` / `minimal` / `low` / `medium` / `high` / `xhigh` | `--effort` default |
+| `defaultSandbox` | one of `read-only` / `workspace-write` / `danger-full-access` | `--sandbox` default |
+
+Example:
+
+```json
+{
+  "defaultModel": "gpt-5.4-mini",
+  "defaultEffort": "medium"
+}
+```
+
+**Behavior notes** (matter for debugging):
+
+- A malformed file (invalid JSON or top-level array/scalar) emits **one** stderr warning per process and is otherwise treated as empty — the plugin never crashes because of a bad config.
+- Unknown keys (typos like `defaultModelName` instead of `defaultModel`) emit **one** stderr warning per process so the silent-ignore does not bury bugs.
+- An explicit `$CODEX_PLUGIN_USER_CONFIG` path that exists but cannot be read warns once and is treated as empty — the plugin will NOT fall through to XDG / legacy candidates, because the explicit env override means "use exactly this file or no file."
+- Cache scope: the config is loaded once per process. Long-running brokers that fix a malformed file mid-flight need a restart to pick the change up. Production callers always pass `process.env`, so the implicit singleton is the documented contract.
+- Explicit empty CLI values (`--model ""`) are treated as "clear the default", **not** as "fall through to config" — CLI always wins.
+- On Windows, the home directory is resolved from `USERPROFILE` first (Git Bash / MSYS often sets `HOME=/c/Users/x` which the Node fs APIs handle inconsistently).
+
 ---
 
 ## FAQ
