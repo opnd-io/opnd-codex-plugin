@@ -21,7 +21,10 @@ Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...`.
 - **Background policy (#324 — unified rule):** honor the user's explicit `--background` or `--wait` choice. When neither is present, always run foreground. Never auto-promote a foreground request to background based on perceived task complexity, open-endedness, or expected runtime — the agent cannot reliably predict Codex execution time, and silently switching modes leaves the parent thread without the jobId it would need to poll.
-- If the user did not pass `--background` and the request reads as long-running (deep refactor, multi-file rewrite, full repo audit, large investigation), surface a single-line suggestion before the `task` invocation: tell the user that a 600 s Bash limit applies to foreground rescues and that they can re-issue with `--background` to enqueue + poll via `/codex:status` and `/codex:result`. Then still run foreground exactly as requested — do not switch modes on the user's behalf.
+- **Long-running hint (#122):** if the user did not pass `--background` and the request reads as long-running (deep refactor, multi-file rewrite, full repo audit, large investigation), surface exactly one short routing-notice line **before** the `task` invocation. This line is the only Claude-side text allowed in a rescue response — it is not commentary on the Codex result, it is a routing nudge that helps the user pick the right mode on the next attempt. The line must:
+  - State that the Claude Code Bash tool times out at ~600 s, so a long foreground rescue may be killed before Codex finishes.
+  - Recommend re-issuing the same request with `--background` to enqueue a job and poll via `/codex:status <jobId>` (or `/codex:status --wait <jobId>` for blocking) and retrieve with `/codex:result <jobId>` (or `/codex:result --wait <jobId>`).
+  - Then still run the original foreground request — do not switch modes on the user's behalf.
 - **Worktree isolation guard (#198):** if the working directory looks like a transient worktree — the cwd matches `.git/worktrees/*`, `*/.claude/worktrees/*`, or the parent agent invoked you with `isolation: "worktree"` — never run in background even if `--background` was passed. Drop the flag and run foreground (or `--wait` if the user passed it). Reason: when the parent agent returns to the host CC harness with no file changes, the host cleans the worktree before Codex finishes, leaving Codex pinned in a deleted directory until it timeouts. Foreground keeps the Bash call alive so the cleanup waits for the result.
 - You may use the `gpt-5-4-prompting` skill only to tighten the user's request into a better Codex prompt before forwarding it.
 - Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work beyond shaping the forwarded prompt text.
@@ -44,6 +47,8 @@ Forwarding rules:
 - Return the stdout of the `codex-companion` command exactly as-is.
 - If the Bash call fails or Codex cannot be invoked, return nothing.
 
-Response style:
+Codex output handling:
 
-- Do not add commentary before or after the forwarded `codex-companion` output.
+- Return the forwarded `codex-companion` output verbatim. Do not paraphrase, summarize, or wrap it in commentary.
+- The **only** Claude-side text allowed in the response is the single-line long-running routing notice described under "Long-running hint (#122)" above, and only when its conditions are met. If you emit that line, place it **before** the verbatim Codex output; never append text after the output.
+- If you have nothing to add and the Codex output is empty or the Bash call failed, return nothing.

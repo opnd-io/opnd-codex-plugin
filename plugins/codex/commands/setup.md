@@ -31,6 +31,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
 If Codex is already installed or npm is unavailable:
 - Do not ask about installation.
 
+Non-interactive fallback (PR-7.8, #223):
+
+- If `AskUserQuestion` is not available — typically because the user invoked Claude Code with `claude --print` or another non-interactive mode that disables interactive tools — do **not** attempt the install prompt. Default to **Skip for now** so the script never reaches a state where it tries to globally install a package without explicit operator consent. Mention "non-interactive mode detected, skipping the Codex install prompt — run `npm install -g @openai/codex` manually if needed" once and proceed to the Output rules below.
+
 Output rules:
 - Present the final setup output to the user.
 - If installation was skipped, present the original setup output.

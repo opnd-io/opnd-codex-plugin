@@ -60,6 +60,7 @@ import {
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { getUserDefault } from "./lib/user-config.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
@@ -70,6 +71,7 @@ import {
   renderStatusReport,
   renderTaskResult
 } from "./lib/render.mjs";
+import { createTraceId, emitEvent } from "./lib/telemetry.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
@@ -189,6 +191,64 @@ function normalizeSandboxMode(sandbox) {
     );
   }
   return normalized;
+}
+
+// PR-7.7 (#213) — resolvers that prefer the CLI value, then the user-level
+// config default, then null. The CLI must always win — the merge happens
+// here (not inside the normalize helpers) so the normalize functions stay
+// pure single-input validators.
+//
+// Each resolver runs the same normalize that the explicit-CLI path uses, so
+// an invalid user-config value (e.g. `defaultEffort: "ultra"`) raises the
+// same human-readable error a bad `--effort ultra` would — the user sees a
+// pointer to the config file via the surrounding context.
+// PR-7.7 audit finding #5 — an explicit CLI flag (even with an empty value
+// like `--model ""`) is still a user choice. Treat it as "explicitly clear
+// the default" rather than letting the user-config silently fill it in,
+// which would violate the "CLI always wins" contract. `null`/`undefined`
+// means "the flag was never passed" and is the only case where the
+// user-config fallback fires.
+function cliExplicitlyPassed(cliValue) {
+  return cliValue !== null && cliValue !== undefined;
+}
+
+function resolveModel(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeRequestedModel(cliValue);
+  }
+  const configDefault = getUserDefault("defaultModel", { env });
+  if (configDefault === undefined) return null;
+  return normalizeRequestedModel(configDefault);
+}
+
+function resolveEffort(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeReasoningEffort(cliValue);
+  }
+  const configDefault = getUserDefault("defaultEffort", { env });
+  if (configDefault === undefined) return null;
+  try {
+    return normalizeReasoningEffort(configDefault);
+  } catch (error) {
+    throw new Error(
+      `Invalid defaultEffort in user config: ${error?.message ?? error}. Edit your codex-plugin-cc config or unset the key.`
+    );
+  }
+}
+
+function resolveSandbox(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeSandboxMode(cliValue);
+  }
+  const configDefault = getUserDefault("defaultSandbox", { env });
+  if (configDefault === undefined) return null;
+  try {
+    return normalizeSandboxMode(configDefault);
+  } catch (error) {
+    throw new Error(
+      `Invalid defaultSandbox in user config: ${error?.message ?? error}. Edit your codex-plugin-cc config or unset the key.`
+    );
+  }
 }
 
 function normalizeArgv(argv) {
@@ -994,13 +1054,23 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
+  // PR-9.2 — generate a correlation id at enqueue time so every downstream
+  // event (start / progress / completion) can be stitched back to this run.
+  // The id is also surfaced in the job log header for ad-hoc grep, and
+  // stashed inside the request payload so the detached worker inherits it
+  // without an extra plumbing channel.
+  const traceId = createTraceId();
+  appendLogLine(logFile, `trace.id=${traceId}`);
+  const requestWithTrace = { ...request, traceId };
+
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
     pid: null,
     logFile,
-    request
+    traceId,
+    request: requestWithTrace
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   // The state.json index is keyed by-job and read on every status/list call. Strip the
@@ -1020,15 +1090,30 @@ function enqueueBackgroundTask(cwd, job, request) {
     pid: spawnedPid
   });
 
+  // PR-9.1 — every queued job emits one `enqueued` event with the
+  // identifying metadata. Failure-tolerant: a swallowed write is logged to
+  // stderr only when CODEX_PLUGIN_TELEMETRY_DEBUG=1.
+  emitEvent("enqueued", {
+    traceId,
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "queued",
+    cwd,
+    model: request?.model,
+    effort: request?.effort
+  });
+
   return {
     payload: {
       jobId: job.id,
       status: "queued",
       title: job.title,
       summary: job.summary,
-      logFile
+      logFile,
+      traceId
     },
-    logFile
+    logFile,
+    traceId
   };
 }
 
@@ -1148,9 +1233,12 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
-  let sandbox = normalizeSandboxMode(options.sandbox);
+  // PR-7.7 (#213) — resolveModel/Effort/Sandbox respect the user-level
+  // config defaults from ~/.config/codex-plugin-cc/config.json when the
+  // CLI option is not supplied. CLI always wins.
+  const model = resolveModel(options.model);
+  const effort = resolveEffort(options.effort);
+  let sandbox = resolveSandbox(options.sandbox);
   let approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
   // PR-2.2 (#124 / #145) — `--full-access` and `--dangerously-skip-permissions`
   // (Claude Code naming convention) are convenience aliases that set both
@@ -1409,8 +1497,11 @@ async function handleContinue(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
+  // PR-7.7 (#213) — same user-config defaults for /codex:continue. Sandbox
+  // is not a continue option (the existing job's sandbox is reused), so
+  // only model + effort flow through the resolvers here.
+  const model = resolveModel(options.model);
+  const effort = resolveEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
   if (!prompt) {
     throw new Error("Provide a prompt, a prompt file, or piped stdin for continue.");
@@ -1961,6 +2052,30 @@ async function handleCancel(argv) {
     pendingApprovalCount: 0,
     errorMessage: "Cancelled by user.",
     completedAt
+  });
+
+  // PR-9.1 — cancelled event. elapsedMs is best-effort; if the job never
+  // recorded a startedAt (cancelled while still queued) it stays undefined
+  // rather than zero so dashboards do not confuse the two.
+  //
+  // PR-9.1 audit finding #3 — when both `existing.traceId` and
+  // `job.traceId` are absent (job cancelled before runTrackedJob's start
+  // emit had a chance to attach one), synthesize a fresh trace id so the
+  // event still satisfies the "every event has a traceId" invariant
+  // documented in TROUBLESHOOTING.md. The synthesized id is single-use
+  // (this event only) and intentionally not persisted back to the job
+  // record — downstream correlation against a missing-from-the-start job
+  // is impossible by construction.
+  const startedAtMs = Date.parse(existing.startedAt ?? job.startedAt ?? "");
+  emitEvent("cancelled", {
+    traceId: existing.traceId ?? job.traceId ?? createTraceId(),
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "cancelled",
+    cwd: workspaceRoot,
+    elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
+    turnInterruptAttempted: interrupt.attempted,
+    turnInterrupted: interrupt.interrupted
   });
 
   const payload = {
