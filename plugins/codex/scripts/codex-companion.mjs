@@ -19,7 +19,8 @@ import {
     readOutputSchema,
     runAppServerReview,
     runAppServerTurn,
-    steerAppServerTurn
+    steerAppServerTurn,
+    TurnWatchdogError
   } from "./lib/codex.mjs";
 import {
   buildApprovalResponse,
@@ -36,6 +37,7 @@ import {
   generateJobId,
   getConfig,
   listJobs,
+  readTaskSession,
   setConfig,
   updateJobFile,
   upsertJob,
@@ -78,9 +80,18 @@ import {
   READ_LOG_TAIL_FULL_READ_CAP_BYTES,
   READ_LOG_TAIL_PARTIAL_READ_BYTES
 } from "./lib/log-tail.mjs";
+import { readCapsule } from "./lib/capsule.mjs";
+import {
+  buildExecutionFingerprint,
+  buildPromptFingerprint,
+  hashText,
+  resolveCodexHomeIdentity,
+  sanitizeTaskKey
+} from "./lib/task-identity.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
+const TASK_OUTPUT_SCHEMA = path.join(ROOT_DIR, "schemas", "output-profiles", "task-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 // PR-3.5 (#264 / #237) — defaults for `status --tail` / `--watch`. The tail
@@ -101,13 +112,14 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs pair [--background] [--task-key <key>] [--capsule <path>] [--output-profile <name>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs agent [--wait|--background] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--resume-last|--resume|--resume-id <thread-id>|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [--profile <name>] [--max-findings <N>] [--full-access | --dangerously-skip-permissions] [--prompt-stdin] [prompt]",
-      "  node scripts/codex-companion.mjs continue [--job <job-id>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write|--read-only] [--sandbox <read-only|workspace-write|danger-full-access>] [--approval <never|on-request|on-failure|untrusted>] [--resume-last|--resume|--resume-id <thread-id>|--fresh] [--task-key <key>] [--capsule <path>] [--output-profile <name>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [--profile <name>] [--max-findings <N>] [--full-access | --dangerously-skip-permissions] [--prompt-stdin] [prompt]",
+      "  node scripts/codex-companion.mjs continue [--job <job-id>|--task-key <key>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs approve <approval-id> [--session] [--response-json <json>] [--json]",
       "  node scripts/codex-companion.mjs deny <approval-id> [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--wait [--timeout-ms <ms>] [--poll-interval-ms <ms>]] [--tail [--tail-lines <N>]] [--watch [--tail-lines <N>] [--watch-interval-ms <ms>]] [--json]",
-      "  node scripts/codex-companion.mjs result [job-id] [--wait [--timeout-ms <ms>] [--poll-interval-ms <ms>]] [--json]",
+      "  node scripts/codex-companion.mjs result [job-id] [--digest|--raw] [--wait [--timeout-ms <ms>] [--poll-interval-ms <ms>]] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--dry-run] [--json]"
     ].join("\n")
   );
@@ -573,14 +585,74 @@ function normalizeMaxFindings(raw) {
   return Math.min(numeric, 100); // hard cap to keep prompts bounded
 }
 
+// PR-G-D (manual port of upstream PR #314) — Codex API enforces a ~1 MB
+// input ceiling per turn; oversize prompts surface as opaque server-side
+// rejections that look like a generic "user denied". Cap the adversarial
+// review prompt at 800 KB (safe margin) and truncate the largest field
+// (REVIEW_INPUT — the diff) on a UTF-8 byte boundary so a multi-byte
+// character is never split mid-codepoint. Operators can override the
+// cap with `CODEX_PLUGIN_REVIEW_PROMPT_MAX_BYTES`.
+const REVIEW_PROMPT_MAX_BYTES_DEFAULT = 800 * 1024;
+
+function resolveReviewPromptCap() {
+  const override = Number(process.env.CODEX_PLUGIN_REVIEW_PROMPT_MAX_BYTES);
+  if (Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+  return REVIEW_PROMPT_MAX_BYTES_DEFAULT;
+}
+
+// UTF-8-safe truncation: walk back from `maxBytes` until we land on a
+// non-continuation byte (top two bits != 0b10), then decode. Returns
+// `{ text, truncated, originalBytes, retainedBytes }` so callers can
+// surface the loss in the prompt.
+function truncateToUtf8Bytes(text, maxBytes) {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) {
+    return { text, truncated: false, originalBytes: buf.length, retainedBytes: buf.length };
+  }
+  let cut = maxBytes;
+  while (cut > 0 && (buf[cut] & 0xc0) === 0x80) {
+    cut -= 1;
+  }
+  return {
+    text: buf.subarray(0, cut).toString("utf8"),
+    truncated: true,
+    originalBytes: buf.length,
+    retainedBytes: cut
+  };
+}
+
 function buildAdversarialReviewPrompt(context, focusText, options = {}) {
   const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
+
+  // Cap REVIEW_INPUT (the diff, by far the largest substitution) so the
+  // assembled prompt stays under the API input ceiling. Other fields
+  // (USER_FOCUS / COLLECTION_GUIDANCE / TARGET_LABEL) are small and not
+  // worth trimming on the same path.
+  const promptCap = resolveReviewPromptCap();
+  const { text: reviewInput, truncated, originalBytes, retainedBytes } = truncateToUtf8Bytes(
+    context.content,
+    promptCap
+  );
+  const truncationNotice = truncated
+    ? `\n\n[truncated by codex-plugin-cc: kept first ${retainedBytes} of ${originalBytes} bytes ` +
+      `(UTF-8-safe cut, ${REVIEW_PROMPT_MAX_BYTES_DEFAULT === promptCap ? "800 KB cap" : `${promptCap} byte cap`}). ` +
+      "Set CODEX_PLUGIN_REVIEW_PROMPT_MAX_BYTES to override.]"
+    : "";
+  if (truncated) {
+    process.stderr.write(
+      `[codex-plugin-cc] adversarial-review prompt truncated: ${originalBytes} -> ${retainedBytes} bytes ` +
+        `(cap=${promptCap}). Set CODEX_PLUGIN_REVIEW_PROMPT_MAX_BYTES to override.\n`
+    );
+  }
+
   return interpolateTemplate(template, {
     REVIEW_KIND: "Adversarial Review",
     TARGET_LABEL: context.target.label,
     USER_FOCUS: focusText || "No extra focus provided.",
     REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
-    REVIEW_INPUT: context.content,
+    REVIEW_INPUT: reviewInput + truncationNotice,
     MAX_FINDINGS: String(normalizeMaxFindings(options.maxFindings))
   });
 }
@@ -810,9 +882,20 @@ async function executeTaskRun(request) {
   const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
   const approvalPolicy = request.approvalPolicy ?? "never";
   const writeCapable = sandbox !== "read-only";
+  let prompt = request.prompt ?? "";
+  if (!prompt && request.promptSource === "capsule" && request.capsulePath) {
+    const capsule = readCapsule(request.cwd, request.capsulePath);
+    if (request.capsuleHash && capsule.hash !== request.capsuleHash) {
+      throw new Error(`Capsule hash changed for ${request.capsulePath}; refusing to resume a stale queued task.`);
+    }
+    prompt = applyPromptAdditions(capsule.prompt, {
+      context: request.context,
+      "append-instruction": request.appendInstruction
+    });
+  }
 
   const taskMetadata = buildTaskRunMetadata({
-    prompt: request.prompt,
+    prompt,
     resumeLast: request.resumeLast
   });
 
@@ -827,13 +910,13 @@ async function executeTaskRun(request) {
     resumeThreadId = latestThread.id;
   }
 
-  if (!request.prompt && !resumeThreadId) {
+  if (!prompt && !resumeThreadId) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
   const result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
-    prompt: request.prompt,
+    prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
@@ -841,6 +924,7 @@ async function executeTaskRun(request) {
     fast: request.fast,
     approvalPolicy,
     sandbox,
+    outputSchema: request.outputProfileSchema ?? null,
     onProgress: request.onProgress,
     serverRequestHandler: request.jobId
       ? createJobServerRequestHandler({
@@ -858,29 +942,40 @@ async function executeTaskRun(request) {
     // existing short-excerpt behavior, only this fall-back path changes.
     threadName: resumeThreadId
       ? null
-      : request.prompt
-      ? buildPersistentTaskThreadName(request.prompt)
+      : prompt
+      ? buildPersistentTaskThreadName(prompt)
       : `${buildPersistentTaskThreadName(DEFAULT_CONTINUE_PROMPT)} [${request.jobId ?? "session"}]`
   });
 
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
-  const rendered = renderTaskResult(
-    {
-      rawOutput,
-      failureMessage,
-      reasoningSummary: result.reasoningSummary
-    },
-    {
-      title: taskMetadata.title,
-      jobId: request.jobId ?? null,
-      write: writeCapable
-    }
-  );
+  const structured = request.outputProfile
+    ? parseStructuredOutput(rawOutput, {
+        status: result.status,
+        failureMessage
+      })
+    : null;
+  const rendered = structured
+    ? buildStructuredTaskRender(structured, taskMetadata.title)
+    : renderTaskResult(
+        {
+          rawOutput,
+          failureMessage,
+          reasoningSummary: result.reasoningSummary
+        },
+        {
+          title: taskMetadata.title,
+          jobId: request.jobId ?? null,
+          write: writeCapable
+        }
+      );
   const payload = {
     status: result.status,
     threadId: result.threadId,
     rawOutput,
+    parsedResult: structured?.parsed ?? null,
+    parseError: structured?.parseError ?? null,
+    outputProfile: request.outputProfile ?? null,
     touchedFiles: result.touchedFiles,
     reasoningSummary: result.reasoningSummary
   };
@@ -970,7 +1065,35 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, approvalPolicy, resumeLast, threadId, jobId }) {
+function buildTaskRequest({
+  cwd,
+  model,
+  effort,
+  prompt,
+  write,
+  sandbox,
+  approvalPolicy,
+  resumeLast,
+  threadId,
+  jobId,
+  profile,
+  fast,
+  outputProfile,
+  outputProfileSchema,
+  promptSource,
+  capsulePath,
+  capsuleHash,
+  context,
+  appendInstruction,
+  taskKey,
+  taskFingerprint,
+  promptHash,
+  fanOutGroupId,
+  parentClaudeSessionId,
+  executionContractHash,
+  codexHomeMode,
+  codexHomeHash
+}) {
   return {
     cwd,
     model,
@@ -981,7 +1104,24 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, sandbox, approval
     approvalPolicy,
     resumeLast,
     threadId,
-    jobId
+    jobId,
+    profile,
+    fast,
+    outputProfile,
+    outputProfileSchema,
+    promptSource,
+    capsulePath,
+    capsuleHash,
+    context,
+    appendInstruction,
+    taskKey,
+    taskFingerprint,
+    promptHash,
+    fanOutGroupId,
+    parentClaudeSessionId,
+    executionContractHash,
+    codexHomeMode,
+    codexHomeHash
   };
 }
 
@@ -1009,7 +1149,29 @@ function readTaskPrompt(cwd, options, positionals) {
     return readStdinIfPiped();
   }
   if (options["prompt-file"]) {
-    return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
+    // PR-G-C (manual port of upstream PR #289) — `path.resolve(cwd, raw)`
+    // happily traverses outside `cwd` for inputs like `../../etc/passwd`
+    // or an absolute path. fork keeps the lenient resolve (user-trust
+    // model — `--prompt-file ~/.config/prompts/...` is a valid use case)
+    // but surfaces an explicit one-shot stderr warning when the resolved
+    // path escapes `cwd`. Operators that want strict containment opt in
+    // via `CODEX_PLUGIN_PROMPT_FILE_STRICT=1`, which raises a hard error.
+    const resolved = path.resolve(cwd, options["prompt-file"]);
+    const rel = path.relative(cwd, resolved);
+    const outsideCwd = rel === "" ? false : rel.startsWith("..") || path.isAbsolute(rel);
+    if (outsideCwd) {
+      if (String(process.env.CODEX_PLUGIN_PROMPT_FILE_STRICT ?? "").trim() === "1") {
+        throw new Error(
+          `--prompt-file path "${options["prompt-file"]}" resolves outside the working directory ` +
+            `(${resolved}). CODEX_PLUGIN_PROMPT_FILE_STRICT=1 is set; refusing to read.`
+        );
+      }
+      process.stderr.write(
+        `[codex-plugin-cc] --prompt-file path "${options["prompt-file"]}" resolves outside cwd ` +
+          `(${resolved}). Reading anyway — set CODEX_PLUGIN_PROMPT_FILE_STRICT=1 to refuse.\n`
+      );
+    }
+    return fs.readFileSync(resolved, "utf8");
   }
 
   const positionalPrompt = positionals.join(" ");
@@ -1022,6 +1184,152 @@ function readTaskPrompt(cwd, options, positionals) {
     );
   }
   return positionalPrompt || readStdinIfPiped();
+}
+
+function readTaskPromptSource(cwd, options, positionals) {
+  if (!options.capsule) {
+    return {
+      prompt: readTaskPrompt(cwd, options, positionals),
+      promptSource: "inline",
+      capsule: null
+    };
+  }
+  if (options["prompt-file"] || options["prompt-stdin"] || positionals.length > 0) {
+    throw new Error("--capsule cannot be combined with positional prompt text, --prompt-file, or --prompt-stdin.");
+  }
+  const capsule = readCapsule(cwd, options.capsule);
+  return {
+    prompt: capsule.prompt,
+    promptSource: "capsule",
+    capsule
+  };
+}
+
+function applyPromptAdditions(prompt, options) {
+  let next = String(prompt ?? "");
+  const explicitContext = options.context ? String(options.context).trim() : "";
+  if (explicitContext) {
+    next = `<context>\n${explicitContext}\n</context>\n\n${next}`;
+  }
+  const appendInstruction = options["append-instruction"] ? String(options["append-instruction"]).trim() : "";
+  if (appendInstruction) {
+    next = `${next.trimEnd()}\n\n<append_instruction>\n${appendInstruction}\n</append_instruction>`;
+  }
+  return next;
+}
+
+function resolveOutputProfile(name) {
+  const raw = String(name ?? "").trim();
+  if (!raw) {
+    return { name: null, schema: null };
+  }
+  return {
+    name: raw,
+    schema: readOutputSchema(TASK_OUTPUT_SCHEMA)
+  };
+}
+
+function buildStructuredTaskRender(parsed, fallbackTitle) {
+  if (!parsed.parsed) {
+    return renderTaskResult({
+      rawOutput: parsed.rawOutput,
+      failureMessage: parsed.parseError
+    });
+  }
+  const data = parsed.parsed;
+  const lines = [
+    `# ${fallbackTitle}`,
+    "",
+    `Verdict: ${data.verdict ?? "unknown"}`,
+    "",
+    data.summary ?? ""
+  ];
+  if (Array.isArray(data.evidence) && data.evidence.length > 0) {
+    lines.push("", "Evidence:");
+    for (const item of data.evidence) lines.push(`- ${item}`);
+  }
+  if (data.confidence) {
+    lines.push("", `Confidence: ${data.confidence}`);
+  }
+  if (Array.isArray(data.verification) && data.verification.length > 0) {
+    lines.push("", "Verification:");
+    for (const item of data.verification) lines.push(`- ${item}`);
+  }
+  if (Array.isArray(data.unresolved) && data.unresolved.length > 0) {
+    lines.push("", "Unresolved:");
+    for (const item of data.unresolved) lines.push(`- ${item}`);
+  }
+  if (data.next_command) {
+    lines.push("", `Next command: ${data.next_command}`);
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function readPromptProfileContext(name) {
+  const profilePath = path.join(ROOT_DIR, "prompts", "profiles", `${name}.md`);
+  try {
+    return fs.readFileSync(profilePath, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function buildTaskIdentity(cwd, options) {
+  const codexHome = resolveCodexHomeIdentity();
+  const execution = buildExecutionFingerprint(cwd, {
+    model: options.model,
+    effort: options.effort,
+    profile: options.profile,
+    sandbox: options.sandbox,
+    approvalPolicy: options.approvalPolicy,
+    write: options.write,
+    outputProfile: options.outputProfile,
+    codexHome
+  });
+  const prompt = buildPromptFingerprint(options.prompt, {
+    capsuleHash: options.capsuleHash,
+    context: options.context,
+    appendInstruction: options.appendInstruction
+  });
+  const explicitTaskKey = sanitizeTaskKey(options.taskKey);
+  const taskKey = explicitTaskKey ?? (options.capsuleHash ? `capsule:${String(options.capsuleHash).slice(0, 24)}` : null);
+  const contractHash = hashText(
+    JSON.stringify({
+      executionHash: execution.hash,
+      promptHash: prompt.promptHash,
+      outputProfile: options.outputProfile ?? null
+    })
+  );
+  return {
+    taskKey,
+    taskFingerprint: options.taskFingerprint ?? hashText(JSON.stringify({ execution, prompt })),
+    promptHash: prompt.promptHash,
+    executionContractHash: contractHash,
+    codexHomeMode: codexHome.mode,
+    codexHomeHash: codexHome.hash,
+    gitProbeFailed: execution.gitProbeFailed
+  };
+}
+
+function pickReusableTaskSession(cwd, identity, policy) {
+  if (!identity.taskKey || policy === "never") {
+    return null;
+  }
+  const existing = readTaskSession(cwd, identity.taskKey);
+  if (!existing || existing.invalidatedAt) {
+    if (policy === "resume-only") {
+      throw new Error(`No reusable Codex task session found for task key ${identity.taskKey}.`);
+    }
+    return null;
+  }
+  const sameFingerprint = existing.taskFingerprint && existing.taskFingerprint === identity.taskFingerprint;
+  if (!sameFingerprint) {
+    if (policy === "resume-only") {
+      throw new Error(`Task key ${identity.taskKey} exists but its fingerprint changed; use --fresh to start a new run.`);
+    }
+    return null;
+  }
+  return existing;
 }
 
 function requireTaskRequest(prompt, resumeLast) {
@@ -1211,10 +1519,29 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile", "resume-id", "context"],
+    valueOptions: [
+      "model",
+      "effort",
+      "cwd",
+      "prompt-file",
+      "sandbox",
+      "approval",
+      "profile",
+      "resume-id",
+      "context",
+      "capsule",
+      "append-instruction",
+      "task-key",
+      "task-fingerprint",
+      "reuse-policy",
+      "output-profile",
+      "task-fan-out-group",
+      "parent-claude-session-id"
+    ],
     booleanOptions: [
       "json",
       "write",
+      "read-only",
       "resume-last",
       "resume",
       "fresh",
@@ -1246,6 +1573,10 @@ async function handleTask(argv) {
   const effort = resolveEffort(options.effort);
   let sandbox = resolveSandbox(options.sandbox);
   let approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
+  if (options["read-only"]) {
+    sandbox = "read-only";
+    options.write = false;
+  }
   // PR-2.2 (#124 / #145) — `--full-access` and `--dangerously-skip-permissions`
   // (Claude Code naming convention) are convenience aliases that set both
   // `--sandbox danger-full-access` and `--approval never`. When the user
@@ -1265,17 +1596,13 @@ async function handleTask(argv) {
         "surrounding machine is already isolated.\n"
     );
   }
-  let prompt = readTaskPrompt(cwd, options, positionals);
+  const promptSource = readTaskPromptSource(cwd, options, positionals);
+  let prompt = applyPromptAdditions(promptSource.prompt, options);
   // PR-7.3 (#284) — --context <text> prepends a small context block to the
   // user prompt so callers can pass orientation (module, working area, etc.)
   // without inlining it into every Bash forward. Empty / whitespace-only
   // values are ignored. The context is wrapped in <context>…</context> so
   // it is structurally distinguishable from the user's task text.
-  const explicitContext = options.context ? String(options.context).trim() : "";
-  if (explicitContext) {
-    prompt = `<context>\n${explicitContext}\n</context>\n\n${prompt}`;
-  }
-
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
   if (resumeLast && fresh) {
@@ -1286,7 +1613,7 @@ async function handleTask(argv) {
   // heuristic (which finds the most recent thread for the workspace).
   // Mutually exclusive with --resume-last / --fresh because the user must
   // pick one resume strategy.
-  const explicitResumeId = options["resume-id"] ? String(options["resume-id"]).trim() : null;
+  let explicitResumeId = options["resume-id"] ? String(options["resume-id"]).trim() : null;
   if (explicitResumeId && (resumeLast || fresh)) {
     throw new Error("Choose either --resume-id <thread-id>, --resume / --resume-last, or --fresh.");
   }
@@ -1314,10 +1641,46 @@ async function handleTask(argv) {
     effectiveSandbox = legacyDefault;
   }
   const writeCapable = write || (effectiveSandbox != null && effectiveSandbox !== "read-only");
+  const outputProfile = resolveOutputProfile(options["output-profile"]);
+  const identity = buildTaskIdentity(cwd, {
+    model,
+    effort,
+    profile: options.profile,
+    sandbox: effectiveSandbox,
+    approvalPolicy,
+    write,
+    outputProfile: outputProfile.name,
+    prompt,
+    taskKey: options["task-key"],
+    taskFingerprint: options["task-fingerprint"],
+    capsuleHash: promptSource.capsule?.hash ?? null,
+    context: options.context,
+    appendInstruction: options["append-instruction"]
+  });
+  const reusePolicy = String(options["reuse-policy"] ?? "auto").trim();
+  if (!explicitResumeId && !resumeLast && !fresh) {
+    const reusable = pickReusableTaskSession(cwd, identity, reusePolicy);
+    if (reusable?.threadId) {
+      explicitResumeId = reusable.threadId;
+    }
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
-    resumeLast
+    resumeLast: resumeLast || Boolean(explicitResumeId)
   });
+  const taskJobMetadata = {
+    taskKey: identity.taskKey,
+    taskFingerprint: identity.taskFingerprint,
+    promptHash: identity.promptHash,
+    capsuleHash: promptSource.capsule?.hash ?? null,
+    promptSource: promptSource.promptSource,
+    outputProfile: outputProfile.name,
+    executionContractHash: identity.executionContractHash,
+    codexHomeMode: identity.codexHomeMode,
+    codexHomeHash: identity.codexHomeHash,
+    fanOutGroupId: options["task-fan-out-group"] ?? null,
+    parentClaudeSessionId: options["parent-claude-session-id"] ?? getCurrentClaudeSessionId() ?? null
+  };
 
   if (options.background) {
     ensureCodexAvailable(cwd);
@@ -1326,19 +1689,30 @@ async function handleTask(argv) {
     const job = {
       ...buildTaskJob(workspaceRoot, taskMetadata, writeCapable),
       sandbox: effectiveSandbox,
-      approvalPolicy
+      approvalPolicy,
+      ...taskJobMetadata
     };
     const request = buildTaskRequest({
       cwd,
       model,
       effort,
-      prompt,
+      prompt: promptSource.promptSource === "capsule" ? null : prompt,
       write,
-      sandbox,
+      sandbox: effectiveSandbox,
       approvalPolicy,
-      resumeLast,
+      resumeLast: resumeLast || Boolean(explicitResumeId),
       threadId: explicitResumeId,
-      jobId: job.id
+      jobId: job.id,
+      profile: options.profile,
+      fast: Boolean(options.fast),
+      outputProfile: outputProfile.name,
+      outputProfileSchema: outputProfile.schema,
+      promptSource: promptSource.promptSource,
+      capsulePath: promptSource.capsule?.path ?? null,
+      capsuleHash: promptSource.capsule?.hash ?? null,
+      context: options.context ?? null,
+      appendInstruction: options["append-instruction"] ?? null,
+      ...taskJobMetadata
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
@@ -1348,7 +1722,8 @@ async function handleTask(argv) {
   const job = {
     ...buildTaskJob(workspaceRoot, taskMetadata, writeCapable),
     sandbox: effectiveSandbox,
-    approvalPolicy
+    approvalPolicy,
+    ...taskJobMetadata
   };
   await runForegroundCommand(
     job,
@@ -1361,11 +1736,19 @@ async function handleTask(argv) {
         fast: Boolean(options.fast),
         prompt,
         write,
-        sandbox,
+        sandbox: effectiveSandbox,
         approvalPolicy,
-        resumeLast,
+        resumeLast: resumeLast || Boolean(explicitResumeId),
         threadId: explicitResumeId,
         jobId: job.id,
+        outputProfile: outputProfile.name,
+        outputProfileSchema: outputProfile.schema,
+        promptSource: promptSource.promptSource,
+        capsulePath: promptSource.capsule?.path ?? null,
+        capsuleHash: promptSource.capsule?.hash ?? null,
+        context: options.context ?? null,
+        appendInstruction: options["append-instruction"] ?? null,
+        ...taskJobMetadata,
         onProgress: progress
       }),
     { json: options.json }
@@ -1464,6 +1847,44 @@ async function handleAgent(argv) {
   await handleTask(nextArgv);
 }
 
+async function handlePair(argv) {
+  const normalized = normalizeArgv(argv);
+  const nextArgv = [];
+  let waitRequested = false;
+
+  for (const token of normalized) {
+    if (token === "--wait") {
+      waitRequested = true;
+      continue;
+    }
+    nextArgv.push(token);
+  }
+
+  if (!argvHasOption(normalized, "sandbox") && !argvHasOption(normalized, "write") && !argvHasOption(normalized, "read-only")) {
+    nextArgv.unshift("--read-only");
+  }
+  if (!argvHasOption(normalized, "approval")) {
+    nextArgv.unshift("never");
+    nextArgv.unshift("--approval");
+  }
+  if (!argvHasOption(normalized, "output-profile")) {
+    nextArgv.unshift("pair");
+    nextArgv.unshift("--output-profile");
+  }
+  if (!argvHasOption(normalized, "context")) {
+    const profileContext = readPromptProfileContext("pair-programming");
+    if (profileContext) {
+      nextArgv.unshift(profileContext);
+      nextArgv.unshift("--context");
+    }
+  }
+  if (waitRequested && argvHasOption(normalized, "background")) {
+    throw new Error("Choose either --wait or --background for pair.");
+  }
+
+  await handleTask(nextArgv);
+}
+
 function matchJobReferenceLocal(jobs, reference) {
   if (!reference) {
     return jobs[0] ?? null;
@@ -1482,7 +1903,31 @@ function matchJobReferenceLocal(jobs, reference) {
   return null;
 }
 
-function resolveTaskJobForContinue(workspaceRoot, reference) {
+function resolveTaskJobForContinue(workspaceRoot, reference, taskKey = null) {
+  const normalizedTaskKey = sanitizeTaskKey(taskKey);
+  if (normalizedTaskKey) {
+    const session = readTaskSession(workspaceRoot, normalizedTaskKey);
+    if (!session || session.invalidatedAt || !session.threadId) {
+      throw new Error(`No reusable Codex task session found for task key ${normalizedTaskKey}.`);
+    }
+    const stored = session.jobId ? readStoredJob(workspaceRoot, session.jobId) : null;
+    return {
+      ...(stored ?? {}),
+      id: stored?.id ?? session.jobId ?? normalizedTaskKey,
+      jobClass: "task",
+      threadId: session.threadId,
+      turnId: session.turnId ?? stored?.turnId ?? null,
+      write: stored?.write ?? false,
+      sandbox: stored?.sandbox ?? "read-only",
+      approvalPolicy: stored?.approvalPolicy ?? "never",
+      taskKey: normalizedTaskKey,
+      taskFingerprint: session.taskFingerprint ?? stored?.taskFingerprint ?? null,
+      promptHash: session.promptHash ?? stored?.promptHash ?? null,
+      capsuleHash: session.capsuleHash ?? stored?.capsuleHash ?? null,
+      outputProfile: session.outputProfile ?? stored?.outputProfile ?? null,
+      resultDigest: stored?.resultDigest ?? null
+    };
+  }
   const sessionId = getCurrentClaudeSessionId();
   let jobs = sortJobsNewestFirst(listJobs(workspaceRoot, { reap: true })).filter((job) => job.jobClass === "task");
   if (!reference && sessionId) {
@@ -1497,8 +1942,19 @@ function resolveTaskJobForContinue(workspaceRoot, reference) {
 
 async function handleContinue(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "job"],
-    booleanOptions: ["json", "background"]
+    valueOptions: [
+      "model",
+      "effort",
+      "cwd",
+      "prompt-file",
+      "job",
+      "context",
+      "capsule",
+      "append-instruction",
+      "task-key",
+      "output-profile"
+    ],
+    booleanOptions: ["json", "background", "prompt-stdin", "no-digest"]
   });
 
   const cwd = resolveCommandCwd(options);
@@ -1508,12 +1964,13 @@ async function handleContinue(argv) {
   // only model + effort flow through the resolvers here.
   const model = resolveModel(options.model);
   const effort = resolveEffort(options.effort);
-  const prompt = readTaskPrompt(cwd, options, positionals);
+  const promptSource = readTaskPromptSource(cwd, options, positionals);
+  let prompt = applyPromptAdditions(promptSource.prompt, options);
   if (!prompt) {
     throw new Error("Provide a prompt, a prompt file, or piped stdin for continue.");
   }
 
-  const selected = resolveTaskJobForContinue(workspaceRoot, options.job ?? null);
+  const selected = resolveTaskJobForContinue(workspaceRoot, options.job ?? null, options["task-key"] ?? null);
   const pendingApprovals = pendingApprovalsForJob(readStoredJob(workspaceRoot, selected.id) ?? selected);
   if (pendingApprovals.length > 0) {
     throw new Error(
@@ -1542,11 +1999,27 @@ async function handleContinue(argv) {
     throw new Error(`Codex task ${selected.id} does not have a thread id to continue.`);
   }
 
+  const storedSelected = readStoredJob(workspaceRoot, selected.id) ?? selected;
+  if (!options["no-digest"] && storedSelected.resultDigest) {
+    prompt =
+      `<previous_codex_result_digest>\n${JSON.stringify(storedSelected.resultDigest, null, 2)}\n</previous_codex_result_digest>\n\n${prompt}`;
+  }
+
   const taskMetadata = buildTaskRunMetadata({ prompt, resumeLast: true });
+  const outputProfile = resolveOutputProfile(options["output-profile"] ?? selected.outputProfile ?? null);
   const job = {
     ...buildTaskJob(workspaceRoot, taskMetadata, selected.write !== false),
     sandbox: selected.sandbox ?? null,
-    approvalPolicy: selected.approvalPolicy ?? "never"
+    approvalPolicy: selected.approvalPolicy ?? "never",
+    taskKey: selected.taskKey ?? null,
+    taskFingerprint: selected.taskFingerprint ?? null,
+    promptHash: hashText(prompt),
+    capsuleHash: promptSource.capsule?.hash ?? selected.capsuleHash ?? null,
+    outputProfile: outputProfile.name,
+    fanOutGroupId: selected.fanOutGroupId ?? null,
+    executionContractHash: selected.executionContractHash ?? null,
+    codexHomeMode: selected.codexHomeMode ?? null,
+    codexHomeHash: selected.codexHomeHash ?? null
   };
   const request = buildTaskRequest({
     cwd,
@@ -1558,7 +2031,21 @@ async function handleContinue(argv) {
     approvalPolicy: selected.approvalPolicy ?? "never",
     resumeLast: true,
     threadId: selected.threadId,
-    jobId: job.id
+    jobId: job.id,
+    outputProfile: outputProfile.name,
+    outputProfileSchema: outputProfile.schema,
+    promptSource: promptSource.promptSource,
+    capsulePath: promptSource.capsule?.path ?? null,
+    capsuleHash: promptSource.capsule?.hash ?? selected.capsuleHash ?? null,
+    context: options.context ?? null,
+    appendInstruction: options["append-instruction"] ?? null,
+    taskKey: job.taskKey,
+    taskFingerprint: job.taskFingerprint,
+    promptHash: job.promptHash,
+    fanOutGroupId: job.fanOutGroupId,
+    executionContractHash: job.executionContractHash,
+    codexHomeMode: job.codexHomeMode,
+    codexHomeHash: job.codexHomeHash
   });
 
   if (options.background) {
@@ -1955,7 +2442,7 @@ async function handleResult(argv) {
   // the documented contract works end-to-end.
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
-    booleanOptions: ["json", "wait"]
+    booleanOptions: ["json", "wait", "digest", "raw"]
   });
 
   const cwd = resolveCommandCwd(options);
@@ -1983,7 +2470,7 @@ async function handleResult(argv) {
     storedJob
   };
 
-  outputCommandResult(payload, renderStoredJobResult(job, storedJob), options.json);
+  outputCommandResult(payload, renderStoredJobResult(job, storedJob, { digest: Boolean(options.digest) }), options.json);
 }
 
 function handleTaskResumeCandidate(argv) {
@@ -2174,6 +2661,9 @@ async function main() {
     case "agent":
       await handleAgent(argv);
       break;
+    case "pair":
+      await handlePair(argv);
+      break;
     case "task":
       await handleTask(argv);
       break;
@@ -2207,6 +2697,24 @@ async function main() {
 }
 
 main().catch((error) => {
+  // PR-G-B (manual port of upstream PR #312) — TurnWatchdogError uses
+  // exit code 124 (matching timeout(1) convention) so calling shells and
+  // tooling can distinguish a watchdog timeout from a generic failure.
+  // Emit a structured JSON line on stderr so wrappers (broker, /codex:status)
+  // can pick out the timeout metadata without parsing prose.
+  if (error instanceof TurnWatchdogError) {
+    process.stderr.write(
+      JSON.stringify({
+        error: "TurnWatchdogTimeout",
+        message: error.message,
+        watchdogMs: error.watchdogMs,
+        threadId: error.threadId,
+        turnId: error.turnId
+      }) + "\n"
+    );
+    process.exitCode = error.exitCode ?? 124;
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;

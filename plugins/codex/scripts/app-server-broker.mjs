@@ -8,6 +8,7 @@ import process from "node:process";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { cleanProtocolLine } from "./lib/jsonl.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -245,13 +246,18 @@ async function main() {
         buffer = buffer.slice(newlineIndex + 1);
         newlineIndex = buffer.indexOf("\n");
 
-        if (!line.trim()) {
+        // PR-G-A (#23 / upstream #24 + #311) — strip terminal/locale
+        // noise (ANSI / OSC, Windows CP-950 taskkill prefix) before
+        // JSON.parse so a single garbage byte from a TTY-inherited
+        // subprocess does not poison the broker connection.
+        const candidate = cleanProtocolLine(line);
+        if (candidate === null) {
           continue;
         }
 
         let message;
         try {
-          message = JSON.parse(line);
+          message = JSON.parse(candidate);
         } catch (error) {
           send(socket, {
             id: null,

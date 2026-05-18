@@ -24,6 +24,11 @@
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
  *   completionTimer: ReturnType<typeof setTimeout> | null,
+ *   finalizingPhaseTimer: ReturnType<typeof setTimeout> | null,
+ *   finalizingStartedAt: number | null,
+ *   finalizingTimeoutMs: number,
+ *   watchdogTimer: ReturnType<typeof setTimeout> | null,
+ *   watchdogMs: number | null,
  *   lastAgentMessage: string,
  *   reviewText: string,
  *   reasoningSummary: string[],
@@ -346,6 +351,41 @@ function describeCompletedItem(state, item) {
   }
 }
 
+/**
+ * Per-turn inactivity watchdog (manual port of upstream PR #312).
+ *
+ * fork v2.1.0 already bounds the `finalizing` phase (PR-1.3 #183, 5 min
+ * default), but the full turn lifecycle had no general silence guard —
+ * a broker that stops emitting JSON-RPC notifications mid-turn (stuck
+ * `app-server`, dropped TCP keepalive, hung MCP tool call) would leave
+ * `captureTurn` hanging forever. This watchdog arms when the turn begins
+ * and is kicked forward by every notification; if `watchdogMs` of silence
+ * passes the turn fails fast with exit 124 (matching `timeout(1)`).
+ *
+ * Triggers: opt-in via `runAppServerTurn({ watchdogMs })` or env
+ * `CODEX_TURN_WATCHDOG_MS`. Closes upstream issue #49 (background task
+ * hangs indefinitely — no timeout on Codex API response generation) and
+ * partial-fixes #250 (MCP elicitation hang) by giving the watch loop a
+ * deterministic upper bound. See docs/upstream-tracking/2026-05-18-...
+ * Tier 1 Group B for the audit trail.
+ */
+export class TurnWatchdogError extends Error {
+  /**
+   * @param {string} message
+   * @param {{ watchdogMs?: number | null, threadId?: string | null, turnId?: string | null }} [options]
+   */
+  constructor(message, options = {}) {
+    super(message);
+    const { watchdogMs, threadId, turnId } = options;
+    this.name = "TurnWatchdogError";
+    this.code = "TURN_WATCHDOG_TIMEOUT";
+    this.exitCode = 124;
+    this.watchdogMs = watchdogMs ?? null;
+    this.threadId = threadId ?? null;
+    this.turnId = turnId ?? null;
+  }
+}
+
 /** @returns {TurnCaptureState} */
 function createTurnCaptureState(threadId, options = {}) {
   let resolveCompletion;
@@ -375,6 +415,11 @@ function createTurnCaptureState(threadId, options = {}) {
     finalizingPhaseTimer: null,
     finalizingStartedAt: null,
     finalizingTimeoutMs: options.finalizingTimeoutMs ?? FINALIZING_PHASE_TIMEOUT_MS,
+    watchdogTimer: null,
+    watchdogMs:
+      typeof options.watchdogMs === "number" && options.watchdogMs > 0
+        ? options.watchdogMs
+        : null,
     lastAgentMessage: "",
     reviewText: "",
     reasoningSummary: [],
@@ -427,6 +472,52 @@ function clearCompletionTimer(state) {
   }
 }
 
+// Watchdog helpers (manual port of upstream PR #312). `armWatchdog` is
+// only effective when `state.watchdogMs > 0`; otherwise all three helpers
+// are no-ops, preserving fork v2.1.0 behavior when the opt-in env var
+// `CODEX_TURN_WATCHDOG_MS` or the `watchdogMs` option is not set.
+function disarmWatchdog(state) {
+  if (state.watchdogTimer) {
+    clearTimeout(state.watchdogTimer);
+    state.watchdogTimer = null;
+  }
+}
+
+function armWatchdog(state) {
+  if (!state.watchdogMs || state.completed) {
+    return;
+  }
+  disarmWatchdog(state);
+  state.watchdogTimer = setTimeout(() => {
+    state.watchdogTimer = null;
+    if (state.completed) {
+      return;
+    }
+    state.completed = true;
+    clearCompletionTimer(state);
+    clearFinalizingPhaseTimer(state);
+    const message =
+      `Codex turn watchdog fired after ${state.watchdogMs}ms of silence ` +
+      `(thread ${state.threadId}, turn ${state.turnId ?? "pending"}). ` +
+      `No JSON-RPC notification arrived in that window.`;
+    state.rejectCompletion(
+      new TurnWatchdogError(message, {
+        watchdogMs: state.watchdogMs,
+        threadId: state.threadId,
+        turnId: state.turnId
+      })
+    );
+  }, state.watchdogMs);
+  state.watchdogTimer.unref?.();
+}
+
+function kickWatchdog(state) {
+  if (!state.watchdogMs || state.completed) {
+    return;
+  }
+  armWatchdog(state);
+}
+
 function completeTurn(state, turn = null, options = {}) {
   if (state.completed) {
     return;
@@ -434,6 +525,7 @@ function completeTurn(state, turn = null, options = {}) {
 
   clearCompletionTimer(state);
   clearFinalizingPhaseTimer(state);
+  disarmWatchdog(state);
   state.completed = true;
 
   if (turn) {
@@ -671,6 +763,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   const previousHandler = client.notificationHandler;
 
   client.setNotificationHandler((message) => {
+    // Manual port of upstream PR #312 — every JSON-RPC notification kicks
+    // the inactivity watchdog forward. Opt-in (no-op when watchdogMs unset).
+    kickWatchdog(state);
+
     if (!state.turnId) {
       // Bound the buffered-notification queue. If startRequest never returns a turn id
       // (e.g., a stuck app-server), the buffer would otherwise grow without limit.
@@ -697,6 +793,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   });
 
   try {
+    armWatchdog(state);
     const response = await startRequest();
     options.onResponse?.(response, state);
     state.turnId = response.turn?.id ?? null;
@@ -721,6 +818,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     return await state.completion;
   } finally {
     clearCompletionTimer(state);
+    disarmWatchdog(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
 }
@@ -1301,7 +1399,18 @@ export async function runAppServerTurn(cwd, options = {}) {
           approvalPolicy: options.approvalPolicy ?? null,
           outputSchema: options.outputSchema ?? null
         }),
-      { onProgress: options.onProgress }
+      {
+        onProgress: options.onProgress,
+        // PR-G-B (manual port of upstream PR #312) — opt-in per-turn
+        // inactivity watchdog. Picks up `options.watchdogMs` from the
+        // direct caller (companion / task path) and falls back to the
+        // `CODEX_TURN_WATCHDOG_MS` env var so an operator can globally
+        // bound silent turns without recompiling. `null` disables.
+        watchdogMs:
+          typeof options.watchdogMs === "number"
+            ? options.watchdogMs
+            : Number(process.env.CODEX_TURN_WATCHDOG_MS) || null
+      }
     );
 
     return {
