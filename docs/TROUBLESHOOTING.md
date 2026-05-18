@@ -378,11 +378,38 @@ If your symptom does not match any section above:
    - relevant log excerpt from `~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/<job-id>.log`
    - OS / shell / Node / codex-cli versions
 
-Known investigations in progress (not yet fixed in v2.0.0):
+## 13. Non-UTF-8 host locale + Codex JSONL parser crash (#310)
+
+**Symptom**: Codex panics with an "invalid utf-8 sequence" stack trace, typically on `LANG=zh_TW.Big5`, `zh_CN.GBK`, `ja_JP.EUC-JP`, `ko_KR.EUC-KR`, or an unset `LANG` combined with `LC_ALL=C`.
+
+**Cause**: The upstream codex CLI's JSONL parser reads from its stdio assuming a UTF-8 byte stream. A multi-byte sequence in non-UTF-8 encoding surfaces as invalid UTF-8 and panics the parser. Root cause is in the codex CLI itself.
+
+**Plugin-side mitigation (v2.1.0+)**: The plugin overrides `LANG` and `LC_ALL` to `C.UTF-8` **for the spawned codex child only**. Your shell env is untouched. A one-shot stderr notice prints on the first override per process:
+
+```text
+[codex-plugin-cc] non-UTF-8 host locale detected (LANG=zh_TW.Big5, LC_ALL=<unset>). Spawning codex with LANG=C.UTF-8 + LC_ALL=C.UTF-8 to avoid the #310 JSONL parser crash. Restore your host locale with CODEX_PLUGIN_PRESERVE_LOCALE=1.
+```
+
+**Opt out** (if you need localized codex output — translated messages, region-specific date formats, etc.):
+
+```bash
+export CODEX_PLUGIN_PRESERVE_LOCALE=1
+```
+
+With opt-out the host locale passes through unchanged and the #310 crash risk returns.
+
+**Verify the mitigation is active**:
+
+```bash
+grep -n "applyUtf8LocaleOverride" plugins/codex/scripts/lib/app-server.mjs
+```
+
+---
+
+Known investigations in progress (not yet fixed in v2.0.0, no plugin-side mitigation yet):
 
 - #295 `CreateProcessAsUserW failed: 1920` on Windows + sandbox=elevated
 - #277 review `--background` hang 2-30 min on Windows + CLI 0.125+
-- #310 zh-TW / non-UTF-8 locale Big5 JSONL parser crash (upstream codex CLI)
 - #141 macOS SCDynamicStore NULL panic inside Antigravity sandbox
 
 ---
