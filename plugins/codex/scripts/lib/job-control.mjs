@@ -241,7 +241,11 @@ export function buildStatusSnapshot(cwd, options = {}) {
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  // PR-3.5 audit finding #1 — pass-through `reap` so callers in the watch
+  // loop can request inline reaping of stale dead-PID jobs. Without this,
+  // a worker that died between ticks keeps reporting `status: "running"`
+  // forever and the watch loop never exits.
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot, { reap: options.reap === true }));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
     throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
