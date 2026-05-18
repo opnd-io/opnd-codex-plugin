@@ -1181,7 +1181,7 @@ export async function runAppServerReview(cwd, options = {}) {
       emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
       const thread = await startThread(client, cwd, {
         model: modelOverride ?? options.model,
-        sandbox: "read-only",
+        sandbox: options.sandbox,
         ephemeral: true,
         threadName: options.threadName
       });
@@ -1415,11 +1415,16 @@ export { DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX };
 
 // PR-1.3 (#183) — exposed for the finalizing-timeout contract test. Internal
 // only; callers outside the test suite should treat these as private.
+// CDX-004 — also expose `resolveSandboxValue` + `buildThreadParams` so the
+// sandbox-default-omit contract test can verify the runtime omit/inherit
+// behavior directly, not just the source pattern of executeReviewWithModel.
 export const __testHooks = {
   createTurnCaptureState,
   armFinalizingPhaseTimerIfNeeded,
   clearFinalizingPhaseTimer,
   completeTurn,
   failTurn,
-  FINALIZING_PHASE_TIMEOUT_MS
+  FINALIZING_PHASE_TIMEOUT_MS,
+  resolveSandboxValue,
+  buildThreadParams
 };
