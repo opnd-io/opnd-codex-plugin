@@ -143,7 +143,11 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /honor the user's explicit `--background` or `--wait` choice/i);
   assert.match(agent, /When neither is present, always run foreground/i);
   assert.match(agent, /Never auto-promote a foreground request to background based on perceived task complexity/i);
-  assert.match(agent, /600 ?s Bash limit applies to foreground rescues/i);
+  // PR-3.6 (#122) reworded the hint under a "Long-running hint (#122)"
+  // heading + spelled out the poll commands. Keep the assertion loose enough
+  // to survive future small wording tweaks — the regression-relevant invariant
+  // is "the 600 s ceiling is named to the user".
+  assert.match(agent, /~?600 ?s/i);
   // Old contradictory wording must be gone (regression guard).
   assert.doesNotMatch(agent, /prefer foreground for a small, clearly bounded rescue request/i);
   assert.doesNotMatch(agent, /looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution/i);

@@ -65,6 +65,20 @@ If you want plugin sessions in a different custom location:
 export CODEX_HOME=/path/to/custom/codex
 ```
 
+> **⚠ Auth-token side effect of BREAKING #2.** `codex login` writes `auth.json` into the codex home it sees in the current shell — by default `~/.codex/auth.json`. The plugin's spawned codex looks in **`~/.codex/claude-code/auth.json`** instead, so an unmigrated v1.x setup will keep returning `loggedIn: false` from `/codex:setup` even after a successful `codex login`. Two equivalent fixes:
+>
+> ```bash
+> # Option A — copy your existing token into the plugin home (one-time)
+> cp ~/.codex/auth.json ~/.codex/claude-code/auth.json
+> ```
+>
+> ```bash
+> # Option B — login directly into the plugin home (also re-runnable after rotation)
+> CODEX_HOME="$HOME/.codex/claude-code" codex login
+> ```
+>
+> Subsequent `codex login` invocations from a normal shell only refresh `~/.codex/auth.json`, so plan to re-copy after every rotation — or pin the plugin to the shared home with `CODEX_PLUGIN_USE_DEFAULT_HOME=1` if you do not need history isolation. See also [TROUBLESHOOTING.md #12](TROUBLESHOOTING.md#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation).
+
 ### What is NOT BREAKING
 
 - `clientInfo.name` now reports `codex-plugin-cc` instead of `Claude Code` (fixes gpt-5.5 400 invalid_request_error) — no user-facing surface change
@@ -80,6 +94,7 @@ export CODEX_HOME=/path/to/custom/codex
 
 - [ ] Decide whether to opt-out of the sandbox default change. Most users will benefit from the new default; opt-out is needed if you have CI / automation that depends on the hard-coded `read-only` / `workspace-write` behavior.
 - [ ] Decide whether to keep the v1.x shared `~/.codex/` home. If you frequently resume plugin-launched threads in Codex Desktop, set `CODEX_PLUGIN_USE_DEFAULT_HOME=1`.
+- [ ] **Migrate your OpenAI auth token to the plugin home.** `codex login` writes only to `~/.codex/auth.json`, so the plugin will report `loggedIn: false` from `/codex:setup` until you copy it: `cp ~/.codex/auth.json ~/.codex/claude-code/auth.json` (or run `CODEX_HOME="$HOME/.codex/claude-code" codex login` to write directly). Repeat after every token rotation, or skip both by setting `CODEX_PLUGIN_USE_DEFAULT_HOME=1`. See [TROUBLESHOOTING.md #12](TROUBLESHOOTING.md#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation) for the full failure mode.
 - [ ] (Optional) Migrate existing plugin sessions to the new home: `cp -r ~/.codex/sessions/ ~/.codex/claude-code/sessions/`. Without this, your v1.x session history stays in the old location and is invisible to v2 plugin commands.
 
 ### Per-environment
@@ -128,12 +143,50 @@ These all default to v1.x behavior unless you explicitly opt in:
 | `CODEX_BROKER_IDLE_INTERVAL_MS` | Override broker idle poll interval (default 2 min, was 5 min in v1.x) |
 | `CODEX_FINALIZING_PHASE_TIMEOUT_MS` | Override the finalizing-phase fail-fast timeout (default 5 min; disable with `0`) |
 
-## New v2.1.0 env vars (observability)
+## New v2.1.0 env vars
 
 | Env var | Effect |
 |---|---|
-| `CODEX_PLUGIN_TELEMETRY_DISABLED` | Suppress the JSONL telemetry stream entirely (default off — telemetry is on, local-only, at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`). Set to `1`, `true`, or `yes` to skip every event write. |
-| `CODEX_PLUGIN_TELEMETRY_DEBUG` | When `=1`, surface swallowed telemetry write errors on stderr instead of silently dropping them. Useful for diagnosing missing-event reports — leave unset in normal use. |
+| `CODEX_PLUGIN_USER_CONFIG` | Path to a user-level JSON config file (PR-7.7, #213). Overrides the XDG / legacy discovery order. Primarily for tests and ad-hoc per-invocation overrides — see "User-level config defaults" below. |
+| `CODEX_PLUGIN_PRESERVE_LOCALE` | When `=1`, disable the v2.1.0 non-UTF-8 locale mitigation (PR-4.5, #310). The plugin passes the host `LANG` / `LC_ALL` through to spawned codex children even on non-UTF-8 systems, restoring the upstream JSONL parser crash risk in exchange for localized codex output. See [`TROUBLESHOOTING.md` #13](TROUBLESHOOTING.md#13-non-utf-8-host-locale-codex-jsonl-parser-crash-310) for the full failure mode. |
+| `CODEX_PLUGIN_TELEMETRY_DISABLED` | Suppress the JSONL telemetry stream entirely (default off — telemetry is on, local-only, at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`). Set to `1`, `true`, or `yes` to skip every event write. PR-9.1. |
+| `CODEX_PLUGIN_TELEMETRY_DEBUG` | When `=1`, surface swallowed telemetry write errors on stderr instead of silently dropping them. Useful for diagnosing missing-event reports — leave unset in normal use. PR-9.1. |
+
+## User-level config defaults (PR-7.7, #213)
+
+The plugin reads a small JSON file for plugin-level defaults so users do not have to retype `--model gpt-5.4-mini --effort medium --sandbox workspace-write` on every rescue / review / task call. CLI flags **always** win — the config only fills in values that were not passed.
+
+Discovery order (first file that exists wins):
+
+1. `$CODEX_PLUGIN_USER_CONFIG` (explicit override path)
+2. `$XDG_CONFIG_HOME/codex-plugin-cc/config.json` (or `~/.config/codex-plugin-cc/config.json` if `XDG_CONFIG_HOME` is unset)
+3. `~/.codex/plugin-cc.json` (legacy fallback — no need to relocate)
+
+Supported keys (everything else is ignored — additions stay additive):
+
+| Key | Type | Maps to |
+|---|---|---|
+| `defaultModel` | string | `--model` default (alias `spark` → `gpt-5.3-codex-spark` still applies) |
+| `defaultEffort` | one of `none` / `minimal` / `low` / `medium` / `high` / `xhigh` | `--effort` default |
+| `defaultSandbox` | one of `read-only` / `workspace-write` / `danger-full-access` | `--sandbox` default |
+
+Example:
+
+```json
+{
+  "defaultModel": "gpt-5.4-mini",
+  "defaultEffort": "medium"
+}
+```
+
+**Behavior notes** (matter for debugging):
+
+- A malformed file (invalid JSON or top-level array/scalar) emits **one** stderr warning per process and is otherwise treated as empty — the plugin never crashes because of a bad config.
+- Unknown keys (typos like `defaultModelName` instead of `defaultModel`) emit **one** stderr warning per process so the silent-ignore does not bury bugs.
+- An explicit `$CODEX_PLUGIN_USER_CONFIG` path that exists but cannot be read warns once and is treated as empty — the plugin will NOT fall through to XDG / legacy candidates, because the explicit env override means "use exactly this file or no file."
+- Cache scope: the config is loaded once per process. Long-running brokers that fix a malformed file mid-flight need a restart to pick the change up. Production callers always pass `process.env`, so the implicit singleton is the documented contract.
+- Explicit empty CLI values (`--model ""`) are treated as "clear the default", **not** as "fall through to config" — CLI always wins.
+- On Windows, the home directory is resolved from `USERPROFILE` first (Git Bash / MSYS often sets `HOME=/c/Users/x` which the Node fs APIs handle inconsistently).
 
 ---
 

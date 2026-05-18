@@ -34,6 +34,10 @@ Execution mode rules:
   - `Wait for results`
   - `Run in background`
 
+Non-interactive fallback (PR-7.8, #223):
+
+- If `AskUserQuestion` is not available — typically because the user invoked Claude Code with `claude --print` or another non-interactive mode that disables interactive tools — do **not** attempt the prompt. Default to **background** (matches the "in every other case, including unclear size, recommend background" rule above) and proceed with the Background flow below. Mention "non-interactive mode detected, defaulting to background" once before launching so the operator sees the choice in the script output.
+
 Argument handling:
 - Preserve the user's arguments exactly.
 - Do not strip `--wait` or `--background` yourself.
