@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `codex.mjs` `runAppServerReview`: review path no longer hard-codes `sandbox: "read-only"`. It now forwards `options.sandbox` through the same `resolveSandboxValue` helper the task path uses, completing the v2 BREAKING #1 contract documented in `docs/MIGRATION_v2.0.md` row 1 (review / adversarial-review omit sandbox so the app-server inherits `~/.codex/config.toml` `sandbox_mode`). Adversarial-review was already on this path; only the structured-review entrypoint had been left on the legacy hard-code. Legacy v1.x behavior is still restorable with `CODEX_PLUGIN_SANDBOX_DEFAULT=read-only`
+- `codex-companion.mjs` `runStatusWatch`: replaced the content-`Set` line-dedup with a byte-offset watermark (`readLogTailFromOffset`). Repeated identical lines (heartbeats, structurally-equal progress events) are no longer silently dropped on `status --watch`. The 1000-entry dedup cap is removed; memory is bounded by the per-tick 8 MB read cap (matches `readLogTail`). Truncate / rotation resets the watermark; unterminated trailing lines flush on terminal-state exit
+- `lib/log-tail.mjs` (CDX-001 / CDX-002 / CDX-003 audit follow-up): watermark helper extracted into a dedicated lib module so tests can call it directly instead of mirroring the algorithm against fs primitives. First-tick now uses a single atomic `readLogTailFromOffset(file, 0, "")` call — eliminates the race window between the prior `readLogTail` + separate `fs.statSync().size` pair where any append landing between the two calls silently disappeared. A streaming `TextDecoder("utf-8", { fatal: false })` is threaded through the helper so a multi-byte UTF-8 sequence split across two ticks is buffered and reunified instead of finalizing as U+FFFD
+- `lib/codex.mjs` `__testHooks` (CDX-004 audit follow-up): expose `resolveSandboxValue` + `buildThreadParams` so the sandbox-default-omit contract test exercises the actual runtime helpers (omit when caller passes nothing, env override honored, explicit caller value wins) instead of relying on a source-level regex against `executeReviewWithModel`
+
 ## 1.2.0
 
 - `task --resume-id <thread-id>` — resume a specific Codex thread by app-server id, mutually exclusive with `--resume-last` / `--fresh` (#230)
