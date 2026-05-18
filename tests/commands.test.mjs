@@ -1,11 +1,14 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
+const COMPANION_SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 
 function read(relativePath) {
   return fs.readFileSync(path.join(PLUGIN_ROOT, relativePath), "utf8");
@@ -220,6 +223,64 @@ test("result and cancel commands are exposed as deterministic runtime entrypoint
   assert.match(cancel, /codex-companion\.mjs" cancel "\$ARGUMENTS"/);
   assert.match(resultHandling, /do not turn a failed or incomplete Codex run into a Claude-side implementation attempt/i);
   assert.match(resultHandling, /if Codex was never successfully invoked, do not generate a substitute answer at all/i);
+});
+
+test("axis-R: handleResult parses --wait + timeout-ms + poll-interval-ms (docs/README contract)", async () => {
+  // 2026-05-18 audit cycle axis R (docs/exploration/2026-05-18-163003) —
+  // README:326 and agents/codex-rescue.md:26 both document
+  // `/codex:result --wait <jobId>` as the blocking variant. The earlier
+  // handleResult body only accepted `--json` so `--wait` was silently
+  // consumed as the positional job id. This guard locks in the parse
+  // surface and the source-level wait dispatch so future refactors do
+  // not silently break the documented contract again.
+  const fs = await import("node:fs");
+  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const source = fs.readFileSync(url, "utf8");
+  const fn = source.match(/async function handleResult[\s\S]+?^\}/m);
+  assert.ok(fn, "handleResult block found");
+  assert.match(fn[0], /booleanOptions:\s*\[[^\]]*"json"[^\]]*"wait"[^\]]*\]/, "json + wait booleans declared");
+  assert.match(
+    fn[0],
+    /valueOptions:\s*\[[^\]]*"timeout-ms"[^\]]*"poll-interval-ms"[^\]]*\]/,
+    "timeout-ms + poll-interval-ms value options declared"
+  );
+  assert.match(fn[0], /waitForSingleJobSnapshot\(cwd, reference/, "wait path delegates to the proven status --wait helper");
+  assert.match(fn[0], /`result --wait` requires a job id/, "explicit error when reference missing");
+  assert.match(
+    fn[0],
+    /is still \$\{snapshot\.job\.status\} after \$\{snapshot\.timeoutMs\}ms/,
+    "timeout message surfaces non-terminal state + suggests --timeout-ms"
+  );
+  // Confirm the README workflow doc is finally honored end-to-end.
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.match(readme, /\/codex:result --wait/, "README still advertises /codex:result --wait");
+  const rescueAgent = read("agents/codex-rescue.md");
+  assert.match(rescueAgent, /\/codex:result --wait <jobId>/, "rescue agent still advertises /codex:result --wait <jobId>");
+  // commands/result.md docs the new flag explicitly so future readers see it.
+  const resultCmd = read("commands/result.md");
+  assert.match(resultCmd, /--wait \[--timeout-ms <ms>\] \[--poll-interval-ms <ms>\]/, "result.md argument-hint mentions --wait");
+  // Usage line surfaces it too.
+  assert.match(
+    source,
+    /node scripts\/codex-companion\.mjs result \[job-id\] \[--wait \[--timeout-ms <ms>\] \[--poll-interval-ms <ms>\]\] \[--json\]/,
+    "printUsage line documents --wait"
+  );
+  // main() must await handleResult so the wait loop is not fire-and-forget.
+  assert.match(source, /case "result":\s*\n\s*await handleResult\(argv\);/, "main() awaits handleResult");
+});
+
+test("axis-R CLI: `result --wait` without a job id exits non-zero with the documented error", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "codex-result-wait-test-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-result-wait-data-"));
+  const result = spawnSync(process.execPath, [COMPANION_SCRIPT, "result", "--wait"], {
+    cwd,
+    env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir, CODEX_PLUGIN_TELEMETRY_DISABLED: "1" },
+    encoding: "utf8"
+  });
+  assert.notEqual(result.status, 0, "exit non-zero");
+  assert.match(result.stderr, /`result --wait` requires a job id/, "documented error message");
+  fs.rmSync(cwd, { recursive: true, force: true });
+  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
 test("internal docs use task terminology for rescue runs", () => {
