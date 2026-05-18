@@ -17,6 +17,7 @@
     "plugins/codex/scripts/lib/codex.mjs",
     "plugins/codex/scripts/lib/fs.mjs",
     "plugins/codex/scripts/lib/process.mjs",
+    "plugins/codex/scripts/lib/log-tail.mjs",
     "plugins/codex/scripts/lib/app-server-protocol.d.ts",
     "plugins/codex/.generated/app-server-types/**/*.ts"
   ]

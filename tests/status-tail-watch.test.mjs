@@ -110,13 +110,36 @@ test("readTraceEvents skips malformed lines + caps to maxEvents", () => {
   assert.match(fn[0], /matches\.slice\(-maxEvents\)/, "tail-cap, not head-cap (preserves recent)");
 });
 
-test("runStatusWatch streams only new lines + exits on terminal status", () => {
+test("runStatusWatch streams new appends via byte-offset watermark + exits on terminal status", () => {
   const source = read(COMPANION);
   const fn = source.match(/async function runStatusWatch[\s\S]+?^\}/m);
   assert.ok(fn, "runStatusWatch block found");
-  assert.match(fn[0], /let lastPrinted = new Set\(\);/, "dedup set declared");
-  assert.match(fn[0], /if \(!lastPrinted\.has\(line\)\)/, "lines emitted only when new");
-  assert.match(fn[0], /lastEventTs/, "trace events deduped by ts");
+  // Regression guard for the content-Set dedup that silently dropped
+  // repeated lines (e.g. heartbeats). Replaced by a byte-offset watermark
+  // that streams every newly appended byte once and only once.
+  assert.doesNotMatch(
+    fn[0],
+    /lastPrinted/,
+    "content-Set dedup must be gone — repeated identical lines used to silently drop"
+  );
+  assert.match(fn[0], /let lastOffset = 0;/, "byte-offset watermark declared");
+  assert.match(fn[0], /let pendingPartial = "";/, "partial-line buffer declared");
+  assert.match(
+    fn[0],
+    /readLogTailFromOffset\(snapshot\.job\.logFile, lastOffset, pendingPartial[^)]*\)/,
+    "watermark helper invoked per non-first tick"
+  );
+  assert.match(
+    fn[0],
+    /new TextDecoder\("utf-8", \{ fatal: false \}\)/,
+    "CDX-002 — streaming TextDecoder buffers multi-byte UTF-8 across ticks"
+  );
+  assert.match(
+    fn[0],
+    /readLogTailFromOffset\(snapshot\.job\.logFile, 0, "", \{ decoder \}\)/,
+    "CDX-001 — first-tick uses atomic single-call read (no separate stat-then-tail race)"
+  );
+  assert.match(fn[0], /lastEventTs/, "trace events still deduped by ts");
   assert.match(
     fn[0],
     /if \(!isActiveJobStatus\(snapshot\.job\.status\)\)/,
@@ -129,9 +152,136 @@ test("runStatusWatch streams only new lines + exits on terminal status", () => {
   );
   assert.match(
     fn[0],
-    /if \(lastPrinted\.size > 1000\)/,
-    "dedup set bounded to avoid unbounded growth on long watches"
+    /if \(pendingPartial !== ""\)/,
+    "terminal-state flush emits any unterminated trailing line"
   );
+});
+
+test("readLogTailFromOffset (lib/log-tail.mjs): module exports + signature", async () => {
+  // CDX-003 — helper was extracted from codex-companion.mjs so it can be
+  // imported and called directly by tests. companion.mjs runs main() at
+  // import time and cannot be loaded as a library.
+  const mod = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  assert.equal(typeof mod.readLogTailFromOffset, "function", "named export present");
+  assert.equal(mod.READ_LOG_TAIL_FULL_READ_CAP_BYTES, 8 * 1024 * 1024, "8 MB cap exported");
+  assert.equal(mod.READ_LOG_TAIL_PARTIAL_READ_BYTES, 256 * 1024, "256 KB partial-window exported");
+});
+
+test("readLogTailFromOffset (functional): same-line repetition surfaces every line", async () => {
+  // CDX-003 — real call against the production helper. Two identical
+  // lines appended in one tick must surface as TWO emissions. The old
+  // content-Set dedup would have dropped one.
+  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-test-"));
+  try {
+    const log = path.join(tmp, "job.log");
+    fs.writeFileSync(log, "tick\ntick\n");
+    const result = readLogTailFromOffset(log, 0, "");
+    assert.deepEqual(result.lines, ["tick", "tick"], "both identical lines surface");
+    assert.equal(result.nextOffset, fs.statSync(log).size, "watermark anchored at file size");
+    assert.equal(result.pendingPartial, "", "no partial line buffered");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readLogTailFromOffset (functional): no-new-bytes fast path returns no lines", async () => {
+  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-empty-"));
+  try {
+    const log = path.join(tmp, "job.log");
+    fs.writeFileSync(log, "one\ntwo\n");
+    const first = readLogTailFromOffset(log, 0, "");
+    const second = readLogTailFromOffset(log, first.nextOffset, first.pendingPartial);
+    assert.deepEqual(second.lines, [], "no new bytes -> no lines");
+    assert.equal(second.nextOffset, first.nextOffset, "watermark unchanged on idle tick");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readLogTailFromOffset (functional): partial-line is held back across ticks", async () => {
+  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-partial-"));
+  try {
+    const log = path.join(tmp, "job.log");
+    fs.writeFileSync(log, "complete\nhalf");
+    const first = readLogTailFromOffset(log, 0, "");
+    assert.deepEqual(first.lines, ["complete"], "complete line emitted");
+    assert.equal(first.pendingPartial, "half", "unterminated trailing fragment held back");
+    fs.appendFileSync(log, "-rest\nnext\n");
+    const second = readLogTailFromOffset(log, first.nextOffset, first.pendingPartial);
+    assert.deepEqual(
+      second.lines,
+      ["half-rest", "next"],
+      "partial reunited with continuation on next tick"
+    );
+    assert.equal(second.pendingPartial, "", "no leftover after newline-terminated line");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readLogTailFromOffset (functional): truncate / rotation resets the watermark", async () => {
+  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-rotate-"));
+  try {
+    const log = path.join(tmp, "job.log");
+    fs.writeFileSync(log, "old1\nold2\n");
+    const first = readLogTailFromOffset(log, 0, "");
+    assert.deepEqual(first.lines, ["old1", "old2"]);
+    // Truncate: rewrite the file with smaller content.
+    fs.writeFileSync(log, "fresh\n");
+    const second = readLogTailFromOffset(log, first.nextOffset, first.pendingPartial);
+    assert.deepEqual(
+      second.lines,
+      ["fresh"],
+      "rotation -> watermark reset -> new content surfaces"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readLogTailFromOffset (functional, CDX-002): TextDecoder buffers multi-byte UTF-8 across ticks", async () => {
+  // The literal `buf.toString("utf8")` decoder finalizes incomplete
+  // sequences as U+FFFD on every read, so a multi-byte char split across
+  // two ticks would lose 2-3 bytes permanently. Threading a stateful
+  // TextDecoder with `{ stream: true }` lets the helper buffer the
+  // trailing continuation bytes inside the decoder and reunify them on
+  // the next read.
+  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-utf8-"));
+  try {
+    const log = path.join(tmp, "job.log");
+    // "한" = E1 95 9C in UTF-8. Split mid-char: tick 1 = E1 95, tick 2 = 9C + "\n".
+    const han = Buffer.from("한", "utf16le"); // not what we need; do it raw:
+    const hanBytes = Buffer.from([0xed, 0x95, 0x9c]); // U+D55C 한
+    fs.writeFileSync(log, hanBytes.slice(0, 2));
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    const first = readLogTailFromOffset(log, 0, "", { decoder });
+    assert.deepEqual(first.lines, [], "first tick: no complete line yet");
+    fs.appendFileSync(log, Buffer.concat([hanBytes.slice(2), Buffer.from("\n")]));
+    const second = readLogTailFromOffset(log, first.nextOffset, first.pendingPartial, { decoder });
+    assert.deepEqual(
+      second.lines,
+      ["한"],
+      "multi-byte char split across two ticks reunified by streaming decoder"
+    );
+    // Counter-check: without the streaming decoder, the same scenario
+    // produces U+FFFD because toString("utf8") finalizes immediately.
+    fs.writeFileSync(log, hanBytes.slice(0, 2));
+    const nonStreamFirst = readLogTailFromOffset(log, 0, "");
+    fs.appendFileSync(log, Buffer.concat([hanBytes.slice(2), Buffer.from("\n")]));
+    const nonStreamSecond = readLogTailFromOffset(log, nonStreamFirst.nextOffset, nonStreamFirst.pendingPartial);
+    assert.notDeepEqual(
+      nonStreamSecond.lines,
+      ["한"],
+      "without decoder: U+FFFD corruption is detected (regression sentinel)"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("renderStatusTailReport surfaces trace id + log path + tail lines + events", () => {
@@ -259,8 +409,25 @@ test("audit #1: buildSingleJobSnapshot threads reap through to listJobs", () => 
 
 test("audit #2: readLogTail guards on stat size + falls back to partial read", () => {
   const source = read(COMPANION);
-  assert.match(source, /READ_LOG_TAIL_FULL_READ_CAP_BYTES = 8 \* 1024 \* 1024/, "8 MB cap declared");
-  assert.match(source, /READ_LOG_TAIL_PARTIAL_READ_BYTES = 256 \* 1024/, "256 KB partial-read window");
+  // CDX-003 refactor — constants moved to lib/log-tail.mjs and re-imported.
+  // companion.mjs now declares the names via `import`, not literal value.
+  assert.match(
+    source,
+    /import\s*\{[\s\S]*?READ_LOG_TAIL_FULL_READ_CAP_BYTES[\s\S]*?READ_LOG_TAIL_PARTIAL_READ_BYTES[\s\S]*?\}\s*from\s*"\.\/lib\/log-tail\.mjs"/,
+    "constants imported from lib/log-tail.mjs"
+  );
+  const libSource = read(path.join(ROOT, "plugins", "codex", "scripts", "lib", "log-tail.mjs"));
+  assert.match(
+    libSource,
+    /READ_LOG_TAIL_FULL_READ_CAP_BYTES = 8 \* 1024 \* 1024/,
+    "8 MB cap declared in lib"
+  );
+  assert.match(
+    libSource,
+    /READ_LOG_TAIL_PARTIAL_READ_BYTES = 256 \* 1024/,
+    "256 KB partial-read window declared in lib"
+  );
+  // readLogTail itself still lives in companion and uses the imported caps.
   const fn = source.match(/function readLogTail[\s\S]+?^\}/m);
   assert.ok(fn);
   assert.match(fn[0], /fs\.statSync\(logFile\)/, "stat before read");

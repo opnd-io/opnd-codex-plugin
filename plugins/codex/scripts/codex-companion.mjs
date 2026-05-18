@@ -73,6 +73,11 @@ import {
   renderTaskResult
 } from "./lib/render.mjs";
 import { createTraceId, emitEvent } from "./lib/telemetry.mjs";
+import {
+  readLogTailFromOffset,
+  READ_LOG_TAIL_FULL_READ_CAP_BYTES,
+  READ_LOG_TAIL_PARTIAL_READ_BYTES
+} from "./lib/log-tail.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
@@ -1626,8 +1631,9 @@ function handleApprovalDecision(argv, action) {
 // 8× the per-job `rendered` cap (`MAX_RENDERED_BYTES` in tracked-jobs.mjs)
 // so practical workloads stay under it; oversize falls back to reading
 // only the trailing slice from the file end.
-const READ_LOG_TAIL_FULL_READ_CAP_BYTES = 8 * 1024 * 1024;
-const READ_LOG_TAIL_PARTIAL_READ_BYTES = 256 * 1024;
+// The two cap constants are owned by lib/log-tail.mjs (which also hosts
+// the watermark helper used by `runStatusWatch`); re-imported here so
+// readLogTail keeps the original semantics.
 
 function readLogTail(logFile, lines) {
   if (!logFile) return [];
@@ -1773,10 +1779,17 @@ function renderStatusTailReport(snapshot, tailLines, traceEvents) {
 
 async function runStatusWatch(cwd, reference, { tailLines, intervalMs, env = process.env, output = process.stdout, isTty = process.stdout.isTTY === true }) {
   const interval = Math.max(250, Number(intervalMs) || DEFAULT_STATUS_WATCH_INTERVAL_MS);
-  // Track which lines have already been printed so the watch loop only emits
-  // new lines as they arrive — otherwise every tick would re-print the full
-  // tail and the terminal would scroll uncontrollably.
-  let lastPrinted = new Set();
+  // Byte-offset watermark — each tick only emits bytes appended since the
+  // last read, so duplicate lines (e.g. heartbeats) are preserved. See
+  // lib/log-tail.mjs for the helper contract.
+  let lastOffset = 0;
+  let pendingPartial = "";
+  // CDX-002 — one streaming TextDecoder per watch loop. `{ fatal: false }`
+  // tolerates malformed bytes; the helper passes `{ stream: true }` so a
+  // multi-byte UTF-8 sequence split across two ticks is buffered inside
+  // the decoder and finalized on the next read. Without this the slice
+  // boundary would coerce trailing continuation bytes to U+FFFD.
+  const decoder = new TextDecoder("utf-8", { fatal: false });
   let lastEventTs = "";
   let firstTick = true;
   while (true) {
@@ -1785,7 +1798,6 @@ async function runStatusWatch(cwd, reference, { tailLines, intervalMs, env = pro
     // from `running` -> `failed/terminated` and the watch exits instead
     // of spinning forever against the dead PID.
     const snapshot = buildSingleJobSnapshot(cwd, reference, { reap: true });
-    const tail = readLogTail(snapshot.job.logFile, tailLines);
     const traceEvents = readTraceEvents(snapshot.job.traceId, { env });
 
     if (firstTick) {
@@ -1795,15 +1807,32 @@ async function runStatusWatch(cwd, reference, { tailLines, intervalMs, env = pro
         output.write(`Log: ${snapshot.job.logFile}\n`);
       }
       output.write(`Watch interval: ${interval}ms\n\n`);
+      // CDX-001 — atomic first-tick: single stat + bounded read inside
+      // readLogTailFromOffset, returning *all* complete lines plus the
+      // next watermark. Slicing to the visible window happens here so
+      // there is no race between the initial display and the watermark
+      // capture (the earlier `readLogTail` + separate `fs.statSync` pair
+      // dropped bytes that landed between the two calls).
+      const initial = readLogTailFromOffset(snapshot.job.logFile, 0, "", { decoder });
+      const requested = Math.max(0, Math.floor(Number(tailLines) || 0));
+      const visible = requested === 0 || initial.lines.length <= requested
+        ? initial.lines
+        : initial.lines.slice(-requested);
+      for (const line of visible) {
+        output.write(`${line}\n`);
+      }
+      lastOffset = initial.nextOffset;
+      pendingPartial = initial.pendingPartial;
       firstTick = false;
+    } else {
+      const next = readLogTailFromOffset(snapshot.job.logFile, lastOffset, pendingPartial, { decoder });
+      for (const line of next.lines) {
+        output.write(`${line}\n`);
+      }
+      lastOffset = next.nextOffset;
+      pendingPartial = next.pendingPartial;
     }
 
-    for (const line of tail) {
-      if (!lastPrinted.has(line)) {
-        output.write(`${line}\n`);
-        lastPrinted.add(line);
-      }
-    }
     for (const ev of traceEvents) {
       if (ev.ts > lastEventTs) {
         const elapsed = typeof ev.elapsedMs === "number" ? ` ${ev.elapsedMs}ms` : "";
@@ -1814,14 +1843,14 @@ async function runStatusWatch(cwd, reference, { tailLines, intervalMs, env = pro
     }
 
     if (!isActiveJobStatus(snapshot.job.status)) {
+      // Final flush — drain any partial trailing line (writer closed
+      // without `\n`, e.g. crash dump) so it does not silently disappear.
+      if (pendingPartial !== "") {
+        output.write(`${pendingPartial}\n`);
+        pendingPartial = "";
+      }
       output.write(`\nJob ${snapshot.job.id} reached terminal status: ${snapshot.job.status}\n`);
-      return { exitedBecause: "terminal", snapshot, tail, traceEvents };
-    }
-    // Avoid unbounded set growth on extremely chatty jobs — keep the most
-    // recent ~1000 unique lines so the dedup still works for the visible
-    // window without leaking memory on multi-hour watches.
-    if (lastPrinted.size > 1000) {
-      lastPrinted = new Set(Array.from(lastPrinted).slice(-500));
+      return { exitedBecause: "terminal", snapshot };
     }
     // TTY-only: stop watching cleanly on a single Ctrl+C — outside a TTY we
     // assume the caller (CI / scripted invocation) wants to read until the
