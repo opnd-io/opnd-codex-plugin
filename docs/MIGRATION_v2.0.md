@@ -128,6 +128,13 @@ These all default to v1.x behavior unless you explicitly opt in:
 | `CODEX_BROKER_IDLE_INTERVAL_MS` | Override broker idle poll interval (default 2 min, was 5 min in v1.x) |
 | `CODEX_FINALIZING_PHASE_TIMEOUT_MS` | Override the finalizing-phase fail-fast timeout (default 5 min; disable with `0`) |
 
+## New v2.1.0 env vars (observability)
+
+| Env var | Effect |
+|---|---|
+| `CODEX_PLUGIN_TELEMETRY_DISABLED` | Suppress the JSONL telemetry stream entirely (default off — telemetry is on, local-only, at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`). Set to `1`, `true`, or `yes` to skip every event write. |
+| `CODEX_PLUGIN_TELEMETRY_DEBUG` | When `=1`, surface swallowed telemetry write errors on stderr instead of silently dropping them. Useful for diagnosing missing-event reports — leave unset in normal use. |
+
 ---
 
 ## FAQ

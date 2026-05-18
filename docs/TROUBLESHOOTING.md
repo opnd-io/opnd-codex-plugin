@@ -314,7 +314,32 @@ If your symptom does not match any section above:
    - exact command
    - `/codex:setup --json` output
    - relevant log excerpt from `~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/<job-id>.log`
+   - relevant JSONL events from `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl` filtered by your job's `traceId` (printed in the job log header as `trace.id=<16-char-hex>`), e.g.: `jq -c 'select(.traceId == "abcdef1234567890")' ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`
    - OS / shell / Node / codex-cli versions
+
+### Telemetry stream — what it is and how to opt out
+
+v2.1.0 added an append-only JSONL telemetry stream at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`. Each job emits at minimum `enqueued` (background only) / `started` / one of `completed | failed | cancelled | terminated | timeout`, all tagged with a 16-character `traceId` so events for one logical run can be stitched back together across the broker / worker boundary. The stream is local-only — nothing is sent anywhere. It exists for the user to grep their own history when filing a bug.
+
+Schema (v1):
+
+```json
+{"schemaVersion":1,"ts":"2026-05-18T10:50:00.123Z","event":"started","traceId":"abc...","jobId":"task-...","jobClass":"rescue","phase":"starting","cwd":"/repo/x"}
+```
+
+Opt-out (every event short-circuits before any filesystem access):
+
+```bash
+export CODEX_PLUGIN_TELEMETRY_DISABLED=1
+```
+
+Debug missing events (surface swallowed write errors on stderr):
+
+```bash
+export CODEX_PLUGIN_TELEMETRY_DEBUG=1
+```
+
+If the file is missing entirely after running a job, check the opt-out env var first, then `CODEX_PLUGIN_TELEMETRY_DEBUG=1` + re-run to see the underlying error.
 
 Known investigations in progress (not yet fixed in v2.0.0):
 

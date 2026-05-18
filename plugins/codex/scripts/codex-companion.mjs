@@ -70,6 +70,7 @@ import {
   renderStatusReport,
   renderTaskResult
 } from "./lib/render.mjs";
+import { createTraceId, emitEvent } from "./lib/telemetry.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
@@ -988,13 +989,23 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
+  // PR-9.2 — generate a correlation id at enqueue time so every downstream
+  // event (start / progress / completion) can be stitched back to this run.
+  // The id is also surfaced in the job log header for ad-hoc grep, and
+  // stashed inside the request payload so the detached worker inherits it
+  // without an extra plumbing channel.
+  const traceId = createTraceId();
+  appendLogLine(logFile, `trace.id=${traceId}`);
+  const requestWithTrace = { ...request, traceId };
+
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
     pid: null,
     logFile,
-    request
+    traceId,
+    request: requestWithTrace
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   // The state.json index is keyed by-job and read on every status/list call. Strip the
@@ -1014,15 +1025,30 @@ function enqueueBackgroundTask(cwd, job, request) {
     pid: spawnedPid
   });
 
+  // PR-9.1 — every queued job emits one `enqueued` event with the
+  // identifying metadata. Failure-tolerant: a swallowed write is logged to
+  // stderr only when CODEX_PLUGIN_TELEMETRY_DEBUG=1.
+  emitEvent("enqueued", {
+    traceId,
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "queued",
+    cwd,
+    model: request?.model,
+    effort: request?.effort
+  });
+
   return {
     payload: {
       jobId: job.id,
       status: "queued",
       title: job.title,
       summary: job.summary,
-      logFile
+      logFile,
+      traceId
     },
-    logFile
+    logFile,
+    traceId
   };
 }
 
@@ -1679,6 +1705,30 @@ async function handleCancel(argv) {
     pendingApprovalCount: 0,
     errorMessage: "Cancelled by user.",
     completedAt
+  });
+
+  // PR-9.1 — cancelled event. elapsedMs is best-effort; if the job never
+  // recorded a startedAt (cancelled while still queued) it stays undefined
+  // rather than zero so dashboards do not confuse the two.
+  //
+  // PR-9.1 audit finding #3 — when both `existing.traceId` and
+  // `job.traceId` are absent (job cancelled before runTrackedJob's start
+  // emit had a chance to attach one), synthesize a fresh trace id so the
+  // event still satisfies the "every event has a traceId" invariant
+  // documented in TROUBLESHOOTING.md. The synthesized id is single-use
+  // (this event only) and intentionally not persisted back to the job
+  // record — downstream correlation against a missing-from-the-start job
+  // is impossible by construction.
+  const startedAtMs = Date.parse(existing.startedAt ?? job.startedAt ?? "");
+  emitEvent("cancelled", {
+    traceId: existing.traceId ?? job.traceId ?? createTraceId(),
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "cancelled",
+    cwd: workspaceRoot,
+    elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
+    turnInterruptAttempted: interrupt.attempted,
+    turnInterrupted: interrupt.interrupted
   });
 
   const payload = {

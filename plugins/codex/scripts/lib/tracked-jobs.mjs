@@ -2,6 +2,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { getProcessStartTimeRaw, readJobFile, resolveJobFile, resolveJobLogFile, updateJobFile, upsertJob, writeJobFile } from "./state.mjs";
+import { createTraceId, emitEvent } from "./telemetry.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -207,6 +208,24 @@ function markJobTerminated(job, runningRecord, options, signal) {
   } catch {
     // ignore
   }
+  // PR-9.1 — terminated event. Best-effort: emitEvent itself never throws,
+  // but we still wrap to match the rest of this teardown path's belt-and-
+  // suspenders error swallowing.
+  try {
+    const startedAtMs = Date.parse(runningRecord.startedAt ?? "");
+    emitEvent("terminated", {
+      traceId: runningRecord.traceId ?? job.traceId,
+      jobId: job.id,
+      jobClass: job.jobClass ?? job.kind ?? "task",
+      phase: "terminated",
+      cwd: job.workspaceRoot,
+      elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
+      errorClass: "other",
+      signal
+    });
+  } catch {
+    // ignore
+  }
 }
 
 function installForegroundSignalHandlers(job, runningRecord, options) {
@@ -247,20 +266,57 @@ function installForegroundSignalHandlers(job, runningRecord, options) {
 }
 
 export async function runTrackedJob(job, runner, options = {}) {
+  const startedAt = nowIso();
+  // PR-9.2 — prefer the trace id propagated by enqueueBackgroundTask (or
+  // any other upstream). Foreground tasks have no prior emit, so synthesize
+  // one here so their lifecycle still appears as a single correlated thread
+  // in the telemetry stream.
+  const traceId = job.traceId ?? createTraceId();
+  const startedAtMs = Date.parse(startedAt);
   const runningRecord = {
     ...job,
     status: "running",
-    startedAt: nowIso(),
+    startedAt,
     phase: "starting",
     pid: process.pid,
+    traceId,
     // PR-1.1 (#222) — record the OS-reported birth time so the reaper can
     // detect PID reuse (kill(pid,0) succeeds against a recycled PID, but the
     // birth time of the new process will not match this recorded value).
     processStartedAt: getProcessStartTimeRaw(process.pid),
     logFile: options.logFile ?? job.logFile ?? null
   };
-  writeJobFile(job.workspaceRoot, job.id, runningRecord);
-  upsertJob(job.workspaceRoot, runningRecord);
+  // PR-9.1 audit finding #2 — if the pre-run state persistence throws,
+  // both the `started` emit and the throw-path `failed` emit (inside the
+  // try/catch below) would be skipped, leaving the job invisible to
+  // telemetry. Wrap the state writes so a failure here still emits a
+  // `failed` event with the trace id we already have, then re-throws.
+  try {
+    writeJobFile(job.workspaceRoot, job.id, runningRecord);
+    upsertJob(job.workspaceRoot, runningRecord);
+  } catch (initError) {
+    emitEvent("failed", {
+      traceId,
+      jobId: job.id,
+      jobClass: job.jobClass ?? job.kind ?? "task",
+      phase: "starting",
+      cwd: job.workspaceRoot,
+      errorClass: "other",
+      errorMessage: initError instanceof Error ? initError.message : String(initError),
+      stage: "pre-run-state-persist"
+    });
+    throw initError;
+  }
+
+  // PR-9.1 — start event. Includes the cwd/jobClass so consumers can split
+  // the stream by repo / by command without re-reading the per-job records.
+  emitEvent("started", {
+    traceId,
+    jobId: job.id,
+    jobClass: job.jobClass ?? job.kind ?? "task",
+    phase: "starting",
+    cwd: job.workspaceRoot
+  });
 
   const releaseSignalHandlers = installForegroundSignalHandlers(job, runningRecord, options);
 
@@ -291,6 +347,20 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt
     });
     appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+
+    // PR-9.1 — terminal event for the success path (or runner-reported
+    // non-zero exit). elapsedMs is wall-clock since startedAt to keep the
+    // stream meaningful across long pauses.
+    emitEvent(completionStatus, {
+      traceId,
+      jobId: job.id,
+      jobClass: job.jobClass ?? job.kind ?? "task",
+      phase: completionStatus === "completed" ? "done" : "failed",
+      cwd: job.workspaceRoot,
+      elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
+      threadId: execution.threadId ?? undefined
+    });
+
     return execution;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -313,6 +383,22 @@ export async function runTrackedJob(job, runner, options = {}) {
       errorMessage,
       completedAt
     });
+
+    // PR-9.1 — terminal event for the throw path. We deliberately do not
+    // try to classify the error here (errorClass is left undefined) so the
+    // emit stays cheap and unambiguous. Downstream code that has more
+    // context (rate-limit / auth / sandbox / timeout) can emit a dedicated
+    // `failed` event with errorClass set before the throw reaches us.
+    emitEvent("failed", {
+      traceId,
+      jobId: job.id,
+      jobClass: job.jobClass ?? job.kind ?? "task",
+      phase: "failed",
+      cwd: job.workspaceRoot,
+      elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
+      errorMessage
+    });
+
     throw error;
   } finally {
     releaseSignalHandlers();
