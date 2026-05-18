@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
+import { cleanProtocolLine } from "./jsonl.mjs";
 import { buildCommandInvocation, terminateProcessTree } from "./process.mjs";
 
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
@@ -353,16 +354,22 @@ class AppServerClientBase {
     }
   }
 
-  handleLine(line) {
-    if (!line.trim()) {
+  handleLine(rawLine) {
+    // PR-G-A (#23 / upstream #24 + #311): drop terminal/locale noise
+    // before JSON.parse. Empty lines, ANSI escape sequences (bracketed
+    // paste, etc.) and localized OS prefixes (CP-950 mojibaked Windows
+    // taskkill output) used to tear the connection down via handleExit.
+    // See lib/jsonl.mjs for the full rationale.
+    const candidate = cleanProtocolLine(rawLine);
+    if (candidate === null) {
       return;
     }
 
     let message;
     try {
-      message = JSON.parse(line);
+      message = JSON.parse(candidate);
     } catch (error) {
-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
+      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line: rawLine }));
       return;
     }
 
