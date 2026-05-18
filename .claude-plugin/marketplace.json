@@ -1,19 +1,19 @@
 {
-  "name": "openai-codex",
+  "name": "opnd-io-codex",
   "owner": {
-    "name": "OpenAI"
+    "name": "opnd-io"
   },
   "metadata": {
-    "description": "Codex plugins to use in Claude Code for delegation and code review.",
+    "description": "Unofficial Claude Code plugin for running the OpenAI Codex CLI. Fork of openai/codex-plugin-cc under Apache 2.0; not affiliated with or endorsed by OpenAI or Anthropic.",
     "version": "2.1.0"
   },
   "plugins": [
     {
       "name": "codex",
-      "description": "Use Codex from Claude Code to review code or delegate tasks.",
+      "description": "Unofficial Claude Code plugin that delegates tasks and reviews to the OpenAI Codex CLI (requires @openai/codex installed separately).",
       "version": "2.1.0",
       "author": {
-        "name": "OpenAI"
+        "name": "opnd-io"
       },
       "source": "./plugins/codex"
     }

@@ -1,9 +1,13 @@
-# Codex plugin for Claude Code
+# Codex plugin for Claude Code (opnd-io fork)
 
-> **opnd-io fork**, derived from [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) under the Apache License 2.0.
-> Tracks the upstream and adds the v2.0.0 split-train hardening (stability / Windows / auth / sandbox-default-omit / Codex-home-isolation) plus the v2.1.0 observability + UX changes (JSONL telemetry with trace.id, `/codex:status --tail/--watch`, user-level config defaults, opt-in completion bell, non-UTF-8 locale mitigation, non-interactive command fallbacks). See [`NOTICE`](NOTICE) and [`plugins/codex/CHANGELOG.md`](plugins/codex/CHANGELOG.md) for the full modification log.
+> **Unofficial fork maintained by opnd-io / tgkim. Not affiliated with, sponsored by, or endorsed by OpenAI or Anthropic.**
+>
+> Derived from [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) under the Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+> Tracks the upstream and adds the v2.0.0 split-train hardening (stability / Windows / auth / sandbox-default-omit / Codex-home-isolation) plus the v2.1.0 observability + UX changes (JSONL telemetry with trace.id, `/codex:status --tail/--watch`, user-level config defaults, opt-in completion bell, non-UTF-8 locale mitigation, non-interactive command fallbacks). See [`plugins/codex/CHANGELOG.md`](plugins/codex/CHANGELOG.md) for the full modification log.
+>
+> **Requires a separately installed OpenAI Codex CLI ([`@openai/codex`](https://www.npmjs.com/package/@openai/codex))** plus a ChatGPT subscription or an OpenAI API key. Use of Codex / OpenAI services is governed by OpenAI's applicable terms, policies, account limits, and pricing. This plugin runs Codex CLI as a local subprocess from Claude Code; prompts and files supplied to the plugin may be processed by OpenAI services depending on your Codex configuration.
 
-Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
+Use the OpenAI Codex CLI from inside Claude Code for code reviews or to delegate tasks.
 
 This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
 they already have.
@@ -27,13 +31,13 @@ they already have.
 Add the marketplace in Claude Code:
 
 ```bash
-/plugin marketplace add openai/codex-plugin-cc
+/plugin marketplace add opnd-io/codex-plugin-cc
 ```
 
 Install the plugin:
 
 ```bash
-/plugin install codex@openai-codex
+/plugin install codex@opnd-io-codex
 ```
 
 Reload plugins:
