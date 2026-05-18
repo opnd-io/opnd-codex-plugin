@@ -37,6 +37,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task-resume-candidate -
 - If the user chooses a new thread, add `--fresh` before routing to the subagent.
 - If the helper reports `available: false`, do not ask. Route normally.
 
+Non-interactive fallback (PR-7.8, #223):
+
+- If `AskUserQuestion` is not available — typically because the user invoked Claude Code with `claude --print` or another non-interactive mode that disables interactive tools — do **not** attempt the resume prompt. Default to **starting a new Codex thread** (equivalent to the user picking `--fresh`) rather than silently inheriting a prior session that the operator may not even know exists. Mention "non-interactive mode detected, starting a fresh Codex thread" once before forwarding to the rescue subagent so the operator sees the choice in the script output.
+
 Operating rules:
 
 - The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` and return that command's stdout as-is.

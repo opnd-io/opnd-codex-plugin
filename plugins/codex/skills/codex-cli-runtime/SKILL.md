@@ -52,7 +52,13 @@ Safety rules:
 - If the Bash call fails or Codex cannot be invoked, return nothing.
 - **Worktree isolation guard (#198):** when the parent invoked the rescue subagent inside a worktree (cwd matches `.git/worktrees/*` or `*/.claude/worktrees/*`, or the parent passed `isolation: "worktree"`), never use `--background` and never `run_in_background` the Bash call — even if the user passed `--background`. Drop the flag and run foreground only. Otherwise the host harness cleans the worktree as soon as the subagent returns, leaving Codex pinned in a deleted directory. Foreground keeps the Bash alive so cleanup waits for the result. This is the only situation in which an explicit user `--background` is overridden.
 
-Foreground runtime hint:
-- The upstream Claude Code Bash tool times out at ~600 s. A long-running foreground rescue (deep refactor, multi-file rewrite, full repo audit) will hit that limit and leave the user with no jobId to resume.
-- When the forwarded request reads as long-running and the user did not pass `--background`, surface a single line before the `task` call: tell the user about the 600 s Bash limit and recommend they re-issue with `--background` so the job can be polled via `/codex:status` and `/codex:result`. Then forward as foreground anyway — never auto-switch on the user's behalf.
-- If the user already passed `--background`, no hint is needed: forward as background and let `enqueueBackgroundTask` return the jobId.
+Foreground runtime hint (long-running heuristic, #122):
+- The upstream Claude Code Bash tool enforces a hard ~600 s timeout on every invocation. A long-running foreground rescue (deep refactor, multi-file rewrite, full repo audit) will hit that limit, the Bash call will be killed, and the user is left with no jobId to resume — the broker's task may still be alive but it has no caller waiting for it.
+- When the forwarded request reads as long-running and the user did not pass `--background`, the rescue subagent must surface a single short routing-notice line **before** the `task` invocation. The line must:
+  1. State the ~600 s Bash ceiling and that a long foreground rescue may be killed before Codex finishes.
+  2. Recommend re-issuing the same request with `--background` so the run is enqueued and a jobId is returned immediately.
+  3. Point at the poll commands explicitly: `/codex:status <jobId>` (or `/codex:status --wait <jobId>` to block until terminal) and `/codex:result <jobId>` (or `/codex:result --wait <jobId>`) to retrieve once done.
+  4. Then forward the original request as foreground exactly as the user asked — **never auto-switch on the user's behalf**.
+- The hint is the only Claude-side text the rescue subagent is allowed to add to its response. It is a routing notice, not a commentary on Codex output. Place it strictly **before** the verbatim Codex output; never append anything after.
+- If the user already passed `--background`, do not emit the hint: the user has already chosen background, and the bash call will return the jobId from `enqueueBackgroundTask` immediately.
+- This hint is intentionally not a hard `--background` auto-promote: that would re-introduce the #324 stub-return failure mode this SKILL was rewritten to prevent.

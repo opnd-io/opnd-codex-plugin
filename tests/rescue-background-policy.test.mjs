@@ -62,22 +62,77 @@ test("agent: codex-rescue removes the stale 'complicated → background' heurist
 test("agent: codex-rescue surfaces the 600s foreground hint without switching modes", () => {
   const agent = read("agents/codex-rescue.md");
 
+  // PR-3.6 (#122): hint is now under an explicit "Long-running hint (#122)"
+  // heading and spells out the poll commands the user should run next.
   assert.match(
     agent,
-    /600 ?s Bash limit applies to foreground rescues/i,
-    "agent mentions the 600s Bash limit"
+    /Long-running hint \(#122\)/,
+    "agent labels the hint with the originating issue"
   );
   assert.match(
     agent,
-    /re-issue with `--background`/i,
-    "agent recommends user re-issues with --background"
+    /~?600 ?s/i,
+    "agent mentions the 600s Bash ceiling"
   );
-  // The hint must say "still run foreground" so the agent does not silently
-  // upgrade.
   assert.match(
     agent,
-    /still run foreground exactly as requested/i,
+    /re-issu(?:e|ing) the same request with `--background`/i,
+    "agent recommends re-issue with --background"
+  );
+  assert.match(
+    agent,
+    /`\/codex:status <jobId>`.*`\/codex:status --wait <jobId>`/is,
+    "agent points at both status and status --wait"
+  );
+  assert.match(
+    agent,
+    /`\/codex:result <jobId>`.*`\/codex:result --wait <jobId>`/is,
+    "agent points at both result and result --wait"
+  );
+  assert.match(
+    agent,
+    /still run the original foreground request/i,
     "agent forwards foreground even after the hint"
+  );
+  assert.match(
+    agent,
+    /do not switch modes on the user's behalf/i,
+    "agent explicitly bans silent mode switch"
+  );
+});
+
+test("agent: codex-rescue 'Codex output handling' allows the hint as the single exception to no-commentary", () => {
+  const agent = read("agents/codex-rescue.md");
+
+  // PR-3.6: the old "Response style: no commentary before or after" rule was
+  // in direct contradiction with PR-3.3's "surface a one-line hint before
+  // task". The section has been renamed and now spells out the carve-out
+  // explicitly.
+  assert.match(
+    agent,
+    /Codex output handling/,
+    "section renamed from 'Response style' to 'Codex output handling'"
+  );
+  assert.match(
+    agent,
+    /Return the forwarded `codex-companion` output verbatim/i,
+    "verbatim return rule still in force"
+  );
+  assert.match(
+    agent,
+    /only.*Claude-side text allowed in the response is the single-line long-running routing notice/i,
+    "the long-running hint is the documented exception"
+  );
+  assert.match(
+    agent,
+    /place it \*\*before\*\* the verbatim Codex output; never append text after the output/i,
+    "hint goes strictly before, never after"
+  );
+  // Old contradictory wording removed.
+  assert.doesNotMatch(
+    agent,
+    /^Response style:$/m,
+    "old 'Response style:' heading removed"
   );
 });
 
@@ -124,12 +179,107 @@ test("skill: codex-cli-runtime forbids subagent-level auto-background", () => {
 test("skill: codex-cli-runtime documents the foreground 600s hint surface", () => {
   const skill = read("skills/codex-cli-runtime/SKILL.md");
 
-  assert.match(skill, /Foreground runtime hint/, "hint section heading present");
-  assert.match(skill, /600 ?s/, "600s mentioned");
+  // PR-3.6: section heading carries the originating issue + the hint now
+  // names the four poll commands explicitly.
+  assert.match(
+    skill,
+    /Foreground runtime hint \(long-running heuristic, #122\)/,
+    "hint section heading carries the #122 reference"
+  );
+  assert.match(skill, /~?600 ?s/i, "600s mentioned");
+  assert.match(
+    skill,
+    /`\/codex:status <jobId>`.*`\/codex:status --wait <jobId>`/is,
+    "skill points at both status and status --wait"
+  );
+  assert.match(
+    skill,
+    /`\/codex:result <jobId>`.*`\/codex:result --wait <jobId>`/is,
+    "skill points at both result and result --wait"
+  );
   assert.match(
     skill,
     /never auto-switch on the user's behalf/i,
     "explicit ban on silent mode switch"
+  );
+  assert.match(
+    skill,
+    /not a hard `--background` auto-promote: that would re-introduce the #324 stub-return failure mode/i,
+    "skill cross-references the #324 stub-return reason"
+  );
+});
+
+test("readme: 'Start Something Long-Running' documents the 600s ceiling + poll commands", () => {
+  // PR-3.6 + PR-8.1 (#122 / #213 first slice): the README workflow section
+  // now matches what the agent + SKILL spell out, so users have one
+  // authoritative reference instead of three near-duplicates.
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+
+  assert.match(readme, /### Start Something Long-Running/, "section heading present");
+  assert.match(readme, /~?600 ?s/i, "600s mentioned");
+  assert.match(
+    readme,
+    /will surface a one-line notice/i,
+    "README mentions the agent-side hint"
+  );
+  assert.match(
+    readme,
+    /\/codex:status --wait task-/,
+    "README documents status --wait"
+  );
+  assert.match(
+    readme,
+    /\/codex:result --wait task-/,
+    "README documents result --wait"
+  );
+  assert.match(
+    readme,
+    /\/codex:cancel task-/,
+    "README documents cancel"
+  );
+});
+
+test("readme: 'v2.0.0 Defaults & First-Run Setup' covers sandbox + auth migration", () => {
+  // PR-8.1 first slice — surface the BREAKING #1 + #2 opt-outs + the auth
+  // migration path right in the README so a first-time install does not have
+  // to dig through docs/MIGRATION_v2.0.md.
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+
+  assert.match(readme, /## v2\.0\.0 Defaults & First-Run Setup/, "section heading present");
+  assert.match(
+    readme,
+    /CODEX_PLUGIN_SANDBOX_DEFAULT=read-only/,
+    "sandbox opt-out documented"
+  );
+  assert.match(
+    readme,
+    /CODEX_PLUGIN_USE_DEFAULT_HOME=1/,
+    "home isolation opt-out documented"
+  );
+  assert.match(
+    readme,
+    /cp ~\/\.codex\/auth\.json ~\/\.codex\/claude-code\/auth\.json/,
+    "auth migration Option A documented"
+  );
+  assert.match(
+    readme,
+    /CODEX_HOME="\$HOME\/\.codex\/claude-code" codex login/,
+    "auth migration Option B documented"
+  );
+  assert.match(
+    readme,
+    /CODEX_PLUGIN_SUPPRESS_V2_NOTICE=1/,
+    "first-run notice suppression documented"
+  );
+  assert.match(
+    readme,
+    /\[`docs\/MIGRATION_v2\.0\.md`\]\(docs\/MIGRATION_v2\.0\.md\)/,
+    "links out to MIGRATION_v2.0.md"
+  );
+  assert.match(
+    readme,
+    /\[`docs\/TROUBLESHOOTING\.md`\]\(docs\/TROUBLESHOOTING\.md\)/,
+    "links out to TROUBLESHOOTING.md"
   );
 });
 

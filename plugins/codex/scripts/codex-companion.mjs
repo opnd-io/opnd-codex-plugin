@@ -60,6 +60,7 @@ import {
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { getUserDefault } from "./lib/user-config.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
@@ -183,6 +184,64 @@ function normalizeSandboxMode(sandbox) {
     );
   }
   return normalized;
+}
+
+// PR-7.7 (#213) — resolvers that prefer the CLI value, then the user-level
+// config default, then null. The CLI must always win — the merge happens
+// here (not inside the normalize helpers) so the normalize functions stay
+// pure single-input validators.
+//
+// Each resolver runs the same normalize that the explicit-CLI path uses, so
+// an invalid user-config value (e.g. `defaultEffort: "ultra"`) raises the
+// same human-readable error a bad `--effort ultra` would — the user sees a
+// pointer to the config file via the surrounding context.
+// PR-7.7 audit finding #5 — an explicit CLI flag (even with an empty value
+// like `--model ""`) is still a user choice. Treat it as "explicitly clear
+// the default" rather than letting the user-config silently fill it in,
+// which would violate the "CLI always wins" contract. `null`/`undefined`
+// means "the flag was never passed" and is the only case where the
+// user-config fallback fires.
+function cliExplicitlyPassed(cliValue) {
+  return cliValue !== null && cliValue !== undefined;
+}
+
+function resolveModel(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeRequestedModel(cliValue);
+  }
+  const configDefault = getUserDefault("defaultModel", { env });
+  if (configDefault === undefined) return null;
+  return normalizeRequestedModel(configDefault);
+}
+
+function resolveEffort(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeReasoningEffort(cliValue);
+  }
+  const configDefault = getUserDefault("defaultEffort", { env });
+  if (configDefault === undefined) return null;
+  try {
+    return normalizeReasoningEffort(configDefault);
+  } catch (error) {
+    throw new Error(
+      `Invalid defaultEffort in user config: ${error?.message ?? error}. Edit your codex-plugin-cc config or unset the key.`
+    );
+  }
+}
+
+function resolveSandbox(cliValue, { env = process.env } = {}) {
+  if (cliExplicitlyPassed(cliValue)) {
+    return normalizeSandboxMode(cliValue);
+  }
+  const configDefault = getUserDefault("defaultSandbox", { env });
+  if (configDefault === undefined) return null;
+  try {
+    return normalizeSandboxMode(configDefault);
+  } catch (error) {
+    throw new Error(
+      `Invalid defaultSandbox in user config: ${error?.message ?? error}. Edit your codex-plugin-cc config or unset the key.`
+    );
+  }
 }
 
 function normalizeArgv(argv) {
@@ -1142,9 +1201,12 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
-  let sandbox = normalizeSandboxMode(options.sandbox);
+  // PR-7.7 (#213) — resolveModel/Effort/Sandbox respect the user-level
+  // config defaults from ~/.config/codex-plugin-cc/config.json when the
+  // CLI option is not supplied. CLI always wins.
+  const model = resolveModel(options.model);
+  const effort = resolveEffort(options.effort);
+  let sandbox = resolveSandbox(options.sandbox);
   let approvalPolicy = normalizeApprovalPolicy(options.approval) ?? "never";
   // PR-2.2 (#124 / #145) — `--full-access` and `--dangerously-skip-permissions`
   // (Claude Code naming convention) are convenience aliases that set both
@@ -1403,8 +1465,11 @@ async function handleContinue(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
+  // PR-7.7 (#213) — same user-config defaults for /codex:continue. Sandbox
+  // is not a continue option (the existing job's sandbox is reused), so
+  // only model + effort flow through the resolvers here.
+  const model = resolveModel(options.model);
+  const effort = resolveEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
   if (!prompt) {
     throw new Error("Provide a prompt, a prompt file, or piped stdin for continue.");

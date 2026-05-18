@@ -301,16 +301,69 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 
 ### Start Something Long-Running
 
+Foreground rescues / reviews are capped at the upstream Claude Code Bash tool's ~600 s ceiling. A rescue that runs longer is killed by Claude Code before Codex finishes, and there is no jobId to resume — pick `--background` whenever you expect a deep refactor, full-repo audit, or open-ended investigation. If you forget, the `codex:codex-rescue` subagent will surface a one-line notice in front of the result reminding you to re-issue with `--background` next time.
+
 ```bash
 /codex:adversarial-review --background
 /codex:rescue --background investigate the flaky test
 ```
 
-Then check in with:
+Each background invocation prints a jobId of the form `task-<…>` immediately (no waiting). Poll progress with:
 
 ```bash
-/codex:status
-/codex:result
+/codex:status                       # show every active job in the workspace
+/codex:status task-mp7sdta9-ppf8we  # show one job
+/codex:status --wait task-mp7sdta9-ppf8we   # block until terminal (completed/failed/cancelled)
+```
+
+Retrieve the final output:
+
+```bash
+/codex:result task-mp7sdta9-ppf8we           # one-shot — empty if still running
+/codex:result --wait task-mp7sdta9-ppf8we    # block until the job reaches a terminal state, then print
+```
+
+If you decide partway through that the job should stop:
+
+```bash
+/codex:cancel task-mp7sdta9-ppf8we
+```
+
+## v2.0.0 Defaults & First-Run Setup
+
+If you are coming from v1.x, the v2.0.0 release shipped two BREAKING default changes that you need to know about — both are opt-out. The first invocation per shell prints a one-shot stderr notice naming both; this section summarizes the actionable parts.
+
+### Sandbox now inherits your `~/.codex/config.toml`
+
+v1.x hard-coded `sandbox: "read-only"` (review / read-only task) and `sandbox: "workspace-write"` (`--write` task), overriding whatever you had configured in `~/.codex/config.toml`. v2.0.0 omits the field unless you pass `--sandbox` explicitly, so the codex app-server picks up your `sandbox_mode` instead. Most users benefit silently. If your CI or workflow relied on the v1.x hard-coded values, restore them with:
+
+```bash
+export CODEX_PLUGIN_SANDBOX_DEFAULT=read-only        # or workspace-write
+```
+
+Full migration notes and per-environment guidance: [`docs/MIGRATION_v2.0.md`](docs/MIGRATION_v2.0.md).
+
+### Plugin codex sessions are isolated from Codex Desktop
+
+To stop plugin-launched threads from burying your real Codex Desktop conversations, v2.0.0 spawns codex with `CODEX_HOME=$HOME/.codex/claude-code/` instead of the shared `~/.codex/`. Side effect: **`codex login` writes the OpenAI token into `~/.codex/auth.json`, not the plugin home**, so `/codex:setup` will keep reporting `loggedIn: false` until you either copy the token or log in directly into the plugin home. Three equivalent fixes:
+
+```bash
+# Option A — one-time copy (preserves history isolation; repeat after token rotation)
+cp ~/.codex/auth.json ~/.codex/claude-code/auth.json
+
+# Option B — log in directly into the plugin home (no copy needed; re-runnable)
+CODEX_HOME="$HOME/.codex/claude-code" codex login
+
+# Option C — opt out of the isolation entirely (restores v1.x shared home)
+export CODEX_PLUGIN_USE_DEFAULT_HOME=1
+```
+
+Diagnostic walkthrough and edge cases: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) (the "loggedIn: false after codex login" + "Codex Desktop history pollution" sections).
+
+### Silence the first-run notice
+
+```bash
+export CODEX_PLUGIN_SUPPRESS_V2_NOTICE=1
 ```
 
 ## Codex Integration
