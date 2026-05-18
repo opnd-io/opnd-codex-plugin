@@ -6,6 +6,34 @@ import { createTraceId, emitEvent } from "./telemetry.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
+// PR-7.4 (#134) — opt-in audible completion bell. When the user sets
+// CODEX_PLUGIN_BELL_ON_COMPLETE=1, every terminal-state transition in a
+// tracked job (completed / failed / cancelled / terminated / timeout)
+// writes a single ASCII BEL character (`\x07`) to stderr. Stays cross-OS
+// without any native dependency: every common terminal (xterm, Terminal,
+// iTerm2, Windows Terminal, ConEmu, VSCode integrated terminal, Git Bash)
+// honors BEL when its own "bell sound" setting is on, and silently no-ops
+// when off. Defaults to off so plugin invocations never produce surprise
+// audio.
+const BELL_ENV = "CODEX_PLUGIN_BELL_ON_COMPLETE";
+const BELL_CHAR = "\x07";
+
+function shouldRingCompletionBell(env = process.env) {
+  const raw = String(env[BELL_ENV] ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+export function maybeRingCompletionBell(env = process.env) {
+  if (!shouldRingCompletionBell(env)) return false;
+  try {
+    process.stderr.write(BELL_CHAR);
+    return true;
+  } catch {
+    // best-effort; never break the job teardown path because stderr is broken
+    return false;
+  }
+}
+
 export function nowIso() {
   return new Date().toISOString();
 }
@@ -226,6 +254,10 @@ function markJobTerminated(job, runningRecord, options, signal) {
   } catch {
     // ignore
   }
+  // PR-7.4 (#134) — signal-terminated is still a terminal state, so the
+  // bell fires for it too. Ordered AFTER the log/state writes + telemetry
+  // emit so a bell sound means "all teardown done", not "teardown started".
+  maybeRingCompletionBell();
 }
 
 function installForegroundSignalHandlers(job, runningRecord, options) {
@@ -361,6 +393,10 @@ export async function runTrackedJob(job, runner, options = {}) {
       threadId: execution.threadId ?? undefined
     });
 
+    // PR-7.4 (#134) — opt-in audible completion bell. No-op unless the
+    // user set CODEX_PLUGIN_BELL_ON_COMPLETE=1.
+    maybeRingCompletionBell();
+
     return execution;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -398,6 +434,11 @@ export async function runTrackedJob(job, runner, options = {}) {
       elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
       errorMessage
     });
+
+    // PR-7.4 (#134) — bell on failure too. Symmetric with the success path
+    // so the user knows ANY terminal state triggered the bell, not just
+    // success.
+    maybeRingCompletionBell();
 
     throw error;
   } finally {

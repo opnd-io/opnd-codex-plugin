@@ -347,7 +347,11 @@ test("audit #4: telemetry module documents the extras field-name reservation rul
 test("audit #5: MIGRATION_v2.0.md splits v2.1.0 telemetry env vars into their own section", () => {
   const migration = fs.readFileSync(path.join(ROOT, "docs", "MIGRATION_v2.0.md"), "utf8");
   assert.match(migration, /## New v2\.0\.0 env vars/, "v2.0.0 env var section present");
-  assert.match(migration, /## New v2\.1\.0 env vars \(observability\)/, "v2.1.0 section split out");
+  // Post-PR merge train: v2.1.0 env vars now consolidated into a single
+  // "## New v2.1.0 env vars" section that holds telemetry + user-config +
+  // locale + bell entries. The original split-into-(observability) section
+  // was replaced when PR-7.7 / PR-4.5 / PR-7.4 trains merged together.
+  assert.match(migration, /## New v2\.1\.0 env vars/, "v2.1.0 section present");
 
   // Telemetry env vars must live under the v2.1.0 section, not the v2.0.0
   // section — regression guard for the labeling drift the audit caught.

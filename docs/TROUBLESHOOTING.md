@@ -366,6 +366,22 @@ Choose this only if you actively resume plugin-launched threads in Codex Desktop
 
 ---
 
+## 14. Want to hear when a background job finishes (PR-7.4, #134)
+
+Not really a failure mode — a usability tip. Long-running background jobs (`/codex:rescue --background`, `/codex:adversarial-review --background`) leave you free to do other work, but you have to remember to check `/codex:status`. v2.1.0 added an **opt-in audible bell** that fires at every terminal state.
+
+Turn it on with one env var:
+
+```bash
+export CODEX_PLUGIN_BELL_ON_COMPLETE=1
+```
+
+That writes a single ASCII BEL character (`\x07`) to stderr each time a tracked job ends — completed, failed, cancelled, terminated, or timed out. The actual sound depends on your terminal emulator's "audible bell" setting (xterm / iTerm2 / Terminal.app / Windows Terminal / Git Bash all honor it when their bell is enabled; visual-bell-only terminals flash instead).
+
+Default is off, so plugin invocations never produce surprise audio. Unset the env var to silence it again.
+
+---
+
 ## When to file an upstream issue
 
 If your symptom does not match any section above:

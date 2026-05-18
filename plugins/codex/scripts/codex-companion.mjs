@@ -55,6 +55,7 @@ import {
   createJobProgressUpdater,
   createJobRecord,
   createProgressReporter,
+  maybeRingCompletionBell,
   nowIso,
   runTrackedJob,
   SESSION_ID_ENV
@@ -2077,6 +2078,10 @@ async function handleCancel(argv) {
     turnInterruptAttempted: interrupt.attempted,
     turnInterrupted: interrupt.interrupted
   });
+
+  // PR-7.4 (#134) — cancel is a terminal state, so the bell fires here
+  // too. Symmetric with the runTrackedJob completed/failed paths.
+  maybeRingCompletionBell();
 
   const payload = {
     jobId: job.id,
