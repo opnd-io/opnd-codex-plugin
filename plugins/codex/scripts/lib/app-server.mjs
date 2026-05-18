@@ -113,6 +113,65 @@ export function __resetAppServerNoticeCache() {
   localeOverrideNoticeEmitted = false;
 }
 
+// PR-G-C (manual port of upstream PR #190) — known env-injection vectors
+// that should never leak into the spawned codex child. Removing these
+// from the child env neutralizes the well-known shellshock-class
+// (`BASH_FUNC_*`, `BASH_ENV`, `PROMPT_COMMAND`) and dynamic-linker
+// injection (`LD_PRELOAD`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`) attacks.
+// `NODE_OPTIONS` is also removed so a parent shell's debug / inspector
+// configuration cannot accidentally hijack the child Node process.
+// `CLAUDE_*` is dropped because it is Claude harness internal state the
+// codex CLI never needs and historically leaked sessions ids.
+//
+// Operators that genuinely need one of these vars in the child can opt
+// out via `CODEX_PLUGIN_PRESERVE_ENV=NODE_OPTIONS,LD_PRELOAD,...` (comma
+// list). The opt-out is intentionally explicit so the safe default
+// stays safe.
+const ENV_INJECTION_VECTORS = new Set([
+  "BASH_ENV",
+  "ENV",
+  "PROMPT_COMMAND",
+  "LD_PRELOAD",
+  "LD_AUDIT",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FALLBACK_LIBRARY_PATH",
+  "NODE_OPTIONS"
+]);
+
+function sanitizePluginCodexEnv(baseEnv) {
+  const preserveRaw = String(baseEnv.CODEX_PLUGIN_PRESERVE_ENV ?? "").trim();
+  const preserve = new Set(
+    preserveRaw
+      ? preserveRaw.split(",").map((s) => s.trim()).filter(Boolean)
+      : []
+  );
+  const sanitized = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (preserve.has(key)) {
+      sanitized[key] = value;
+      continue;
+    }
+    // Drop Claude harness internals — codex CLI does not need them and
+    // their leakage has caused sessionId confusion in the past.
+    if (key.startsWith("CLAUDE_") && key !== "CLAUDE_PLUGIN_ROOT" && key !== "CLAUDE_PLUGIN_DATA") {
+      continue;
+    }
+    // Drop classic env-injection vectors.
+    if (ENV_INJECTION_VECTORS.has(key)) {
+      continue;
+    }
+    // Drop `BASH_FUNC_*` shellshock entries (key includes parentheses
+    // / unicode chars depending on bash version).
+    if (key.startsWith("BASH_FUNC_") || key.startsWith("BASH_FUNC ")) {
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 // PR-5.6 (#282) BREAKING — build the env we hand to plugin-spawned codex
 // children. Adds CODEX_HOME=$HOME/.codex/claude-code/ so plugin sessions
 // land in a dedicated home that Codex Desktop ignores. Restoring the
@@ -122,19 +181,24 @@ export function __resetAppServerNoticeCache() {
 // same env. Pure function — no side effects, safe to call repeatedly
 // (notice emission is gated by the module-level latch above).
 export function buildPluginCodexEnv(baseEnv = process.env) {
+  // PR-G-C (manual port of upstream PR #190) — first strip known
+  // env-injection vectors so neither the home-isolation transform nor
+  // the locale override below propagates them downstream.
+  const sanitizedBase = sanitizePluginCodexEnv(baseEnv);
+
   // Compose the home-isolation transform first, then the locale-override
   // transform on top. Both transforms are idempotent and only mutate the
   // child env (never the caller's).
   let result;
-  if (String(baseEnv.CODEX_PLUGIN_USE_DEFAULT_HOME ?? "").trim() === "1") {
-    result = { ...baseEnv };
-  } else if (baseEnv.CODEX_HOME && String(baseEnv.CODEX_HOME).trim()) {
+  if (String(sanitizedBase.CODEX_PLUGIN_USE_DEFAULT_HOME ?? "").trim() === "1") {
+    result = { ...sanitizedBase };
+  } else if (sanitizedBase.CODEX_HOME && String(sanitizedBase.CODEX_HOME).trim()) {
     // Honor a pre-set CODEX_HOME so the user can pin a custom location.
-    result = { ...baseEnv };
+    result = { ...sanitizedBase };
   } else {
-    const home = baseEnv.HOME ?? baseEnv.USERPROFILE;
+    const home = sanitizedBase.HOME ?? sanitizedBase.USERPROFILE;
     if (!home) {
-      result = { ...baseEnv };
+      result = { ...sanitizedBase };
     } else {
       const pluginCodexHome = path.join(home, ".codex", "claude-code");
       try {
@@ -142,7 +206,7 @@ export function buildPluginCodexEnv(baseEnv = process.env) {
       } catch {
         // best-effort; codex CLI will surface a real error if it cannot use it
       }
-      result = { ...baseEnv, CODEX_HOME: pluginCodexHome };
+      result = { ...sanitizedBase, CODEX_HOME: pluginCodexHome };
     }
   }
 

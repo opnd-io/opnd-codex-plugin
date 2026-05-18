@@ -69,7 +69,13 @@ function buildBranchComparison(cwd, baseRef, tipRef = "HEAD") {
   // PR-7.5 (#114) — tipRef defaults to HEAD for the legacy "review my current
   // branch against base" flow, but can be overridden so the user can review a
   // remote ref (e.g. origin/feature-branch) without checking it out first.
-  const mergeBase = gitChecked(cwd, ["merge-base", tipRef, baseRef]).stdout.trim();
+  //
+  // PR-G-C (manual port of upstream PR #290) — pass `--end-of-options`
+  // before any user-controlled ref so a dash-prefixed value (`-X`, `--foo`)
+  // cannot be silently re-interpreted as a git flag. Hardens the same
+  // class of git ref-injection footgun the upstream PR targets without
+  // changing the success path.
+  const mergeBase = gitChecked(cwd, ["merge-base", "--end-of-options", tipRef, baseRef]).stdout.trim();
   return {
     mergeBase,
     commitRange: `${mergeBase}..${tipRef}`,
@@ -312,9 +318,13 @@ function collectBranchContext(cwd, baseRef, options = {}) {
   const tipRef = options.tipRef ?? "HEAD";
   const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef, tipRef);
   const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
-  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  // PR-G-C (manual port of upstream PR #290) — same `--end-of-options`
+  // ref-injection guard as buildBranchComparison. `commitRange` is built
+  // from user-controlled `baseRef` / `tipRef`, so it inherits the same
+  // hazard (`-X..HEAD`, `--foo...HEAD`, etc.) and gets the same guard.
+  const changedFiles = gitChecked(cwd, ["diff", "--name-only", "--end-of-options", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", "--end-of-options", comparison.commitRange]).stdout.trim();
+  const diffStat = gitChecked(cwd, ["diff", "--stat", "--end-of-options", comparison.commitRange]).stdout.trim();
 
   return {
     mode: "branch",
@@ -325,7 +335,7 @@ function collectBranchContext(cwd, baseRef, options = {}) {
           formatSection("Diff Stat", diffStat),
           formatSection(
             "Branch Diff",
-            gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
+            gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", "--end-of-options", comparison.commitRange]).stdout
           )
         ].join("\n")
       : [
