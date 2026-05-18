@@ -107,7 +107,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs approve <approval-id> [--session] [--response-json <json>] [--json]",
       "  node scripts/codex-companion.mjs deny <approval-id> [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--wait [--timeout-ms <ms>] [--poll-interval-ms <ms>]] [--tail [--tail-lines <N>]] [--watch [--tail-lines <N>] [--watch-interval-ms <ms>]] [--json]",
-      "  node scripts/codex-companion.mjs result [job-id] [--json]",
+      "  node scripts/codex-companion.mjs result [job-id] [--wait [--timeout-ms <ms>] [--poll-interval-ms <ms>]] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--dry-run] [--json]"
     ].join("\n")
   );
@@ -1944,14 +1944,38 @@ async function handleStatus(argv) {
   outputResult(renderStatusPayload(report, options.json), options.json);
 }
 
-function handleResult(argv) {
+async function handleResult(argv) {
+  // PR axis-R follow-up (2026-05-18 audit cycle, docs/exploration/2026-05-18-163003) —
+  // `README.md:326` and `plugins/codex/agents/codex-rescue.md:26` both document
+  // `/codex:result --wait <jobId>` as the recommended way to block until a
+  // background job reaches a terminal state, but the earlier `handleResult`
+  // body only accepted `--json` so `--wait` was silently consumed as the
+  // positional job id, surfacing as `No job found for "--wait"`. The
+  // implementation now mirrors the proven `status --wait` polling loop so
+  // the documented contract works end-to-end.
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    booleanOptions: ["json", "wait"]
   });
 
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
+
+  if (options.wait) {
+    if (!reference) {
+      throw new Error("`result --wait` requires a job id.");
+    }
+    const snapshot = await waitForSingleJobSnapshot(cwd, reference, {
+      timeoutMs: options["timeout-ms"],
+      pollIntervalMs: options["poll-interval-ms"]
+    });
+    if (snapshot.waitTimedOut) {
+      throw new Error(
+        `Job ${snapshot.job.id} is still ${snapshot.job.status} after ${snapshot.timeoutMs}ms — re-run /codex:result without --wait to see the partial state, or extend the deadline with --timeout-ms.`
+      );
+    }
+  }
+
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const payload = {
@@ -2169,7 +2193,7 @@ async function main() {
       await handleStatus(argv);
       break;
     case "result":
-      handleResult(argv);
+      await handleResult(argv);
       break;
     case "task-resume-candidate":
       handleTaskResumeCandidate(argv);
