@@ -82,6 +82,7 @@ test("agent control commands are exposed as deterministic runtime entrypoints", 
     "cancel.md",
     "continue.md",
     "deny.md",
+    "pair.md",
     "rescue.md",
     "result.md",
     "review.md",
@@ -90,6 +91,8 @@ test("agent control commands are exposed as deterministic runtime entrypoints", 
   ]);
   assert.match(read("commands/agent.md"), /codex-companion\.mjs" agent "\$ARGUMENTS"/);
   assert.match(read("commands/agent.md"), /approval on-request/i);
+  assert.match(read("commands/pair.md"), /codex-companion\.mjs" pair "\$ARGUMENTS"/);
+  assert.match(read("commands/pair.md"), /read-only pair-programming/i);
   assert.match(read("commands/continue.md"), /codex-companion\.mjs" continue "\$ARGUMENTS"/);
   assert.match(read("commands/approve.md"), /codex-companion\.mjs" approve "\$ARGUMENTS"/);
   assert.match(read("commands/approve.md"), /argument-hint:\s*"<approval-id\|prefix>/);
@@ -262,7 +265,7 @@ test("axis-R: handleResult parses --wait + timeout-ms + poll-interval-ms (docs/R
   // Usage line surfaces it too.
   assert.match(
     source,
-    /node scripts\/codex-companion\.mjs result \[job-id\] \[--wait \[--timeout-ms <ms>\] \[--poll-interval-ms <ms>\]\] \[--json\]/,
+    /node scripts\/codex-companion\.mjs result \[job-id\] \[--digest\|--raw\] \[--wait \[--timeout-ms <ms>\] \[--poll-interval-ms <ms>\]\] \[--json\]/,
     "printUsage line documents --wait"
   );
   // main() must await handleResult so the wait loop is not fire-and-forget.

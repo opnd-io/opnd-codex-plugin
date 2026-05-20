@@ -1,0 +1,250 @@
+diff --git a/plugins/codex/scripts/app-server-broker.mjs b/plugins/codex/scripts/app-server-broker.mjs
+index 1954274f..c5f2614f 100644
+--- a/plugins/codex/scripts/app-server-broker.mjs
++++ b/plugins/codex/scripts/app-server-broker.mjs
+@@ -6,7 +6,7 @@ import path from "node:path";
+ import process from "node:process";
+ 
+ import { parseArgs } from "./lib/args.mjs";
+-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
++import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, stripAnsi } from "./lib/app-server.mjs";
+ import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+ 
+ const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
+@@ -128,13 +128,14 @@ async function main() {
+         buffer = buffer.slice(newlineIndex + 1);
+         newlineIndex = buffer.indexOf("\n");
+ 
+-        if (!line.trim()) {
++        const cleaned = stripAnsi(line).trim();
++        if (!cleaned) {
+           continue;
+         }
+ 
+         let message;
+         try {
+-          message = JSON.parse(line);
++          message = JSON.parse(cleaned);
+         } catch (error) {
+           send(socket, {
+             id: null,
+diff --git a/plugins/codex/scripts/lib/app-server.mjs b/plugins/codex/scripts/lib/app-server.mjs
+index abf3d0c7..de68bab3 100644
+--- a/plugins/codex/scripts/lib/app-server.mjs
++++ b/plugins/codex/scripts/lib/app-server.mjs
+@@ -15,6 +15,30 @@ import readline from "node:readline";
+ import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
+ import { ensureBrokerSession } from "./broker-lifecycle.mjs";
+ 
++/**
++ * Strip ANSI/VT escape sequences per ECMA-48 that may leak from the shell
++ * environment into the JSONL stream. Covers the full standard repertoire:
++ *
++ *  - CSI:    ESC [ <param bytes 0x30–0x3F>* <intermediate bytes 0x20–0x2F>* <final 0x40–0x7E>
++ *            param bytes include digits, ;, :, <, =, >, ? — not just [0-9;?]
++ *            e.g. ESC[?2004h (bracketed paste), ESC[>4;2m (modifyOtherKeys), ESC[200~ (paste wrapper)
++ *  - OSC:    ESC ] <any> (BEL | ESC \)
++ *            e.g. ESC]0;title BEL (terminal title), ESC]133;A BEL (shell integration)
++ *  - String: ESC [P|X|^|_] <any> (BEL | ESC \)
++ *            DCS (ESC P), SOS (ESC X), PM (ESC ^), APC (ESC _)
++ *            e.g. ESC P ... ESC \ (tmux passthrough, Sixel graphics)
++ *  - Simple: ESC <intermediate bytes 0x20–0x2F>* <final byte 0x30–0x7E>
++ *            Fp (0x30–0x3F): ESC 7/8 (save/restore cursor), ESC = / ESC > (keypad modes)
++ *            Fe (0x40–0x5F): ESC c (reset), ESC M (reverse index), ESC D/E (index/NEL)
++ *            Fs (0x60–0x7E): standardized single functions
++ *  - Lone ESC: fallback — strips any bare ESC not matched above (e.g. truncated sequences)
++ */
++const ANSI_ESCAPE_RE =
++  /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\x1b[PX^_].*?(?:\x07|\x1b\\)|\x1b\].*?(?:\x07|\x1b\\)|\x1b[\x20-\x2f]*[\x30-\x7e]|\x1b/g;
++export function stripAnsi(line) {
++  return line.replace(ANSI_ESCAPE_RE, "");
++}
++
+ const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
+ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"));
+ 
+@@ -114,15 +138,16 @@ class AppServerClientBase {
+   }
+ 
+   handleLine(line) {
+-    if (!line.trim()) {
++    const cleaned = stripAnsi(line).trim();
++    if (!cleaned) {
+       return;
+     }
+ 
+     let message;
+     try {
+-      message = JSON.parse(line);
++      message = JSON.parse(cleaned);
+     } catch (error) {
+-      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line }));
++      this.handleExit(createProtocolError(`Failed to parse codex app-server JSONL: ${error.message}`, { line: cleaned }));
+       return;
+     }
+ 
+diff --git a/tests/strip-ansi.test.mjs b/tests/strip-ansi.test.mjs
+new file mode 100644
+index 00000000..e4b4f66f
+--- /dev/null
++++ b/tests/strip-ansi.test.mjs
+@@ -0,0 +1,159 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++
++import { stripAnsi } from "../plugins/codex/scripts/lib/app-server.mjs";
++
++// ── CSI sequences ────────────────────────────────────────────────────────────
++
++test("stripAnsi: CSI — color/SGR codes", () => {
++  assert.equal(stripAnsi("\x1b[0m"), "");
++  assert.equal(stripAnsi("\x1b[1;32m"), "");
++  assert.equal(stripAnsi("\x1b[38;5;196m"), "");
++});
++
++test("stripAnsi: CSI — bracketed paste mode (the original bug)", () => {
++  assert.equal(stripAnsi("\x1b[?2004h"), "");
++  assert.equal(stripAnsi("\x1b[?2004l"), "");
++});
++
++test("stripAnsi: CSI — bracketed paste data wrapper ~", () => {
++  // ESC[200~ and ESC[201~ wrap pasted content; ~ is 0x7E (max final byte)
++  assert.equal(stripAnsi("\x1b[200~"), "");
++  assert.equal(stripAnsi("\x1b[201~"), "");
++});
++
++test("stripAnsi: CSI — modifyOtherKeys (> parameter byte)", () => {
++  // > is 0x3E, valid CSI parameter byte per ECMA-48, missed by [0-9;?]
++  assert.equal(stripAnsi("\x1b[>4;2m"), "");
++  assert.equal(stripAnsi("\x1b[>4;0m"), "");
++});
++
++test("stripAnsi: CSI — mode strings with < = > parameter bytes", () => {
++  // < = 0x3C, = = 0x3D, > = 0x3E — all valid parameter bytes
++  assert.equal(stripAnsi("\x1b[<1;2M"), "");  // mouse event
++  assert.equal(stripAnsi("\x1b[=2h"), "");
++  assert.equal(stripAnsi("\x1b[>1m"), "");
++});
++
++test("stripAnsi: CSI — with intermediate bytes", () => {
++  // Space (0x20) is an intermediate byte; e.g. ECMA-48 nF sequences
++  assert.equal(stripAnsi("\x1b[ q"), "");   // cursor shape
++  assert.equal(stripAnsi("\x1b[!p"), "");   // soft reset
++});
++
++test("stripAnsi: CSI — cursor movement and erase", () => {
++  assert.equal(stripAnsi("\x1b[2J"), "");   // erase screen
++  assert.equal(stripAnsi("\x1b[H"), "");    // cursor home
++  assert.equal(stripAnsi("\x1b[1;1H"), ""); // cursor position
++  assert.equal(stripAnsi("\x1b[2K"), "");   // erase line
++});
++
++// ── OSC sequences ────────────────────────────────────────────────────────────
++
++test("stripAnsi: OSC — terminal title with BEL terminator", () => {
++  assert.equal(stripAnsi("\x1b]0;My Terminal\x07"), "");
++});
++
++test("stripAnsi: OSC — terminal title with ST terminator", () => {
++  assert.equal(stripAnsi("\x1b]0;My Terminal\x1b\\"), "");
++});
++
++test("stripAnsi: OSC — shell integration sequences (iTerm2/kitty)", () => {
++  assert.equal(stripAnsi("\x1b]133;A\x07"), "");
++  assert.equal(stripAnsi("\x1b]133;D;0\x07"), "");
++});
++
++test("stripAnsi: OSC — hyperlinks", () => {
++  assert.equal(stripAnsi("\x1b]8;params;uri\x07"), "");
++});
++
++// ── String sequences (DCS / SOS / PM / APC) ──────────────────────────────────
++
++test("stripAnsi: DCS — device control string (ESC P ... ST)", () => {
++  assert.equal(stripAnsi("\x1bPfoo=bar\x1b\\"), "");
++});
++
++test("stripAnsi: APC — application program command (ESC _ ... ST)", () => {
++  // Used by some terminal emulators (e.g. Kitty) for metadata
++  assert.equal(stripAnsi("\x1b_Gfoo\x1b\\"), "");
++});
++
++test("stripAnsi: PM — privacy message (ESC ^ ... ST)", () => {
++  assert.equal(stripAnsi("\x1b^hello\x1b\\"), "");
++});
++
++test("stripAnsi: SOS — start of string (ESC X ... ST)", () => {
++  assert.equal(stripAnsi("\x1bXdata\x1b\\"), "");
++});
++
++// ── Simple / nF escapes ──────────────────────────────────────────────────────
++
++test("stripAnsi: simple — Fp sequences (0x30–0x3F final)", () => {
++  // ESC 7 = save cursor (0x37), ESC 8 = restore cursor (0x38)
++  assert.equal(stripAnsi("\x1b7"), "");
++  assert.equal(stripAnsi("\x1b8"), "");
++  // ESC = (0x3D) = application keypad, ESC > (0x3E) = normal keypad
++  assert.equal(stripAnsi("\x1b="), "");
++  assert.equal(stripAnsi("\x1b>"), "");
++});
++
++test("stripAnsi: simple — Fe sequences (0x40–0x5F final)", () => {
++  // ESC c = full reset (0x63 actually Fs), ESC M = reverse index (0x4D Fe)
++  assert.equal(stripAnsi("\x1bM"), "");   // reverse index
++  assert.equal(stripAnsi("\x1bE"), "");   // next line (NEL)
++  assert.equal(stripAnsi("\x1bD"), "");   // index
++});
++
++test("stripAnsi: simple — Fs sequences (0x60–0x7E final)", () => {
++  assert.equal(stripAnsi("\x1bc"), "");   // RIS (full reset)
++});
++
++test("stripAnsi: simple — nF with intermediate bytes", () => {
++  // ESC space F = 7-bit controls (intermediate 0x20, final 0x46)
++  assert.equal(stripAnsi("\x1b F"), "");
++  assert.equal(stripAnsi("\x1b G"), "");
++});
++
++// ── Lone ESC fallback ────────────────────────────────────────────────────────
++
++test("stripAnsi: lone ESC — bare ESC byte stripped", () => {
++  assert.equal(stripAnsi("\x1b"), "");
++});
++
++test("stripAnsi: lone ESC — ESC followed by unknown byte stripped", () => {
++  // ESC + DEL (0x7F) — not a valid final byte, lone ESC fallback handles ESC
++  // 0x7F is not in [\x30-\x7e] so simple escape won't match it, ESC fallback strips ESC
++  const result = stripAnsi("\x1b\x7f");
++  assert.ok(!result.includes("\x1b"), "ESC should be stripped");
++});
++
++// ── Mixed content ────────────────────────────────────────────────────────────
++
++test("stripAnsi: preserves valid JSON around escape sequences", () => {
++  const line = '\x1b[?2004h{"id":1,"method":"initialize","params":{}}\x1b[?2004l';
++  assert.equal(stripAnsi(line), '{"id":1,"method":"initialize","params":{}}');
++});
++
++test("stripAnsi: multiple sequences in one line", () => {
++  const line = "\x1b[0m\x1b[1;32mhello\x1b[0m";
++  assert.equal(stripAnsi(line), "hello");
++});
++
++test("stripAnsi: OSC title + CSI color + text", () => {
++  const line = "\x1b]0;zsh\x07\x1b[1;34msome text\x1b[0m";
++  assert.equal(stripAnsi(line), "some text");
++});
++
++test("stripAnsi: plain JSON passes through unchanged", () => {
++  const json = '{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}';
++  assert.equal(stripAnsi(json), json);
++});
++
++test("stripAnsi: empty string", () => {
++  assert.equal(stripAnsi(""), "");
++});
++
++test("stripAnsi: string with no escape sequences", () => {
++  const s = "hello world 123 !@#";
++  assert.equal(stripAnsi(s), s);
++});

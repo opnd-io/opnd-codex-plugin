@@ -1,7 +1,17 @@
 import fs from "node:fs";
 import process from "node:process";
 
-import { getProcessStartTimeRaw, readJobFile, resolveJobFile, resolveJobLogFile, updateJobFile, upsertJob, writeJobFile } from "./state.mjs";
+import {
+  getProcessStartTimeRaw,
+  readJobFile,
+  resolveJobFile,
+  resolveJobLogFile,
+  updateJobFile,
+  upsertJob,
+  writeJobFile,
+  writeTaskSession
+} from "./state.mjs";
+import { hashText } from "./task-identity.mjs";
 import { createTraceId, emitEvent } from "./telemetry.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -190,6 +200,103 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+function extractRawResultText(execution) {
+  return (
+    (typeof execution?.payload?.rawOutput === "string" && execution.payload.rawOutput) ||
+    (typeof execution?.payload?.codex?.stdout === "string" && execution.payload.codex.stdout) ||
+    (typeof execution?.rendered === "string" && execution.rendered) ||
+    ""
+  );
+}
+
+function classifyFailure(job, execution) {
+  const rawOutput =
+    (typeof execution?.payload?.rawOutput === "string" && execution.payload.rawOutput) ||
+    (typeof execution?.payload?.codex?.stdout === "string" && execution.payload.codex.stdout) ||
+    "";
+  const text = [
+    rawOutput,
+    execution?.payload?.failureMessage,
+    execution?.payload?.errorMessage,
+    execution?.rendered,
+    execution?.error?.message
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (execution?.exitStatus === 0 && job?.jobClass === "task" && !rawOutput.trim()) {
+    return "no_final_output";
+  }
+  if (execution?.exitStatus === 0) {
+    return null;
+  }
+  if (/rate.?limit|429|quota/i.test(text)) return "rate-limit";
+  if (/auth|login|sign in|access token|api key/i.test(text)) return "auth";
+  if (/sandbox|permission denied|operation not permitted|eperm|eacces/i.test(text)) return "sandbox";
+  if (/timeout|timed out|finalizing/i.test(text)) return "timeout";
+  if (/approval|denied|rejected/i.test(text)) return "approval";
+  if (/parse|json/i.test(text)) return "parse";
+  return "other";
+}
+
+function buildResultDigest(job, execution, completionStatus, failureClass, completedAt) {
+  const rawOutput = extractRawResultText(execution);
+  const parsed = execution?.payload?.parsedResult ?? execution?.payload?.result ?? null;
+  const verdict =
+    (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.verdict === "string"
+      ? parsed.verdict
+      : null) ?? (completionStatus === "completed" ? "completed" : "failed");
+  const summary =
+    (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.summary === "string"
+      ? parsed.summary
+      : null) ??
+    execution?.summary ??
+    rawOutput.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ??
+    "";
+  return {
+    schemaVersion: 1,
+    jobId: job.id,
+    status: completionStatus,
+    failureClass: failureClass ?? null,
+    verdict,
+    summary,
+    outputHash: hashText(rawOutput),
+    renderedHash: hashText(execution?.rendered ?? ""),
+    threadId: execution?.threadId ?? null,
+    turnId: execution?.turnId ?? null,
+    taskKey: job?.taskKey ?? null,
+    taskFingerprint: job?.taskFingerprint ?? null,
+    promptHash: job?.promptHash ?? null,
+    capsuleHash: job?.capsuleHash ?? null,
+    outputProfile: job?.outputProfile ?? null,
+    completedAt
+  };
+}
+
+function registerTaskSession(job, execution, resultDigest) {
+  if (!job?.taskKey || !execution?.threadId || resultDigest.status !== "completed") {
+    return;
+  }
+  try {
+    writeTaskSession(job.workspaceRoot, {
+      taskKey: job.taskKey,
+      taskFingerprint: job.taskFingerprint ?? null,
+      promptHash: job.promptHash ?? null,
+      capsuleHash: job.capsuleHash ?? null,
+      outputProfile: job.outputProfile ?? null,
+      threadId: execution.threadId,
+      turnId: execution.turnId ?? null,
+      jobId: job.id,
+      summary: resultDigest.summary,
+      executionContractHash: job.executionContractHash ?? null,
+      codexHomeMode: job.codexHomeMode ?? null,
+      codexHomeHash: job.codexHomeHash ?? null,
+      fanOutGroupId: job.fanOutGroupId ?? null
+    });
+  } catch (error) {
+    appendLogLine(job.logFile ?? null, `Task-session registry write skipped: ${error?.message ?? error}`);
+  }
+}
+
 // PR-1.2 (#228) — when the foreground entrypoint receives SIGTERM/SIGINT/SIGHUP
 // without a registered handler Node exits immediately and runTrackedJob's catch
 // block never runs, leaving status="running" + a stale pid in state.json. Install
@@ -353,10 +460,28 @@ export async function runTrackedJob(job, runner, options = {}) {
   const releaseSignalHandlers = installForegroundSignalHandlers(job, runningRecord, options);
 
   try {
-    const execution = await runner();
+    const rawExecution = await runner();
+    const failureClass = classifyFailure(job, rawExecution);
+    const execution =
+      failureClass && rawExecution.exitStatus === 0
+        ? {
+            ...rawExecution,
+            exitStatus: 1,
+            payload: {
+              ...(rawExecution.payload ?? {}),
+              failureClass,
+              failureMessage:
+                rawExecution.payload?.failureMessage ??
+                (failureClass === "no_final_output"
+                  ? "Codex completed without a final assistant message."
+                  : `Codex run classified as ${failureClass}.`)
+            }
+          }
+        : rawExecution;
     const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
     const completedAt = nowIso();
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    const resultDigest = buildResultDigest(job, execution, completionStatus, failureClass, completedAt);
     writeJobFile(job.workspaceRoot, job.id, {
       ...existing,
       status: completionStatus,
@@ -366,7 +491,9 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: completionStatus === "completed" ? "done" : "failed",
       completedAt,
       result: execution.payload,
-      rendered: truncateRendered(execution.rendered)
+      rendered: truncateRendered(execution.rendered),
+      resultDigest,
+      failureClass: failureClass ?? null
     });
     upsertJob(job.workspaceRoot, {
       id: job.id,
@@ -376,8 +503,11 @@ export async function runTrackedJob(job, runner, options = {}) {
       summary: execution.summary,
       phase: completionStatus === "completed" ? "done" : "failed",
       pid: null,
-      completedAt
+      completedAt,
+      resultDigest,
+      failureClass: failureClass ?? null
     });
+    registerTaskSession(job, execution, resultDigest);
     appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
 
     // PR-9.1 — terminal event for the success path (or runner-reported
@@ -390,7 +520,10 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: completionStatus === "completed" ? "done" : "failed",
       cwd: job.workspaceRoot,
       elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
-      threadId: execution.threadId ?? undefined
+      threadId: execution.threadId ?? undefined,
+      failureClass: failureClass ?? undefined,
+      outputProfile: job.outputProfile ?? undefined,
+      taskKey: job.taskKey ?? undefined
     });
 
     // PR-7.4 (#134) — opt-in audible completion bell. No-op unless the

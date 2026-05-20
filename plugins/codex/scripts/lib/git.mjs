@@ -404,10 +404,14 @@ export function collectReviewContext(cwd, target, options = {}) {
     // mergeBase..HEAD, letting users review a remote branch without checkout.
     const tipRef = target.tipRef ?? "HEAD";
     const comparison = buildBranchComparison(repoRoot, target.baseRef, tipRef);
-    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
+    // PR-G-C (manual port of upstream PR #290) — `comparison.commitRange` is
+    // built from user-controlled `baseRef` / `tipRef`, so both git diff
+    // invocations below need the same `--end-of-options` ref-injection guard
+    // as collectBranchContext (git.mjs:325-338).
+    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", "--end-of-options", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
     diffBytes = measureGitOutputBytes(
       repoRoot,
-      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],
+      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", "--end-of-options", comparison.commitRange],
       maxInlineDiffBytes
     );
     includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);

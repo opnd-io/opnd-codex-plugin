@@ -41,6 +41,9 @@ Command selection:
 - `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `--sandbox`: accepted values are `read-only`, `workspace-write`, `danger-full-access`.
 - `--profile <name>`: select a `[profiles.<name>]` block from `~/.codex/config.toml` for this single invocation. Forces a direct codex spawn (broker is bypassed). Only pass when the user explicitly requests a profile by name.
+- `--task-key <key>`: stable logical task id. Use when the parent command supplied one so the companion can validate fingerprints and reuse the right Codex thread.
+- `--output-profile <name>`: request compact structured output for Claude handoff. Use `pair`, `plan-review`, `triage`, or the parent-supplied profile when present.
+- `--capsule <path>`: pass a large prompt capsule under `.claude/cache/codex-capsules/` instead of inline argv text.
 - **Large prompts (#308):** if the forwarded prompt is larger than ~3 KB, the upstream Claude Code Bash tool will silently reject the call with the generic "user denied tool use" wording. Always write the prompt to a temp file and pass `--prompt-file <path>` (or pipe via stdin with `--prompt-stdin`) when the prompt approaches that size. Never pass multi-KB prompts as a single positional argument.
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 

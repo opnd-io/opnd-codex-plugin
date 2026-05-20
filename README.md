@@ -18,6 +18,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:pair` for foreground read-only pair-programming feedback with task-key reuse and structured result digests
 - `/codex:agent`, `/codex:continue`, `/codex:approve`, `/codex:deny`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate and control long-running Codex work
 
 ## Requirements
@@ -133,6 +134,20 @@ Examples:
 
 This command is read-only. It does not fix code.
 
+### `/codex:pair`
+
+Asks Codex for a foreground, read-only pair-programming pass. Use this for second opinions, plan critique, focused risk review, or decision triage where Claude should keep control of the main workflow.
+
+It supports `--task-key <key>` for session reuse, `--capsule <path>` for large prompt capsules under `.claude/cache/codex-capsules/`, `--output-profile <name>` for structured output, and `--background` when the pass is no longer short.
+
+Examples:
+
+```bash
+/codex:pair --task-key auth-plan --output-profile plan-review review this plan for hidden coupling
+/codex:pair --capsule .claude/cache/codex-capsules/auth-plan.md --task-key auth-plan
+/codex:pair --background --task-key perf-risk check the tradeoffs independently
+```
+
 ### `/codex:rescue`
 
 Hands a task to Codex through the `codex:codex-rescue` subagent.
@@ -219,6 +234,7 @@ Examples:
 ```bash
 /codex:continue focus on the failing assertion and rerun the narrow test
 /codex:continue --job task-abc123 apply the smaller fix instead
+/codex:continue --task-key auth-plan incorporate the result digest and check the next risk
 ```
 
 ### `/codex:approve` and `/codex:deny`
@@ -254,12 +270,14 @@ Use it to:
 
 Shows the final stored Codex output for a finished job.
 When available, it also includes the Codex session ID so you can reopen that run directly in Codex with `codex resume <session-id>`.
+Use `--digest` when Claude only needs the compact handoff fields for a follow-up prompt.
 
 Examples:
 
 ```bash
 /codex:result
 /codex:result task-abc123
+/codex:result --digest task-abc123
 ```
 
 ### `/codex:cancel`
