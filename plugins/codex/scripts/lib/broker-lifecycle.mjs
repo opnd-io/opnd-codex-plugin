@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { resolveStateDir, withBrokerLockAsync } from "./state.mjs";
+import { terminateProcessTree } from "./process.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
@@ -220,9 +221,15 @@ export async function ensureBrokerSession(cwd, options = {}) {
 }
 
 export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {
-  if (Number.isFinite(pid) && killProcess) {
+  // A3 fix (docs/code-review/2026-05-20-pair-readiness-adversarial.md) —
+  // default to a real process-tree kill when no `killProcess` is supplied.
+  // Previously a null `killProcess` (the common `ensureBrokerSession` stale /
+  // failed-readiness path) skipped the kill entirely, orphaning the broker
+  // process. Callers and tests can still inject their own killer.
+  const killer = killProcess ?? terminateProcessTree;
+  if (Number.isFinite(pid)) {
     try {
-      killProcess(pid);
+      killer(pid);
     } catch {
       // Ignore missing or already-exited broker processes.
     }
