@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { ensureStateDir, withBrokerLockAsync } from "../plugins/codex/scripts/lib/state.mjs";
+import { ensureStateDir, withBrokerLockAsync } from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
 // PR-1.4 (#286 race 3) regression — broker.json read-modify-write must be
 // serialized across concurrent callers via a dedicated mkdir-based lock so
-// that two parallel /codex:* invocations from the same cwd never both spawn
+// that two parallel /opnd-codex:* invocations from the same cwd never both spawn
 // a fresh broker.
 
 test("withBrokerLockAsync serializes concurrent critical sections", async () => {

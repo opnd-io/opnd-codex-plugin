@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { cleanProtocolLine } from "../plugins/codex/scripts/lib/jsonl.mjs";
+import { cleanProtocolLine } from "../plugins/opnd-codex/scripts/lib/jsonl.mjs";
 
 // Manual port of upstream PR #24 + PR #311 tests, merged onto the v2.1.0
 // base. The fork could not cherry-pick either PR cleanly (broker / locale

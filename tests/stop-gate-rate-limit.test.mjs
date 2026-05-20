@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 
 test("stop-review-gate source: rate-limit signatures are recognized", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /detectInfrastructureFailure/, "classifier helper present");
@@ -23,7 +23,7 @@ test("stop-review-gate source: rate-limit signatures are recognized", async () =
 
 test("stop-review-gate source: infrastructure failures emit decision=allow + warn", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /buildAllowSkip/, "allow-skip builder present");
@@ -34,7 +34,7 @@ test("stop-review-gate source: infrastructure failures emit decision=allow + war
 
 test("stop-review-gate source: ETIMEDOUT no longer maps directly to block", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // The old "timed out after 15 minutes ... bypass the gate" wording came
@@ -52,7 +52,7 @@ test("stop-review-gate source: ETIMEDOUT no longer maps directly to block", asyn
 
 test("stop-review-gate source: invalid JSON falls into allow-skip, not block", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/stop-review-gate-hook.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // The catch block should call buildAllowSkip now.

@@ -52,7 +52,7 @@ export function resolveStateDir(cwd) {
 
   // #59 fix (manual port of upstream PR #125) — when CLAUDE_PLUGIN_DATA is
   // set the persistent state dir is authoritative, but a Bash command run
-  // without that env (the common `/codex:*` invocation outside a hook) writes
+  // without that env (the common `/opnd-codex:*` invocation outside a hook) writes
   // to the tmpdir fallback instead. Without this migration the two contexts
   // see different state dirs and jobs appear lost across them. If state
   // exists ONLY in the tmpdir fallback, migrate it into the persistent
@@ -375,7 +375,7 @@ function acquireStateLock(cwd) {
 }
 
 // PR-1.4 (#286 race 3) — broker.json was previously read-modify-written without
-// any cross-process synchronization. Two parallel /codex:* invocations from
+// any cross-process synchronization. Two parallel /opnd-codex:* invocations from
 // the same cwd both saw "no existing broker", both spawned a new app-server,
 // and both wrote broker.json — last writer winning. The orphan broker process
 // then sat in `/tmp/cxc-*` until the idle watchdog timed out. This dedicated
@@ -500,7 +500,7 @@ export function listJobs(cwd, options = {}) {
 // running/queued whose pid is no longer alive (or whose pid was recycled by
 // the OS, detected via processStartedAt mismatch). Marks each as
 // status="failed" + phase="terminated" + failureReason so subsequent
-// /codex:status, /codex:result, --resume-last calls see a terminal state
+// /opnd-codex:status, /opnd-codex:result, --resume-last calls see a terminal state
 // instead of an indefinitely "running" zombie.
 //
 // Idempotent. Safe to call from any read entrypoint. Best-effort: if the
@@ -539,7 +539,7 @@ export function reapDeadJobs(cwd, options = {}) {
     // status / result rendering path.
     return [];
   }
-  // Mirror the terminal state into per-job files so individual /codex:result
+  // Mirror the terminal state into per-job files so individual /opnd-codex:result
   // calls see the same thing the index says. Done outside the lock to keep
   // the critical section short; if a per-job write fails we tolerate it.
   for (const { id, reason } of reaped) {

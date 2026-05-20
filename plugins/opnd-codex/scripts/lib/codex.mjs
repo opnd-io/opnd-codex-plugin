@@ -1263,7 +1263,7 @@ function annotateStaleAuthCacheError(error) {
   }
   const original = typeof error === "string" ? error : error.message ?? "";
   const guidance =
-    "\n\nThe Codex app-server has cached an invalidated session. Run /codex:cancel to drain " +
+    "\n\nThe Codex app-server has cached an invalidated session. Run /opnd-codex:cancel to drain " +
     "any in-flight jobs, then restart Claude Code (or run `pkill -f \"codex app-server\"`) so " +
     "the next invocation re-reads ~/.codex/auth.json. If the problem persists after a fresh " +
     "login, file an upstream codex-cli bug.";
@@ -1286,7 +1286,7 @@ function isModelRequiresNewerCodexError(error) {
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
   }
 
   async function executeReviewWithModel(modelOverride) {
@@ -1364,7 +1364,7 @@ export async function runAppServerReview(cwd, options = {}) {
 export async function runAppServerTurn(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
   }
 
   return withAppServer(
@@ -1450,7 +1450,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 export async function steerAppServerTurn(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
   }
   if (!options.threadId || !options.turnId) {
     throw new Error("A thread id and active turn id are required to steer Codex.");
@@ -1482,7 +1482,7 @@ export async function steerAppServerTurn(cwd, options = {}) {
 export async function findLatestTaskThread(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
   }
 
   return withAppServer(cwd, async (client) => {

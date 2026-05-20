@@ -13,5 +13,5 @@ Operational contract:
 - This command is for substantial implementation, debugging, migration, and follow-up work delegated to Codex.
 - The companion defaults to a write-capable background run with `--approval on-request` unless the user overrides those flags.
 - Use `--task-key <key>` when this is part of a known Claude plan or follow-up chain, so the companion can reuse the right Codex thread safely.
-- If Codex pauses for approval, tell the user to run `/codex:status`, then `/codex:approve <approval-id>` or `/codex:deny <approval-id>`.
+- If Codex pauses for approval, tell the user to run `/opnd-codex:status`, then `/opnd-codex:approve <approval-id>` or `/opnd-codex:deny <approval-id>`.
 - Do not summarize or replace Codex's result with Claude-side implementation work.

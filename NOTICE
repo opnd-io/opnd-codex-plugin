@@ -7,7 +7,7 @@ plus the v2.1.0 observability + UX changes (telemetry stream with trace.id,
 /codex:status --tail/--watch, user-level config defaults, opt-in
 completion bell, non-UTF-8 locale mitigation, non-interactive command
 fallbacks). The complete list of modifications is in git log and
-plugins/codex/CHANGELOG.md.
+plugins/opnd-codex/CHANGELOG.md.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { makeTempDir } from "./helpers.mjs";
-import { getCodexAuthStatus } from "../plugins/codex/scripts/lib/codex.mjs";
+import { getCodexAuthStatus } from "../plugins/opnd-codex/scripts/lib/codex.mjs";
 
 // PR-5.4 (#233) regression — auth gate must bypass when the user runs Codex
 // against a non-OpenAI endpoint (custom base URL via openai_base_url) or

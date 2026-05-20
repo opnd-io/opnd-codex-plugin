@@ -12,12 +12,12 @@ import {
   reapDeadJobs,
   upsertJob,
   writeJobFile
-} from "../plugins/codex/scripts/lib/state.mjs";
+} from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
 // PR-1.1 (#222 / #164 / #202 / #264) regression — listJobs/reapDeadJobs must
 // transition any job recorded as running/queued whose pid is dead (or whose
 // pid was recycled by the OS) into a terminal failed/terminated state, so
-// /codex:status, /codex:result, and --resume-last never see indefinite zombies.
+// /opnd-codex:status, /opnd-codex:result, and --resume-last never see indefinite zombies.
 
 test("isPidRunning reports false for non-positive / non-finite pids", () => {
   assert.equal(isPidRunning(0), false);

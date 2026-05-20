@@ -53,7 +53,7 @@ test("codex-companion task --profile threads through to the codex spawn as -c pr
   // narrower assertion: the --profile option is in the value-options list
   // for both task and review subcommands. Threading correctness is verified
   // by the next test (option parsing) and by manual integration in CI.
-  const { parseArgs } = await import("../plugins/codex/scripts/lib/args.mjs");
+  const { parseArgs } = await import("../plugins/opnd-codex/scripts/lib/args.mjs");
   const parsed = parseArgs(["--profile", "review-fast", "explain", "the", "bug"], {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval", "profile"],
     booleanOptions: ["json", "write", "background"]
@@ -65,8 +65,8 @@ test("codex-companion task --profile threads through to the codex spawn as -c pr
 test("CodexAppServerClient propagates options.profile to the codex argv", async (t) => {
   // Import the spawn helper indirectly via app-server. We patch buildCommandInvocation
   // to capture the args codex would have received.
-  const appServerModule = await import("../plugins/codex/scripts/lib/app-server.mjs");
-  const processModule = await import("../plugins/codex/scripts/lib/process.mjs");
+  const appServerModule = await import("../plugins/opnd-codex/scripts/lib/app-server.mjs");
+  const processModule = await import("../plugins/opnd-codex/scripts/lib/process.mjs");
 
   let capturedArgs = null;
   const original = processModule.buildCommandInvocation;

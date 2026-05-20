@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 
 test("codex.mjs source: buildThreadParams omits sandbox when caller passes nothing", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/lib/codex.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // Match the new builder pattern: sandbox is conditionally added, not
@@ -33,11 +33,11 @@ test("codex.mjs source: buildThreadParams omits sandbox when caller passes nothi
 
 test("codex.mjs: runAppServerReview review path does NOT hard-code sandbox", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/lib/codex.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // PR-2.1 / BREAKING #1 (#240 / #167 / #304) — MIGRATION_v2.0.md row 1 of
-  // BREAKING #1 documents that `/codex:review` + `/codex:adversarial-review`
+  // BREAKING #1 documents that `/opnd-codex:review` + `/opnd-codex:adversarial-review`
   // omit the sandbox field so the app-server falls back to the user's
   // ~/.codex/config.toml `sandbox_mode`. The earlier `executeReviewWithModel`
   // body hard-coded `sandbox: "read-only"` which bypassed the helper omit
@@ -65,7 +65,7 @@ test("codex.mjs: runAppServerReview review path does NOT hard-code sandbox", asy
 // emits the right `params.sandbox` shape (or omits it entirely).
 
 test("CDX-004 runtime: resolveSandboxValue falls back to env when caller omits sandbox", async () => {
-  const { __testHooks } = await import("../plugins/codex/scripts/lib/codex.mjs");
+  const { __testHooks } = await import("../plugins/opnd-codex/scripts/lib/codex.mjs");
   const { resolveSandboxValue } = __testHooks;
 
   // Caller did not pass sandbox + no env override -> null (-> param omit).
@@ -91,7 +91,7 @@ test("CDX-004 runtime: resolveSandboxValue falls back to env when caller omits s
 });
 
 test("CDX-004 runtime: buildThreadParams omits sandbox when caller passes null", async () => {
-  const { __testHooks } = await import("../plugins/codex/scripts/lib/codex.mjs");
+  const { __testHooks } = await import("../plugins/opnd-codex/scripts/lib/codex.mjs");
   const { buildThreadParams } = __testHooks;
 
   // Mirror what `executeReviewWithModel` (post-fix) hands to startThread:
@@ -121,7 +121,7 @@ test("CDX-004 runtime: buildThreadParams omits sandbox when caller passes null",
 
 test("codex.mjs: CODEX_PLUGIN_SANDBOX_DEFAULT env override is honored", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/lib/codex.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /CODEX_PLUGIN_SANDBOX_DEFAULT/, "legacy-restore env var documented");
@@ -130,7 +130,7 @@ test("codex.mjs: CODEX_PLUGIN_SANDBOX_DEFAULT env override is honored", async ()
 
 test("codex-companion.mjs: first-run V2 notice helper exists and is gated", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /maybeEmitV2FirstRunWarning/, "warning helper present");
@@ -140,7 +140,7 @@ test("codex-companion.mjs: first-run V2 notice helper exists and is gated", asyn
 
 test("codex-companion.mjs: handleTask sandbox-default logic respects CODEX_PLUGIN_SANDBOX_DEFAULT", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /effectiveSandbox = sandbox \?\? null/, "default is null, not read-only");

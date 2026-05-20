@@ -4,8 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { buildCommandInvocation, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
-import { loadBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { buildCommandInvocation, terminateProcessTree } from "../plugins/opnd-codex/scripts/lib/process.mjs";
+import { loadBrokerSession } from "../plugins/opnd-codex/scripts/lib/broker-lifecycle.mjs";
 
 // Track every test-spawned workspace + broker session dir so process exit can sweep
 // any survivors. Prevents the /tmp/cxc-* orphan accumulation reported in upstream #163.

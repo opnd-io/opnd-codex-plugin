@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseArgs } from "../plugins/codex/scripts/lib/args.mjs";
+import { parseArgs } from "../plugins/opnd-codex/scripts/lib/args.mjs";
 
 // PR-2.2 (#124 / #145) regression — --full-access and the Claude Code naming
 // twin --dangerously-skip-permissions must be accepted as boolean flags and
@@ -40,7 +40,7 @@ test("--dangerously-skip-permissions is parsed as a boolean flag", () => {
 
 test("source: handleTask treats --full-access as alias for danger-full-access + never approval", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /fullAccessAlias = Boolean\(options\["full-access"\] \|\| options\["dangerously-skip-permissions"\]\)/);
@@ -51,7 +51,7 @@ test("source: handleTask treats --full-access as alias for danger-full-access + 
 
 test("source: explicit --sandbox / --approval still win over the alias", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // The guard `if (sandbox == null)` is the assertion: an explicit --sandbox

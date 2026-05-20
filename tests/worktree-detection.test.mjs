@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
-import { collectReviewContext, detectWorktreeContext, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
+import { collectReviewContext, detectWorktreeContext, resolveReviewTarget } from "../plugins/opnd-codex/scripts/lib/git.mjs";
 
 // PR-4.7 (#280) — when the workspace is a git linked worktree, surface the
 // fact in the review prompt's collection guidance so Codex does not waste

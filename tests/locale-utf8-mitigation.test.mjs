@@ -9,7 +9,7 @@ import {
   applyUtf8LocaleOverride,
   buildPluginCodexEnv,
   __resetAppServerNoticeCache
-} from "../plugins/codex/scripts/lib/app-server.mjs";
+} from "../plugins/opnd-codex/scripts/lib/app-server.mjs";
 
 // PR-4.5 mitigation (#310) — plugin-side workaround for the upstream
 // codex CLI's Big5 / GBK / EUC-* JSONL parser crash on non-UTF-8 hosts.
@@ -29,7 +29,7 @@ import {
 //     output formatting.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const APP_SERVER = path.join(ROOT, "plugins", "codex", "scripts", "lib", "app-server.mjs");
+const APP_SERVER = path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "app-server.mjs");
 
 function freshTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-locale-test-"));

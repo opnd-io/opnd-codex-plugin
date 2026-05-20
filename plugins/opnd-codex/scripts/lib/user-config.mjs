@@ -5,7 +5,7 @@
 // from a JSON file at one of:
 //
 //   1. $CODEX_PLUGIN_USER_CONFIG (env override — primarily for tests + ad-hoc
-//      `CODEX_PLUGIN_USER_CONFIG=/tmp/x.json /codex:rescue …`)
+//      `CODEX_PLUGIN_USER_CONFIG=/tmp/x.json /opnd-codex:rescue …`)
 //   2. $XDG_CONFIG_HOME/codex-plugin-cc/config.json (or ~/.config/...)
 //   3. ~/.codex/plugin-cc.json (legacy fallback so existing users do not
 //      have to relocate the file just because we picked XDG)

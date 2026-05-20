@@ -18,8 +18,8 @@ import { fileURLToPath } from "node:url";
 //      events.jsonl — and asserting the public behavior matches.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const COMPANION = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
-const STATUS_CMD = path.join(ROOT, "plugins", "codex", "commands", "status.md");
+const COMPANION = path.join(ROOT, "plugins", "opnd-codex", "scripts", "codex-companion.mjs");
+const STATUS_CMD = path.join(ROOT, "plugins", "opnd-codex", "commands", "status.md");
 
 function read(file) {
   return fs.readFileSync(file, "utf8");
@@ -161,7 +161,7 @@ test("readLogTailFromOffset (lib/log-tail.mjs): module exports + signature", asy
   // CDX-003 — helper was extracted from codex-companion.mjs so it can be
   // imported and called directly by tests. companion.mjs runs main() at
   // import time and cannot be loaded as a library.
-  const mod = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const mod = await import("../plugins/opnd-codex/scripts/lib/log-tail.mjs");
   assert.equal(typeof mod.readLogTailFromOffset, "function", "named export present");
   assert.equal(mod.READ_LOG_TAIL_FULL_READ_CAP_BYTES, 8 * 1024 * 1024, "8 MB cap exported");
   assert.equal(mod.READ_LOG_TAIL_PARTIAL_READ_BYTES, 256 * 1024, "256 KB partial-window exported");
@@ -171,7 +171,7 @@ test("readLogTailFromOffset (functional): same-line repetition surfaces every li
   // CDX-003 — real call against the production helper. Two identical
   // lines appended in one tick must surface as TWO emissions. The old
   // content-Set dedup would have dropped one.
-  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const { readLogTailFromOffset } = await import("../plugins/opnd-codex/scripts/lib/log-tail.mjs");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-test-"));
   try {
     const log = path.join(tmp, "job.log");
@@ -186,7 +186,7 @@ test("readLogTailFromOffset (functional): same-line repetition surfaces every li
 });
 
 test("readLogTailFromOffset (functional): no-new-bytes fast path returns no lines", async () => {
-  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const { readLogTailFromOffset } = await import("../plugins/opnd-codex/scripts/lib/log-tail.mjs");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-empty-"));
   try {
     const log = path.join(tmp, "job.log");
@@ -201,7 +201,7 @@ test("readLogTailFromOffset (functional): no-new-bytes fast path returns no line
 });
 
 test("readLogTailFromOffset (functional): partial-line is held back across ticks", async () => {
-  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const { readLogTailFromOffset } = await import("../plugins/opnd-codex/scripts/lib/log-tail.mjs");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-partial-"));
   try {
     const log = path.join(tmp, "job.log");
@@ -223,7 +223,7 @@ test("readLogTailFromOffset (functional): partial-line is held back across ticks
 });
 
 test("readLogTailFromOffset (functional): truncate / rotation resets the watermark", async () => {
-  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const { readLogTailFromOffset } = await import("../plugins/opnd-codex/scripts/lib/log-tail.mjs");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-rotate-"));
   try {
     const log = path.join(tmp, "job.log");
@@ -250,7 +250,7 @@ test("readLogTailFromOffset (functional, CDX-002): TextDecoder buffers multi-byt
   // TextDecoder with `{ stream: true }` lets the helper buffer the
   // trailing continuation bytes inside the decoder and reunify them on
   // the next read.
-  const { readLogTailFromOffset } = await import("../plugins/codex/scripts/lib/log-tail.mjs");
+  const { readLogTailFromOffset } = await import("../plugins/opnd-codex/scripts/lib/log-tail.mjs");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-watermark-utf8-"));
   try {
     const log = path.join(tmp, "job.log");
@@ -397,7 +397,7 @@ test("audit #1: runStatusWatch tick passes reap:true to buildSingleJobSnapshot",
 });
 
 test("audit #1: buildSingleJobSnapshot threads reap through to listJobs", () => {
-  const source = read(path.join(ROOT, "plugins", "codex", "scripts", "lib", "job-control.mjs"));
+  const source = read(path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "job-control.mjs"));
   const fn = source.match(/export function buildSingleJobSnapshot[\s\S]+?^\}/m);
   assert.ok(fn, "buildSingleJobSnapshot found");
   assert.match(
@@ -416,7 +416,7 @@ test("audit #2: readLogTail guards on stat size + falls back to partial read", (
     /import\s*\{[\s\S]*?READ_LOG_TAIL_FULL_READ_CAP_BYTES[\s\S]*?READ_LOG_TAIL_PARTIAL_READ_BYTES[\s\S]*?\}\s*from\s*"\.\/lib\/log-tail\.mjs"/,
     "constants imported from lib/log-tail.mjs"
   );
-  const libSource = read(path.join(ROOT, "plugins", "codex", "scripts", "lib", "log-tail.mjs"));
+  const libSource = read(path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "log-tail.mjs"));
   assert.match(
     libSource,
     /READ_LOG_TAIL_FULL_READ_CAP_BYTES = 8 \* 1024 \* 1024/,

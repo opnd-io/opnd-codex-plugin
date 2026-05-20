@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
+const PLUGIN_ROOT = path.join(ROOT, "plugins", "opnd-codex");
 const COMPANION_SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 
 function read(relativePath) {
@@ -67,7 +67,7 @@ test("adversarial review command uses AskUserQuestion and background Bash while 
   assert.match(source, /Claude Code's `Bash\(..., run_in_background: true\)` is what actually detaches the run/i);
   assert.match(source, /When in doubt, run the review/i);
   assert.match(source, /\(Recommended\)/);
-  assert.match(source, /uses the same review target selection as `\/codex:review`/i);
+  assert.match(source, /uses the same review target selection as `\/opnd-codex:review`/i);
   assert.match(source, /supports working-tree review, branch review, and `--base <ref>`/i);
   assert.match(source, /does not support `--scope staged` or `--scope unstaged`/i);
   assert.match(source, /can still take extra focus text after the flags/i);
@@ -201,18 +201,18 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
   assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
   assert.match(readme, /continue a previous Codex task/i);
-  assert.match(readme, /### `\/codex:setup`/);
-  assert.match(readme, /### `\/codex:review`/);
-  assert.match(readme, /### `\/codex:adversarial-review`/);
-  assert.match(readme, /uses the same review target selection as `\/codex:review`/i);
+  assert.match(readme, /### `\/opnd-codex:setup`/);
+  assert.match(readme, /### `\/opnd-codex:review`/);
+  assert.match(readme, /### `\/opnd-codex:adversarial-review`/);
+  assert.match(readme, /uses the same review target selection as `\/opnd-codex:review`/i);
   assert.match(readme, /--base main challenge whether this was the right caching and retry design/);
-  assert.match(readme, /### `\/codex:rescue`/);
-  assert.match(readme, /### `\/codex:agent`/);
-  assert.match(readme, /### `\/codex:continue`/);
-  assert.match(readme, /### `\/codex:approve` and `\/codex:deny`/);
-  assert.match(readme, /### `\/codex:status`/);
-  assert.match(readme, /### `\/codex:result`/);
-  assert.match(readme, /### `\/codex:cancel`/);
+  assert.match(readme, /### `\/opnd-codex:rescue`/);
+  assert.match(readme, /### `\/opnd-codex:agent`/);
+  assert.match(readme, /### `\/opnd-codex:continue`/);
+  assert.match(readme, /### `\/opnd-codex:approve` and `\/opnd-codex:deny`/);
+  assert.match(readme, /### `\/opnd-codex:status`/);
+  assert.match(readme, /### `\/opnd-codex:result`/);
+  assert.match(readme, /### `\/opnd-codex:cancel`/);
 });
 
 test("result and cancel commands are exposed as deterministic runtime entrypoints", () => {
@@ -231,13 +231,13 @@ test("result and cancel commands are exposed as deterministic runtime entrypoint
 test("axis-R: handleResult parses --wait + timeout-ms + poll-interval-ms (docs/README contract)", async () => {
   // 2026-05-18 audit cycle axis R (docs/exploration/2026-05-18-163003) —
   // README:326 and agents/codex-rescue.md:26 both document
-  // `/codex:result --wait <jobId>` as the blocking variant. The earlier
+  // `/opnd-codex:result --wait <jobId>` as the blocking variant. The earlier
   // handleResult body only accepted `--json` so `--wait` was silently
   // consumed as the positional job id. This guard locks in the parse
   // surface and the source-level wait dispatch so future refactors do
   // not silently break the documented contract again.
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
   const fn = source.match(/async function handleResult[\s\S]+?^\}/m);
   assert.ok(fn, "handleResult block found");
@@ -256,9 +256,9 @@ test("axis-R: handleResult parses --wait + timeout-ms + poll-interval-ms (docs/R
   );
   // Confirm the README workflow doc is finally honored end-to-end.
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-  assert.match(readme, /\/codex:result --wait/, "README still advertises /codex:result --wait");
+  assert.match(readme, /\/opnd-codex:result --wait/, "README still advertises /opnd-codex:result --wait");
   const rescueAgent = read("agents/codex-rescue.md");
-  assert.match(rescueAgent, /\/codex:result --wait <jobId>/, "rescue agent still advertises /codex:result --wait <jobId>");
+  assert.match(rescueAgent, /\/opnd-codex:result --wait <jobId>/, "rescue agent still advertises /opnd-codex:result --wait <jobId>");
   // commands/result.md docs the new flag explicitly so future readers see it.
   const resultCmd = read("commands/result.md");
   assert.match(resultCmd, /--wait \[--timeout-ms <ms>\] \[--poll-interval-ms <ms>\]/, "result.md argument-hint mentions --wait");
@@ -319,6 +319,6 @@ test("setup command can offer Codex install and still points users to codex logi
   assert.match(setup, /codex-companion\.mjs" setup --json \$ARGUMENTS/);
   assert.match(readme, /!codex login/);
   assert.match(readme, /offer to install Codex for you/i);
-  assert.match(readme, /\/codex:setup --enable-review-gate/);
-  assert.match(readme, /\/codex:setup --disable-review-gate/);
+  assert.match(readme, /\/opnd-codex:setup --enable-review-gate/);
+  assert.match(readme, /\/opnd-codex:setup --disable-review-gate/);
 });

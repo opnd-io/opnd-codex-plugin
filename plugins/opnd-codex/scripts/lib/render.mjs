@@ -118,9 +118,9 @@ function appendActiveJobsTable(lines, jobs) {
   lines.push("| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
   lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const job of jobs) {
-    const actions = [`/codex:status ${job.id}`];
+    const actions = [`/opnd-codex:status ${job.id}`];
     if (job.status === "queued" || job.status === "running") {
-      actions.push(`/codex:cancel ${job.id}`);
+      actions.push(`/opnd-codex:cancel ${job.id}`);
     }
     lines.push(
       `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
@@ -153,7 +153,7 @@ function pushJobDetails(lines, job, options = {}) {
     lines.push(`  Log: ${job.logFile}`);
   }
   if ((job.status === "queued" || job.status === "running") && options.showCancelHint) {
-    lines.push(`  Cancel: /codex:cancel ${job.id}`);
+    lines.push(`  Cancel: /opnd-codex:cancel ${job.id}`);
   }
   const pendingApprovals = Array.isArray(job.pendingApprovals)
     ? job.pendingApprovals.filter((approval) => approval.status === "pending")
@@ -162,16 +162,16 @@ function pushJobDetails(lines, job, options = {}) {
     lines.push("  Pending approvals:");
     for (const approval of pendingApprovals) {
       lines.push(`    - ${approval.id} [${approval.risk ?? "unknown"}] ${approval.summary ?? approval.method}`);
-      lines.push(`      Approve: /codex:approve ${approval.id}`);
-      lines.push(`      Deny: /codex:deny ${approval.id}`);
+      lines.push(`      Approve: /opnd-codex:approve ${approval.id}`);
+      lines.push(`      Deny: /opnd-codex:deny ${approval.id}`);
     }
   }
   if (job.status !== "queued" && job.status !== "running" && options.showResultHint) {
-    lines.push(`  Result: /codex:result ${job.id}`);
+    lines.push(`  Result: /opnd-codex:result ${job.id}`);
   }
   if (job.status !== "queued" && job.status !== "running" && job.jobClass === "task" && job.write && options.showReviewHint) {
-    lines.push("  Review changes: /codex:review --wait");
-    lines.push("  Stricter review: /codex:adversarial-review --wait");
+    lines.push("  Review changes: /opnd-codex:review --wait");
+    lines.push("  Stricter review: /opnd-codex:adversarial-review --wait");
   }
   if (job.progressPreview?.length) {
     lines.push("  Progress:");
@@ -514,7 +514,7 @@ export function renderCancelReport(job) {
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
   }
-  lines.push("- Check `/codex:status` for the updated queue.");
+  lines.push("- Check `/opnd-codex:status` for the updated queue.");
 
   return `${lines.join("\n").trimEnd()}\n`;
 }

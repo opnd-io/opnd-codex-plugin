@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// PR-3.4 (#279 / #207) regression — `--background` for /codex:review must
+// PR-3.4 (#279 / #207) regression — `--background` for /opnd-codex:review must
 // actually queue a background job, not silently run foreground. The
 // task-worker must recognize the queued review and dispatch executeReviewRun
 // instead of executeTaskRun.
 
 test("codex-companion source: handleReviewCommand reads options.background and queues", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // Look at the handleReviewCommand block specifically: it must check
@@ -23,7 +23,7 @@ test("codex-companion source: handleReviewCommand reads options.background and q
 
 test("codex-companion source: handleTaskWorker dispatches reviews via executeReviewRun", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   const workerMatch = source.match(/async function handleTaskWorker[\s\S]+?^\}/m);
@@ -36,7 +36,7 @@ test("codex-companion source: handleTaskWorker dispatches reviews via executeRev
 
 test("codex-companion source: queued review carries reviewName so the worker can discriminate", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   const handleReviewMatch = source.match(/async function handleReviewCommand[\s\S]+?^\}/m);

@@ -16,7 +16,7 @@ import {
   updateJobFile,
   updateState,
   writeJobFile
-} from "../plugins/codex/scripts/lib/state.mjs";
+} from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -48,7 +48,7 @@ test("resolveStateDir migrates tmpdir state to the plugin data dir", () => {
   const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
   delete process.env.CLAUDE_PLUGIN_DATA;
 
-  // Write state to the tmpdir fallback (simulates a /codex:* Bash command
+  // Write state to the tmpdir fallback (simulates a /opnd-codex:* Bash command
   // run without CLAUDE_PLUGIN_DATA).
   const fallbackStateDir = resolveStateDir(workspace);
   const fallbackStateFile = resolveStateFile(workspace);

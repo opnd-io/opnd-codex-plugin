@@ -6,7 +6,7 @@ import {
   buildApprovalResponse,
   classifyApprovalRisk,
   createPendingApprovalRecord
-} from "../plugins/codex/scripts/lib/approvals.mjs";
+} from "../plugins/opnd-codex/scripts/lib/approvals.mjs";
 import { makeTempDir } from "./helpers.mjs";
 
 test("approval records redact command secrets before persistence", () => {

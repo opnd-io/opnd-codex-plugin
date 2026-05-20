@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 // codex.mjs does not export these, so the contract documents the behavior
 // via a tiny live import + duck-type check.
 
-const codex = await import("../plugins/codex/scripts/lib/codex.mjs");
+const codex = await import("../plugins/opnd-codex/scripts/lib/codex.mjs");
 
 test("codex.mjs imports cleanly with the auth-cache annotator", () => {
   // If the export shape ever drops the annotation logic, this smoke test
@@ -33,7 +33,7 @@ test("codex.mjs imports cleanly with the auth-cache annotator", () => {
 // raw source so we catch silent reverts.
 test("codex.mjs source contains the stale-auth-cache restart guidance", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/lib/codex.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
   assert.match(source, /isStaleAuthCacheError/, "detector helper present");
   assert.match(source, /annotateStaleAuthCacheError/, "annotator helper present");
