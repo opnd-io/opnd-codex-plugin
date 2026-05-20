@@ -142,7 +142,7 @@ async function isBrokerEndpointReady(endpoint) {
 }
 
 // PR-1.4 (#286 race 3) — serialize the broker session lifecycle so that two
-// parallel /codex:* invocations from the same cwd never both spawn a fresh
+// parallel /opnd-codex:* invocations from the same cwd never both spawn a fresh
 // broker. The lock covers the entire read-decide-spawn-write critical section:
 //
 //   load broker.json → check liveness → teardown if stale → spawn new →

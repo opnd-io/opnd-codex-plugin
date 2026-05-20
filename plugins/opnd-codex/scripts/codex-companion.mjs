@@ -103,7 +103,7 @@ const DEFAULT_APPROVAL_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 // PR-3.5 (#264 / #237) — defaults for `status --tail` / `--watch`. The tail
 // count is intentionally small because the per-job log can hold MBs of
 // prompt + completion text; users that want the whole file can just `cat`
-// the path printed by `/codex:status <jobId>`.
+// the path printed by `/opnd-codex:status <jobId>`.
 const DEFAULT_STATUS_TAIL_LINES = 20;
 const DEFAULT_STATUS_WATCH_INTERVAL_MS = 1500;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -389,7 +389,7 @@ function pendingApprovalsForJob(job) {
 
 function updateApprovalDecision(workspaceRoot, approvalReference, decision, options = {}) {
   if (!approvalReference) {
-    throw new Error("Provide an approval id. Run /codex:status to list pending approvals.");
+    throw new Error("Provide an approval id. Run /opnd-codex:status to list pending approvals.");
   }
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot, { reap: true }));
   const matches = [];
@@ -473,7 +473,7 @@ async function waitForApprovalDecision(workspaceRoot, jobId, approvalId) {
     if (Date.now() >= deadline) {
       throw new Error(
         `Pending approval ${approvalId} timed out after ${timeoutMs}ms with no decision. ` +
-          `Resolve it with /codex:approve or /codex:deny, or set CODEX_PLUGIN_APPROVAL_WAIT_MS ` +
+          `Resolve it with /opnd-codex:approve or /opnd-codex:deny, or set CODEX_PLUGIN_APPROVAL_WAIT_MS ` +
           `(milliseconds; 0 waits without a limit).`
       );
     }
@@ -549,7 +549,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
   }
   if (!config.stopReviewGate) {
-    nextSteps.push("Optional: run `/codex:setup --enable-review-gate` to require a fresh review before stop.");
+    nextSteps.push("Optional: run `/opnd-codex:setup --enable-review-gate` to require a fresh review before stop.");
   }
 
   return {
@@ -591,7 +591,7 @@ async function handleSetup(argv) {
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
-// PR-6.6 (#298) — /codex:review and /codex:adversarial-review consistently
+// PR-6.6 (#298) — /opnd-codex:review and /opnd-codex:adversarial-review consistently
 // returned 2-3 findings per run even when a large refactor surfaced 20+
 // material issues. The prompt itself never asked for more, so the model
 // optimized for "prefer one strong finding over several weak ones" beyond
@@ -682,7 +682,7 @@ function buildAdversarialReviewPrompt(context, focusText, options = {}) {
 function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
   }
 }
 
@@ -701,13 +701,13 @@ function buildNativeReviewTarget(target) {
 function validateNativeReviewRequest(target, focusText) {
   if (focusText.trim()) {
     throw new Error(
-      `\`/codex:review\` now maps directly to the built-in reviewer and does not support custom focus text. Retry with \`/codex:adversarial-review ${focusText.trim()}\` for focused review instructions.`
+      `\`/opnd-codex:review\` now maps directly to the built-in reviewer and does not support custom focus text. Retry with \`/opnd-codex:adversarial-review ${focusText.trim()}\` for focused review instructions.`
     );
   }
 
   const nativeTarget = buildNativeReviewTarget(target);
   if (!nativeTarget) {
-    throw new Error("This `/codex:review` target is not supported by the built-in reviewer. Retry with `/codex:adversarial-review` for custom targeting.");
+    throw new Error("This `/opnd-codex:review` target is not supported by the built-in reviewer. Retry with `/opnd-codex:adversarial-review` for custom targeting.");
   }
 
   return nativeTarget;
@@ -770,7 +770,7 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
   const activeTask = visibleJobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
-    throw new Error(`Task ${activeTask.id} is still running. Use /codex:status before continuing it.`);
+    throw new Error(`Task ${activeTask.id} is still running. Use /opnd-codex:status before continuing it.`);
   }
 
   const trackedTask = findLatestResumableTaskJob(visibleJobs);
@@ -1040,7 +1040,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
+  return `${payload.title} started in the background as ${payload.jobId}. Check /opnd-codex:status ${payload.jobId} for progress.\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -1505,7 +1505,7 @@ async function handleReviewCommand(argv, config) {
   });
 
   // PR-3.4 (#279 / #207) — `--background` was declared in the option set
-  // but never read by handleReviewCommand, so /codex:review --background
+  // but never read by handleReviewCommand, so /opnd-codex:review --background
   // silently ran foreground and the caller (Claude Code) got the raw log
   // stream instead of the queued-job JSON it was waiting for. Wire the
   // background queue the same way handleTask does so review/adversarial
@@ -2000,7 +2000,7 @@ async function handleContinue(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  // PR-7.7 (#213) — same user-config defaults for /codex:continue. Sandbox
+  // PR-7.7 (#213) — same user-config defaults for /opnd-codex:continue. Sandbox
   // is not a continue option (the existing job's sandbox is reused), so
   // only model + effort flow through the resolvers here.
   const model = resolveModel(options.model);
@@ -2015,7 +2015,7 @@ async function handleContinue(argv) {
   const pendingApprovals = pendingApprovalsForJob(readStoredJob(workspaceRoot, selected.id) ?? selected);
   if (pendingApprovals.length > 0) {
     throw new Error(
-      `Codex task ${selected.id} is waiting for approval. Resolve ${pendingApprovals[0].id} with /codex:approve or /codex:deny before continuing.`
+      `Codex task ${selected.id} is waiting for approval. Resolve ${pendingApprovals[0].id} with /opnd-codex:approve or /opnd-codex:deny before continuing.`
     );
   }
   if ((selected.status === "queued" || selected.status === "running") && selected.threadId && selected.turnId) {
@@ -2474,8 +2474,8 @@ async function handleStatus(argv) {
 
 async function handleResult(argv) {
   // PR axis-R follow-up (2026-05-18 audit cycle, docs/exploration/2026-05-18-163003) —
-  // `README.md:326` and `plugins/codex/agents/codex-rescue.md:26` both document
-  // `/codex:result --wait <jobId>` as the recommended way to block until a
+  // `README.md:326` and `plugins/opnd-codex/agents/codex-rescue.md:26` both document
+  // `/opnd-codex:result --wait <jobId>` as the recommended way to block until a
   // background job reaches a terminal state, but the earlier `handleResult`
   // body only accepted `--json` so `--wait` was silently consumed as the
   // positional job id, surfacing as `No job found for "--wait"`. The
@@ -2499,7 +2499,7 @@ async function handleResult(argv) {
     });
     if (snapshot.waitTimedOut) {
       throw new Error(
-        `Job ${snapshot.job.id} is still ${snapshot.job.status} after ${snapshot.timeoutMs}ms — re-run /codex:result without --wait to see the partial state, or extend the deadline with --timeout-ms.`
+        `Job ${snapshot.job.id} is still ${snapshot.job.status} after ${snapshot.timeoutMs}ms — re-run /opnd-codex:result without --wait to see the partial state, or extend the deadline with --timeout-ms.`
       );
     }
   }
@@ -2741,7 +2741,7 @@ main().catch((error) => {
   // PR-G-B (manual port of upstream PR #312) — TurnWatchdogError uses
   // exit code 124 (matching timeout(1) convention) so calling shells and
   // tooling can distinguish a watchdog timeout from a generic failure.
-  // Emit a structured JSON line on stderr so wrappers (broker, /codex:status)
+  // Emit a structured JSON line on stderr so wrappers (broker, /opnd-codex:status)
   // can pick out the timeout metadata without parsing prose.
   if (error instanceof TurnWatchdogError) {
     process.stderr.write(

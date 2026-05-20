@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(__filename), "..");
-const BROKER_SCRIPT = path.join(ROOT_DIR, "plugins", "codex", "scripts", "app-server-broker.mjs");
+const BROKER_SCRIPT = path.join(ROOT_DIR, "plugins", "opnd-codex", "scripts", "app-server-broker.mjs");
 
 function runBrokerHelp(env = {}) {
   // The broker enters main() unconditionally so running it with no `serve`

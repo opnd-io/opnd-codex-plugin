@@ -7,9 +7,9 @@ import fs from "node:fs";
 // These guard against regressing the fixes; they are source-level contract
 // checks consistent with the existing turn-watchdog / commands test style.
 
-const companionUrl = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
-const codexUrl = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url);
-const brokerUrl = new URL("../plugins/codex/scripts/lib/broker-lifecycle.mjs", import.meta.url);
+const companionUrl = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
+const codexUrl = new URL("../plugins/opnd-codex/scripts/lib/codex.mjs", import.meta.url);
+const brokerUrl = new URL("../plugins/opnd-codex/scripts/lib/broker-lifecycle.mjs", import.meta.url);
 
 test("A1 — waitForApprovalDecision is bounded by a timeout", () => {
   const source = fs.readFileSync(companionUrl, "utf8");

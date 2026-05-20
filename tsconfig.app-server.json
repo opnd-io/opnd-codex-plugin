@@ -13,12 +13,12 @@
     "types": ["node"]
   },
   "include": [
-    "plugins/codex/scripts/lib/app-server.mjs",
-    "plugins/codex/scripts/lib/codex.mjs",
-    "plugins/codex/scripts/lib/fs.mjs",
-    "plugins/codex/scripts/lib/process.mjs",
-    "plugins/codex/scripts/lib/log-tail.mjs",
-    "plugins/codex/scripts/lib/app-server-protocol.d.ts",
-    "plugins/codex/.generated/app-server-types/**/*.ts"
+    "plugins/opnd-codex/scripts/lib/app-server.mjs",
+    "plugins/opnd-codex/scripts/lib/codex.mjs",
+    "plugins/opnd-codex/scripts/lib/fs.mjs",
+    "plugins/opnd-codex/scripts/lib/process.mjs",
+    "plugins/opnd-codex/scripts/lib/log-tail.mjs",
+    "plugins/opnd-codex/scripts/lib/app-server-protocol.d.ts",
+    "plugins/opnd-codex/.generated/app-server-types/**/*.ts"
   ]
 }

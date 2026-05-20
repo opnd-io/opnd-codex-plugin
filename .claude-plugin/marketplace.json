@@ -1,5 +1,5 @@
 {
-  "name": "opnd-io-codex",
+  "name": "opnd-codex-plugin",
   "owner": {
     "name": "opnd-io"
   },
@@ -9,13 +9,13 @@
   },
   "plugins": [
     {
-      "name": "codex",
+      "name": "opnd-codex",
       "description": "Unofficial Claude Code plugin that delegates tasks and reviews to the OpenAI Codex CLI (requires @openai/codex installed separately).",
       "version": "2.1.0",
       "author": {
         "name": "opnd-io"
       },
-      "source": "./plugins/codex"
+      "source": "./plugins/opnd-codex"
     }
   ]
 }

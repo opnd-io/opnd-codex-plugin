@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { makeTempDir } from "./helpers.mjs";
-import { __testHooks } from "../plugins/codex/scripts/lib/tracked-jobs.mjs";
-import { writeJobFile, ensureStateDir, resolveJobFile } from "../plugins/codex/scripts/lib/state.mjs";
+import { __testHooks } from "../plugins/opnd-codex/scripts/lib/tracked-jobs.mjs";
+import { writeJobFile, ensureStateDir, resolveJobFile } from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
 // PR-1.2 (#228) regression — runTrackedJob installs SIGTERM/SIGINT/SIGHUP/SIGBREAK
 // handlers around the runner so a foreground task that gets killed mid-run flushes

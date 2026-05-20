@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { maybeRingCompletionBell } from "../plugins/codex/scripts/lib/tracked-jobs.mjs";
+import { maybeRingCompletionBell } from "../plugins/opnd-codex/scripts/lib/tracked-jobs.mjs";
 
 // PR-7.4 (#134) — opt-in audible completion bell.
 //
@@ -19,8 +19,8 @@ import { maybeRingCompletionBell } from "../plugins/codex/scripts/lib/tracked-jo
 //     so any way a job ends, the bell fires once.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const TRACKED = path.join(ROOT, "plugins", "codex", "scripts", "lib", "tracked-jobs.mjs");
-const COMPANION = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
+const TRACKED = path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "tracked-jobs.mjs");
+const COMPANION = path.join(ROOT, "plugins", "opnd-codex", "scripts", "codex-companion.mjs");
 
 function captureStderr(fn) {
   const original = process.stderr.write.bind(process.stderr);

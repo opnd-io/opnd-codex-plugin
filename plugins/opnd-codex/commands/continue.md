@@ -11,4 +11,4 @@ Present the command output exactly as-is.
 
 If the selected Codex task is still running, this command steers the active turn.
 If the selected task already finished, it starts a new turn on that Codex thread.
-Use `--task-key <key>` to continue the logical task registered by `/codex:pair` or `/codex:agent`.
+Use `--task-key <key>` to continue the logical task registered by `/opnd-codex:pair` or `/opnd-codex:agent`.

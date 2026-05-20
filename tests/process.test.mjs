@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { buildCommandInvocation, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+import { buildCommandInvocation, terminateProcessTree } from "../plugins/opnd-codex/scripts/lib/process.mjs";
 
 test("buildCommandInvocation routes Windows cmd shims through cmd.exe without shell mode", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-process-"));

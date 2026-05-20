@@ -6,10 +6,10 @@ import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { makeTempDir, run } from "./helpers.mjs";
-import { listJobs, readJobFile, resolveJobFile, resolveTaskSessionFile } from "../plugins/codex/scripts/lib/state.mjs";
+import { listJobs, readJobFile, resolveJobFile, resolveTaskSessionFile } from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
+const SCRIPT = path.join(ROOT, "plugins", "opnd-codex", "scripts", "codex-companion.mjs");
 
 function testEnv(binDir, dataDir) {
   return {

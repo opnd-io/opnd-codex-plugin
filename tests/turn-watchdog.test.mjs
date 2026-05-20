@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TurnWatchdogError } from "../plugins/codex/scripts/lib/codex.mjs";
+import { TurnWatchdogError } from "../plugins/opnd-codex/scripts/lib/codex.mjs";
 
 // Manual port of upstream PR #312 contract test — fork could not
 // cherry-pick #312 cleanly (codex.mjs / codex-companion.mjs hardening
@@ -39,7 +39,7 @@ test("TurnWatchdogError defaults metadata to null when omitted", () => {
 
 test("codex-companion.mjs: TurnWatchdogError imported + main catch handles exit 124", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   // Import line includes TurnWatchdogError
@@ -68,7 +68,7 @@ test("codex-companion.mjs: TurnWatchdogError imported + main catch handles exit 
 
 test("lib/codex.mjs: watchdog helpers wired into captureTurn + runAppServerTurn", async () => {
   const fs = await import("node:fs");
-  const url = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/lib/codex.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
 
   assert.match(source, /function disarmWatchdog\(state\)/, "disarmWatchdog defined");

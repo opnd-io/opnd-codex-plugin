@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 // so the parent received an empty string instead of Codex output.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
+const PLUGIN_ROOT = path.join(ROOT, "plugins", "opnd-codex");
 
 function read(relativePath) {
   return fs.readFileSync(path.join(PLUGIN_ROOT, relativePath), "utf8");
@@ -81,12 +81,12 @@ test("agent: codex-rescue surfaces the 600s foreground hint without switching mo
   );
   assert.match(
     agent,
-    /`\/codex:status <jobId>`.*`\/codex:status --wait <jobId>`/is,
+    /`\/opnd-codex:status <jobId>`.*`\/opnd-codex:status --wait <jobId>`/is,
     "agent points at both status and status --wait"
   );
   assert.match(
     agent,
-    /`\/codex:result <jobId>`.*`\/codex:result --wait <jobId>`/is,
+    /`\/opnd-codex:result <jobId>`.*`\/opnd-codex:result --wait <jobId>`/is,
     "agent points at both result and result --wait"
   );
   assert.match(
@@ -189,12 +189,12 @@ test("skill: codex-cli-runtime documents the foreground 600s hint surface", () =
   assert.match(skill, /~?600 ?s/i, "600s mentioned");
   assert.match(
     skill,
-    /`\/codex:status <jobId>`.*`\/codex:status --wait <jobId>`/is,
+    /`\/opnd-codex:status <jobId>`.*`\/opnd-codex:status --wait <jobId>`/is,
     "skill points at both status and status --wait"
   );
   assert.match(
     skill,
-    /`\/codex:result <jobId>`.*`\/codex:result --wait <jobId>`/is,
+    /`\/opnd-codex:result <jobId>`.*`\/opnd-codex:result --wait <jobId>`/is,
     "skill points at both result and result --wait"
   );
   assert.match(
@@ -224,17 +224,17 @@ test("readme: 'Start Something Long-Running' documents the 600s ceiling + poll c
   );
   assert.match(
     readme,
-    /\/codex:status --wait task-/,
+    /\/opnd-codex:status --wait task-/,
     "README documents status --wait"
   );
   assert.match(
     readme,
-    /\/codex:result --wait task-/,
+    /\/opnd-codex:result --wait task-/,
     "README documents result --wait"
   );
   assert.match(
     readme,
-    /\/codex:cancel task-/,
+    /\/opnd-codex:cancel task-/,
     "README documents cancel"
   );
 });
@@ -317,8 +317,8 @@ test("agent: worktree guard mirrors the SKILL exception", () => {
   );
 });
 
-test("docs alignment: /codex:rescue command keeps its own command-layer semantics", () => {
-  // PR-8.5 consistency audit — the /codex:rescue command file must still
+test("docs alignment: /opnd-codex:rescue command keeps its own command-layer semantics", () => {
+  // PR-8.5 consistency audit — the /opnd-codex:rescue command file must still
   // describe --background as a Claude-side execution flag and must NOT
   // forward it to `task`. This guards against accidental drift between the
   // command-layer policy and the SKILL's "strip from argv" statement.
@@ -327,11 +327,11 @@ test("docs alignment: /codex:rescue command keeps its own command-layer semantic
   assert.match(
     command,
     /If the request includes `--background`, run the `codex:codex-rescue` subagent in the background/i,
-    "/codex:rescue command maps --background to subagent run_in_background"
+    "/opnd-codex:rescue command maps --background to subagent run_in_background"
   );
   assert.match(
     command,
     /Do not forward them to `task`/i,
-    "/codex:rescue command keeps --background / --wait off the task argv"
+    "/opnd-codex:rescue command keeps --background / --wait off the task argv"
   );
 });

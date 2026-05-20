@@ -11,10 +11,10 @@ import {
   getUserDefault,
   KNOWN_DEFAULT_KEYS,
   loadUserConfig
-} from "../plugins/codex/scripts/lib/user-config.mjs";
+} from "../plugins/opnd-codex/scripts/lib/user-config.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const COMPANION = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
+const COMPANION = path.join(ROOT, "plugins", "opnd-codex", "scripts", "codex-companion.mjs");
 
 function freshTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-user-config-test-"));
@@ -334,7 +334,7 @@ test("audit #2: explicit CODEX_PLUGIN_USER_CONFIG that exists but is unreadable 
 
 test("audit #3: Windows home directory resolution prefers USERPROFILE over HOME", () => {
   const source = fs.readFileSync(
-    path.join(ROOT, "plugins", "codex", "scripts", "lib", "user-config.mjs"),
+    path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "user-config.mjs"),
     "utf8"
   );
   // Source-level: the Windows branch must consult USERPROFILE first, then

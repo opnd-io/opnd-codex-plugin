@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { makeTempDir } from "./helpers.mjs";
-import { buildPluginCodexEnv } from "../plugins/codex/scripts/lib/app-server.mjs";
+import { buildPluginCodexEnv } from "../plugins/opnd-codex/scripts/lib/app-server.mjs";
 
 // PR-5.6 (#282) BREAKING regression — plugin-spawned codex children get a
 // dedicated CODEX_HOME so their sessions / history feed do not pollute the
@@ -52,7 +52,7 @@ test("Missing HOME / USERPROFILE: returns a copy without CODEX_HOME (gracefully 
 });
 
 test("codex-companion v2 notice mentions both BREAKING changes", async () => {
-  const url = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url);
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
   const source = fs.readFileSync(url, "utf8");
   assert.match(source, /Sandbox default is now inherited/);
   assert.match(source, /claude-code\//, "second BREAKING (home isolation) mentioned");

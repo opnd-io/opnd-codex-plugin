@@ -46,10 +46,10 @@ Operating rules:
 - The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` and return that command's stdout as-is.
 - Return the Codex companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
-- Do not ask the subagent to inspect files, monitor progress, poll `/codex:status`, fetch `/codex:result`, call `/codex:cancel`, summarize output, or do follow-up work of its own.
+- Do not ask the subagent to inspect files, monitor progress, poll `/opnd-codex:status`, fetch `/opnd-codex:result`, call `/opnd-codex:cancel`, summarize output, or do follow-up work of its own.
 - Leave `--effort` unset unless the user explicitly asks for a specific reasoning effort.
 - Leave the model unset unless the user explicitly asks for one. If they ask for `spark`, map it to `gpt-5.3-codex-spark`.
 - Leave `--sandbox` unset unless the user explicitly requests a sandbox mode. If present, pass through only `read-only`, `workspace-write`, or `danger-full-access`.
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
-- If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
+- If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/opnd-codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.

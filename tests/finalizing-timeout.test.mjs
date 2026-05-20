@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { __testHooks } from "../plugins/codex/scripts/lib/codex.mjs";
+import { __testHooks } from "../plugins/opnd-codex/scripts/lib/codex.mjs";
 
 // PR-1.3 (#183) regression — a TurnCaptureState that observes phase="finalizing"
 // must surface a deterministic failure if the turn never reaches a terminal

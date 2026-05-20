@@ -147,7 +147,7 @@ vite.config.ts.timestamp-*
 .vite/
 
 output/
-plugins/codex/.generated/
+plugins/opnd-codex/.generated/
 
 # Local analysis / review artifacts (machine paths + Codex session IDs)
 docs/analyze/

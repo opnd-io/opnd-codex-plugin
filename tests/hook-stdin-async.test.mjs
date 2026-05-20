@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readHookStdinJsonAsync } from "../plugins/codex/scripts/lib/fs.mjs";
+import { readHookStdinJsonAsync } from "../plugins/opnd-codex/scripts/lib/fs.mjs";
 
 // PR-1.6 (#120 / #247 / #191) regression — hook scripts that used sync
 // fs.readFileSync(0) crashed with EAGAIN on parallel sessions and blocked
@@ -22,8 +22,8 @@ import { readHookStdinJsonAsync } from "../plugins/codex/scripts/lib/fs.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(__filename), "..");
-const SESSION_HOOK = path.join(ROOT_DIR, "plugins", "codex", "scripts", "session-lifecycle-hook.mjs");
-const STOP_HOOK = path.join(ROOT_DIR, "plugins", "codex", "scripts", "stop-review-gate-hook.mjs");
+const SESSION_HOOK = path.join(ROOT_DIR, "plugins", "opnd-codex", "scripts", "session-lifecycle-hook.mjs");
+const STOP_HOOK = path.join(ROOT_DIR, "plugins", "opnd-codex", "scripts", "stop-review-gate-hook.mjs");
 
 function spawnHook(scriptPath, args, { stdin = null, timeoutMs = 8000 } = {}) {
   return new Promise((resolve) => {

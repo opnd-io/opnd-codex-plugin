@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 //      and the user thinks the prompt just never fired).
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const COMMANDS = path.join(ROOT, "plugins", "codex", "commands");
+const COMMANDS = path.join(ROOT, "plugins", "opnd-codex", "commands");
 
 function read(relativePath) {
   return fs.readFileSync(path.join(COMMANDS, relativePath), "utf8");
@@ -129,7 +129,7 @@ test("setup.md fallback never auto-installs without explicit operator consent", 
 test("review.md + adversarial-review.md fallbacks pick background (not foreground)", () => {
   // Foreground in non-interactive mode would block the `claude --print`
   // call for the full review duration (~minutes). Background returns a
-  // jobId immediately; the operator can poll with /codex:status. The
+  // jobId immediately; the operator can poll with /opnd-codex:status. The
   // background-recommendation rule already exists for the interactive
   // path ("recommend background in every other case"); the fallback
   // must match that, not invert it.

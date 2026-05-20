@@ -14,11 +14,11 @@ import {
   EVENT_NAMES,
   ERROR_CLASSES,
   SCHEMA_VERSION
-} from "../plugins/codex/scripts/lib/telemetry.mjs";
+} from "../plugins/opnd-codex/scripts/lib/telemetry.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const COMPANION = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
-const TRACKED = path.join(ROOT, "plugins", "codex", "scripts", "lib", "tracked-jobs.mjs");
+const COMPANION = path.join(ROOT, "plugins", "opnd-codex", "scripts", "codex-companion.mjs");
+const TRACKED = path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "tracked-jobs.mjs");
 
 function freshTmpDataRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-telemetry-test-"));
@@ -316,7 +316,7 @@ test("audit #3: cancelled emit falls back to createTraceId when no traceId is kn
 
 test("audit #1: telemetry module documents the concurrent-append safety boundary", () => {
   const source = fs.readFileSync(
-    path.join(ROOT, "plugins", "codex", "scripts", "lib", "telemetry.mjs"),
+    path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "telemetry.mjs"),
     "utf8"
   );
   // The doc-comment must spell out (a) POSIX PIPE_BUF assumption, (b) the
@@ -332,7 +332,7 @@ test("audit #1: telemetry module documents the concurrent-append safety boundary
 
 test("audit #4: telemetry module documents the extras field-name reservation rule", () => {
   const source = fs.readFileSync(
-    path.join(ROOT, "plugins", "codex", "scripts", "lib", "telemetry.mjs"),
+    path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "telemetry.mjs"),
     "utf8"
   );
   assert.match(

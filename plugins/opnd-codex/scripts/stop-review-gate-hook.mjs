@@ -64,7 +64,7 @@ function buildSetupNote(cwd) {
   }
 
   const detail = availability.detail ? ` ${availability.detail}.` : "";
-  return `Codex is not set up for the review gate.${detail} Run /codex:setup.`;
+  return `Codex is not set up for the review gate.${detail} Run /opnd-codex:setup.`;
 }
 
 function parseStopReviewOutput(rawOutput) {
@@ -73,7 +73,7 @@ function parseStopReviewOutput(rawOutput) {
     return {
       ok: false,
       reason:
-        "The stop-time Codex review task returned no final output. Run /codex:review --wait manually or bypass the gate."
+        "The stop-time Codex review task returned no final output. Run /opnd-codex:review --wait manually or bypass the gate."
     };
   }
 
@@ -92,7 +92,7 @@ function parseStopReviewOutput(rawOutput) {
   return {
     ok: false,
     reason:
-      "The stop-time Codex review task returned an unexpected answer. Run /codex:review --wait manually or bypass the gate."
+      "The stop-time Codex review task returned an unexpected answer. Run /opnd-codex:review --wait manually or bypass the gate."
   };
 }
 
@@ -175,7 +175,7 @@ function runStopReview(cwd, input = {}) {
       ok: false,
       reason: detail
         ? `The stop-time Codex review task failed: ${detail}`
-        : "The stop-time Codex review task failed. Run /codex:review --wait manually or bypass the gate."
+        : "The stop-time Codex review task failed. Run /opnd-codex:review --wait manually or bypass the gate."
     };
   }
 
@@ -187,7 +187,7 @@ function runStopReview(cwd, input = {}) {
     // pattern (broker emitted partial output, MCP crashed mid-turn, etc.).
     // Treat as allow-skip so we never block on parse glitches alone.
     return buildAllowSkip(
-      "Stop-time review returned invalid JSON. Allowing session end; re-run /codex:review --wait manually to inspect."
+      "Stop-time review returned invalid JSON. Allowing session end; re-run /opnd-codex:review --wait manually to inspect."
     );
   }
 }
@@ -201,7 +201,7 @@ async function main() {
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot, { reap: true }), input));
   const runningJob = jobs.find((job) => job.status === "queued" || job.status === "running");
   const runningTaskNote = runningJob
-    ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
+    ? `Codex task ${runningJob.id} is still running. Check /opnd-codex:status and use /opnd-codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
 
   if (!config.stopReviewGate) {
