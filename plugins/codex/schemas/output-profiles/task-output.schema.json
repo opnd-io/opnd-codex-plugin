@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "evidence", "confidence", "unresolved", "next_command", "verification"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "description": "Concise outcome label such as pass, needs-work, blocked, implemented, or recommendation."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One compact paragraph with the main result."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Concrete files, commands, observations, or source references used to reach the verdict."
+    },
+    "confidence": {
+      "type": "string",
+      "description": "Low, medium, high, or an explicit uncertainty statement."
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "impacted_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_command": {
+      "type": ["string", "null"],
+      "description": "The next concrete command if one is needed; null when no command is needed."
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Verification steps run, skipped, or still needed."
+    }
+  }
+}

@@ -11,6 +11,7 @@ When the helper returns Codex output:
 - For review output, present findings first and keep them ordered by severity.
 - Use the file paths and line numbers exactly as the helper reports them.
 - Preserve evidence boundaries. If Codex marked something as an inference, uncertainty, or follow-up question, keep that distinction.
+- If the output is a `Codex Result Digest`, use it as a compact handoff for the next Codex/Claude step and fetch the full result only when the digest is insufficient.
 - Preserve output sections when the prompt asked for them, such as observed facts, inferences, open questions, touched files, or next steps.
 - If there are no findings, say that explicitly and keep the residual-risk note brief.
 - If Codex made edits, say so explicitly and list the touched files when the helper provides them.

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
-import { resolveJobFile, resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import { getProcessStartTimeRaw, resolveJobFile, resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -1185,8 +1185,15 @@ test("review accepts --background while still running as a tracked review job", 
 
   assert.equal(launched.status, 0, launched.stderr);
   const launchPayload = JSON.parse(launched.stdout);
-  assert.equal(launchPayload.review, "Review");
-  assert.match(launchPayload.codex.stdout, /No material issues found/);
+  assert.equal(launchPayload.status, "queued");
+  assert.match(launchPayload.jobId, /^review-/);
+
+  const reviewResult = run("node", [SCRIPT, "result", "--wait", "--timeout-ms", "60000", launchPayload.jobId], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(reviewResult.status, 0, reviewResult.stderr);
+  assert.match(reviewResult.stdout, /No material issues found/);
 
   const status = run("node", [SCRIPT, "status"], {
     cwd: repo,
@@ -2146,6 +2153,8 @@ test("stop hook logs running tasks to stderr without blocking when the review ga
             jobClass: "task",
             sessionId: "sess-current",
             logFile: runningLog,
+            pid: process.pid,
+            processStartedAt: getProcessStartTimeRaw(process.pid),
             createdAt: "2026-03-18T15:32:00.000Z",
             updatedAt: "2026-03-18T15:33:00.000Z"
           }

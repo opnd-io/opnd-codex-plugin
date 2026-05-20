@@ -55,7 +55,14 @@ function normalizeReviewFinding(finding, index) {
     file: typeof source.file === "string" && source.file.trim() ? source.file.trim() : "unknown",
     line_start: lineStart,
     line_end: lineEnd,
-    recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : ""
+    recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : "",
+    confidence:
+      typeof source.confidence === "number" && Number.isFinite(source.confidence)
+        ? source.confidence
+        : typeof source.confidence === "string" && source.confidence.trim()
+        ? source.confidence.trim()
+        : null,
+    verification: typeof source.verification === "string" ? source.verification.trim() : ""
   };
 }
 
@@ -281,6 +288,12 @@ export function renderReviewResult(parsedResult, meta) {
       if (finding.recommendation) {
         lines.push(`  Recommendation: ${finding.recommendation}`);
       }
+      if (finding.confidence != null) {
+        lines.push(`  Confidence: ${finding.confidence}`);
+      }
+      if (finding.verification) {
+        lines.push(`  Verification: ${finding.verification}`);
+      }
     }
   }
 
@@ -398,7 +411,38 @@ export function renderJobStatusReport(job) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderStoredJobResult(job, storedJob) {
+function renderResultDigest(job, storedJob) {
+  const digest = storedJob?.resultDigest ?? job?.resultDigest ?? null;
+  if (!digest) {
+    return null;
+  }
+  const lines = [
+    "# Codex Result Digest",
+    "",
+    `Job: ${digest.jobId ?? job.id}`,
+    `Status: ${digest.status ?? job.status ?? "unknown"}`,
+    `Verdict: ${digest.verdict ?? "unknown"}`
+  ];
+  if (digest.summary) lines.push(`Summary: ${digest.summary}`);
+  if (digest.failureClass) lines.push(`Failure class: ${digest.failureClass}`);
+  if (digest.taskKey) lines.push(`Task key: ${digest.taskKey}`);
+  if (digest.taskFingerprint) lines.push(`Task fingerprint: ${digest.taskFingerprint}`);
+  if (digest.outputProfile) lines.push(`Output profile: ${digest.outputProfile}`);
+  if (digest.threadId) {
+    lines.push(`Codex session ID: ${digest.threadId}`);
+    lines.push(`Resume in Codex: codex resume ${digest.threadId}`);
+  }
+  if (digest.outputHash) lines.push(`Output hash: ${digest.outputHash}`);
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function renderStoredJobResult(job, storedJob, options = {}) {
+  if (options.digest) {
+    const digestOutput = renderResultDigest(job, storedJob);
+    if (digestOutput) {
+      return digestOutput;
+    }
+  }
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? `codex resume ${threadId}` : null;
   if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {

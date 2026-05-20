@@ -11,6 +11,7 @@ const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
+const TASK_SESSIONS_DIR_NAME = "task-sessions";
 const MAX_JOBS = 50;
 const LOCK_DIR_NAME = ".lock";
 const BROKER_LOCK_DIR_NAME = ".broker.lock";
@@ -59,12 +60,17 @@ export function resolveJobsDir(cwd) {
   return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
 }
 
+export function resolveTaskSessionsDir(cwd) {
+  return path.join(resolveStateDir(cwd), TASK_SESSIONS_DIR_NAME);
+}
+
 function resolveLockDir(cwd) {
   return path.join(resolveStateDir(cwd), LOCK_DIR_NAME);
 }
 
 export function ensureStateDir(cwd) {
   fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+  fs.mkdirSync(resolveTaskSessionsDir(cwd), { recursive: true });
 }
 
 function sleepSync(ms) {
@@ -139,7 +145,7 @@ export function getProcessStartTimeRaw(pid) {
         const match = String(result.stdout ?? "").match(/CreationDate=(\S+)/);
         return match?.[1] ?? null;
       }
-    } else if (process.platform !== "linux") {
+    } else {
       // Other POSIX (FreeBSD, etc.) — best-effort lstart.
       const result = childProcessSpawnSync("ps", ["-o", "lstart=", "-p", String(pid)]);
       if (result?.status === 0) {
@@ -566,4 +572,57 @@ export function resolveJobLogFile(cwd, jobId) {
 export function resolveJobFile(cwd, jobId) {
   ensureStateDir(cwd);
   return path.join(resolveJobsDir(cwd), `${jobId}.json`);
+}
+
+function sanitizeStateFileKey(value) {
+  const key = String(value ?? "").trim().replace(/[^a-zA-Z0-9._:-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!key) {
+    throw new Error("Task session key is required.");
+  }
+  return key.slice(0, 120);
+}
+
+export function resolveTaskSessionFile(cwd, taskKey) {
+  ensureStateDir(cwd);
+  return path.join(resolveTaskSessionsDir(cwd), `${sanitizeStateFileKey(taskKey)}.json`);
+}
+
+export function readTaskSession(cwd, taskKey) {
+  const filePath = resolveTaskSessionFile(cwd, taskKey);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  return readJsonFileWithRetry(filePath, () => null, { throwOnInvalid: true });
+}
+
+export function writeTaskSession(cwd, entry) {
+  if (!entry?.taskKey) {
+    throw new Error("Task session entry requires taskKey.");
+  }
+  return withStateLock(cwd, () => {
+    const next = {
+      ...entry,
+      taskKey: sanitizeStateFileKey(entry.taskKey),
+      updatedAt: nowIso()
+    };
+    writeFileAtomic(resolveTaskSessionFile(cwd, next.taskKey), `${JSON.stringify(next, null, 2)}\n`);
+    return next;
+  });
+}
+
+export function invalidateTaskSession(cwd, taskKey, reason) {
+  return withStateLock(cwd, () => {
+    const filePath = resolveTaskSessionFile(cwd, taskKey);
+    const existing = fs.existsSync(filePath) ? readJsonFileWithRetry(filePath, () => null, { throwOnInvalid: true }) : null;
+    if (!existing) {
+      return null;
+    }
+    const next = {
+      ...existing,
+      invalidatedAt: nowIso(),
+      invalidationReason: String(reason ?? "invalidated")
+    };
+    writeFileAtomic(filePath, `${JSON.stringify(next, null, 2)}\n`);
+    return next;
+  });
 }

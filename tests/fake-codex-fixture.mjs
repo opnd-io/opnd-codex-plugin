@@ -413,6 +413,7 @@ rl.on("line", (line) => {
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
 	          approvalPolicy: message.params.approvalPolicy ?? null,
+	          outputSchema: message.params.outputSchema ?? null,
 	          prompt
 	        };
 	        saveState(state);

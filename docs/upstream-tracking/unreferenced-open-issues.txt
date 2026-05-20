@@ -1,0 +1,64 @@
+count=63
+  #  4 [enhancement              ]: Review Plan
+  #  6 [enhancement              ]: Feature: infra-aware adversarial review prompts + auto-scaling by diff size
+  #  7 [enhancement              ]: Feature: consult command for persistent multi-turn Q&A sessions
+  #  8 [enhancement              ]: Feature: auto-detect command based on workspace state
+  # 23 [-                        ]: Review fails with JSONL parse error: bracketed paste mode escape sequence in output ([?200
+  # 26 [-                        ]: Consider listing in awesome-codex-plugins
+  # 31 [-                        ]: Buffered thread/started notifications can drop subagent names and log raw thread IDs
+  # 41 [-                        ]: /codex:setup returns 401 "OAuth token has expired" despite fresh ChatGPT login
+  # 44 [-                        ]: Feature: support default model and effort settings in /codex:setup
+  # 49 [-                        ]: Background task hangs indefinitely — no timeout on Codex API response generation
+  # 52 [-                        ]: Companion script fails on Windows mapped network drives (UNC path)
+  # 57 [-                        ]: Review mode blocks all commands on Windows: sandbox policy rejects PowerShell
+  # 59 [-                        ]: Review gate setup writes to temp dir, but Stop hook reads from persistent dir
+  # 65 [-                        ]: Review context collection crashes on broken untracked symlinks
+  # 68 [-                        ]: why i can't ask Claude to launch 4 codex:review commands in parallel ?!
+  # 69 [-                        ]: adversarial-review: EISDIR crash when untracked directories exist + input size overflow
+  # 70 [-                        ]: spawnSync with shell:true fails on Windows network drives (UNC paths)
+  # 75 [-                        ]: Codex plugin bypasses project-level Claude Code permission settings (deny rules in .claude
+  # 79 [-                        ]: README: Purpose / Benefits of this plugin?
+  # 80 [-                        ]: Questions Regarding Understanding and Usage
+  # 91 [-                        ]: add gemini cli extension command
+  # 94 [-                        ]: codex:codex-rescue subagent has no way to get Bash permission in background mode — rescu
+  # 98 [-                        ]: Call Codex and a custom skill
+  #101 [-                        ]: feat: promote codex-rescue to ~/.claude/agents/ at setup time to support permissionMode
+  #102 [-                        ]: Add `/codex:usage` command to show rate limits and usage
+  #104 [-                        ]: /add feature to do full code review based on folder, not on latest git commit
+  #105 [-                        ]: Codex plugin commands fail with command not found: node on Mac App
+  #107 [-                        ]: Enhancement: support turn/start sandboxPolicy for task-like commands in externally sandbox
+  #108 [-                        ]: Broker process not cleaned up on session exit — no idle timeout
+  #113 [-                        ]: Plugin install fails on Windows with corrupted error message
+  #115 [-                        ]: Codex rescue task gets stuck in infinite tool-call loop during code review
+  #117 [-                        ]: code breaks due to exception ,.
+  #135 [-                        ]: feat: git worktree isolation for write-capable rescue tasks
+  #158 [-                        ]: `codex:rescue` can claim a background Codex run started, then fall back to non-Codex analy
+  #182 [-                        ]: cancel mangles taskkill flags on Windows when SHELL points to Git Bash
+  #203 [-                        ]: codex:rescue skill init consumes ~20% of session usage budget before actual work
+  #205 [-                        ]: Feature request: support a /codex:test command
+  #208 [-                        ]: Bug: /plugin install does not add plugin to enabledPlugins, causing 'Unknown skill' on all
+  #211 [-                        ]: disable-model-invocation hides commands from skill list, blocking user-initiated invocatio
+  #215 [-                        ]: feat: support jujutsu (jj) workspaces
+  #219 [-                        ]: Fix taskkill cancellation on Windows Git Bash (MSYS path mangling +   non-English locale)
+  #221 [-                        ]: feat: /codex:review should not ask by default — auto-decide wait vs background
+  #229 [-                        ]: can codex plugin capture context like codex desktop mac app?
+  #232 [-                        ]: Regression of #42: /codex:rescue still cannot prompt via AskUserQuestion in 1.0.3
+  #236 [-                        ]: Windows: codex-plugin-cc hangs at “Initializing…” when launching `codex app-server`; l
+  #238 [-                        ]: Document workaround for `disable-model-invocation: true` commands (agents refuse to invoke
+  #242 [-                        ]: Can we possibly improve the performance of the plugin given that CC has reduced TTL of pro
+  #245 [-                        ]: SessionEnd hook hangs when broker is unresponsive (missing timeout in sendBrokerShutdown)
+  #250 [-                        ]: /codex:review hangs indefinitely on xcode/XcodeListWindows MCP call
+  #257 [-                        ]: `task`/`review` short alias `-m` consumes prompt tokens as `--model`, producing silent Ope
+  #258 [-                        ]: Claude Code review hangs on MCP tool call when an MCP server triggers elicitation
+  #259 [-                        ]: Windows: codex plugin/app-server fails with `spawn codex ENOENT` when Codex CLI is install
+  #263 [-                        ]: [feat] need /codex: implement/excute
+  #266 [-                        ]: macOS: /codex:rescue intermittently hangs, then fails with Unknown skill even though codex
+  #268 [-                        ]: codex-rescue hangs sporadically
+  #269 [-                        ]: Request: Remove `disable-model-invocation: true` from commands
+  #275 [-                        ]: It seems impossible to send new messages to Claude Code to guide it through a task or add 
+  #287 [-                        ]: Windows: spawn("codex") in app-server.mjs throws ENOENT (Node does not try PATHEXT for .cm
+  #288 [-                        ]: `sendBrokerShutdown` has no timeout — SessionEnd hook can hang indefinitely
+  #309 [-                        ]: [BUG] adversarial-review / review fail with HTTP 400 ('gpt-5.5 requires newer Codex') on C
+  #320 [-                        ]: Not working with chatGPT subscriptions
+  #321 [-                        ]: Delegated sessions show unresolved placeholder in Codex Desktop
+  #329 [-                        ]: Codex review no response all the time in claude code VS Code plugin
