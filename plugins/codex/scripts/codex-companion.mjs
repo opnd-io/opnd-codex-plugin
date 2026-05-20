@@ -94,6 +94,12 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const TASK_OUTPUT_SCHEMA = path.join(ROOT_DIR, "schemas", "output-profiles", "task-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
+// A1 fix (docs/code-review/2026-05-20-pair-readiness-adversarial.md) — bound
+// the approval wait. `waitForApprovalDecision` previously looped `while (true)`
+// with no deadline, so an approval the user never answers hangs the plugin
+// process forever. Default is human-response scale (30 min); override via
+// `CODEX_PLUGIN_APPROVAL_WAIT_MS` (milliseconds, 0 = wait without limit).
+const DEFAULT_APPROVAL_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 // PR-3.5 (#264 / #237) — defaults for `status --tail` / `--watch`. The tail
 // count is intentionally small because the per-job log can hold MBs of
 // prompt + completion text; users that want the whole file can just `cat`
@@ -435,6 +441,15 @@ function updateApprovalDecision(workspaceRoot, approvalReference, decision, opti
 }
 
 async function waitForApprovalDecision(workspaceRoot, jobId, approvalId) {
+  // A1 fix — resolve the wait timeout once. A positive value caps the wait;
+  // 0 (explicit opt-out) preserves the legacy unbounded behavior; an
+  // absent/invalid env value falls back to the default.
+  const overrideRaw = Number(process.env.CODEX_PLUGIN_APPROVAL_WAIT_MS);
+  const timeoutMs =
+    Number.isFinite(overrideRaw) && overrideRaw >= 0
+      ? overrideRaw
+      : DEFAULT_APPROVAL_WAIT_TIMEOUT_MS;
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
   while (true) {
     const storedJob = readStoredJobRequired(workspaceRoot, jobId);
     if (storedJob.status !== "queued" && storedJob.status !== "running") {
@@ -454,6 +469,13 @@ async function waitForApprovalDecision(workspaceRoot, jobId, approvalId) {
         pendingApprovals: nextApprovals
       });
       return response;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Pending approval ${approvalId} timed out after ${timeoutMs}ms with no decision. ` +
+          `Resolve it with /codex:approve or /codex:deny, or set CODEX_PLUGIN_APPROVAL_WAIT_MS ` +
+          `(milliseconds; 0 waits without a limit).`
+      );
     }
     await sleep(1000);
   }
@@ -1157,18 +1179,37 @@ function readTaskPrompt(cwd, options, positionals) {
     // path escapes `cwd`. Operators that want strict containment opt in
     // via `CODEX_PLUGIN_PROMPT_FILE_STRICT=1`, which raises a hard error.
     const resolved = path.resolve(cwd, options["prompt-file"]);
-    const rel = path.relative(cwd, resolved);
+    // A4 fix (docs/code-review/2026-05-20-pair-readiness-adversarial.md) —
+    // also resolve symlinks before the containment check. A lexical
+    // `path.relative` alone is bypassable: a symlink *inside* cwd pointing
+    // outside passes the lexical test but reads an outside file, defeating
+    // CODEX_PLUGIN_PROMPT_FILE_STRICT. `realpathSync` throws when the path
+    // does not exist yet — fall back to the lexical resolve in that case
+    // (a missing file fails loudly at readFileSync anyway).
+    let realResolved = resolved;
+    let realCwd = cwd;
+    try {
+      realResolved = fs.realpathSync(resolved);
+    } catch {
+      // path may not exist yet — keep the lexical resolve
+    }
+    try {
+      realCwd = fs.realpathSync(cwd);
+    } catch {
+      // keep cwd as-is if it cannot be realpath-resolved
+    }
+    const rel = path.relative(realCwd, realResolved);
     const outsideCwd = rel === "" ? false : rel.startsWith("..") || path.isAbsolute(rel);
     if (outsideCwd) {
       if (String(process.env.CODEX_PLUGIN_PROMPT_FILE_STRICT ?? "").trim() === "1") {
         throw new Error(
           `--prompt-file path "${options["prompt-file"]}" resolves outside the working directory ` +
-            `(${resolved}). CODEX_PLUGIN_PROMPT_FILE_STRICT=1 is set; refusing to read.`
+            `(${realResolved}). CODEX_PLUGIN_PROMPT_FILE_STRICT=1 is set; refusing to read.`
         );
       }
       process.stderr.write(
         `[codex-plugin-cc] --prompt-file path "${options["prompt-file"]}" resolves outside cwd ` +
-          `(${resolved}). Reading anyway — set CODEX_PLUGIN_PROMPT_FILE_STRICT=1 to refuse.\n`
+          `(${realResolved}). Reading anyway — set CODEX_PLUGIN_PROMPT_FILE_STRICT=1 to refuse.\n`
       );
     }
     return fs.readFileSync(resolved, "utf8");

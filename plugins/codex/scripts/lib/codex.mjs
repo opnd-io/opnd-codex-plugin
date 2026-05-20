@@ -64,6 +64,21 @@ const FINALIZING_PHASE_TIMEOUT_MS = (() => {
   return 5 * 60 * 1000;
 })();
 
+// A2 fix (docs/code-review/2026-05-20-pair-readiness-adversarial.md) — the
+// per-turn inactivity watchdog now defaults ON. It measures SILENCE between
+// JSON-RPC notifications (not total turn time), so a generous 10 min default
+// never trips a healthy turn (which emits progress continuously) yet still
+// bounds a fully-stuck broker. Override via CODEX_TURN_WATCHDOG_MS (ms);
+// set 0 to disable. An explicit `watchdogMs` option still wins over both.
+const DEFAULT_TURN_WATCHDOG_MS = 10 * 60 * 1000;
+function resolveDefaultTurnWatchdogMs() {
+  const override = Number(process.env.CODEX_TURN_WATCHDOG_MS);
+  if (Number.isFinite(override) && override >= 0) {
+    return override > 0 ? override : null;
+  }
+  return DEFAULT_TURN_WATCHDOG_MS;
+}
+
 function cleanCodexStderr(stderr) {
   return stderr
     .split(/\r?\n/)
@@ -1401,15 +1416,16 @@ export async function runAppServerTurn(cwd, options = {}) {
         }),
       {
         onProgress: options.onProgress,
-        // PR-G-B (manual port of upstream PR #312) — opt-in per-turn
-        // inactivity watchdog. Picks up `options.watchdogMs` from the
-        // direct caller (companion / task path) and falls back to the
-        // `CODEX_TURN_WATCHDOG_MS` env var so an operator can globally
-        // bound silent turns without recompiling. `null` disables.
+        // PR-G-B (manual port of upstream PR #312) + A2 fix — per-turn
+        // inactivity watchdog. An explicit `options.watchdogMs` from the
+        // direct caller (companion / task path) wins; otherwise it resolves
+        // to `CODEX_TURN_WATCHDOG_MS` env, then the default-on 10 min bound
+        // (`resolveDefaultTurnWatchdogMs`). `CODEX_TURN_WATCHDOG_MS=0`
+        // disables; an explicit `null` option also disables.
         watchdogMs:
           typeof options.watchdogMs === "number"
             ? options.watchdogMs
-            : Number(process.env.CODEX_TURN_WATCHDOG_MS) || null
+            : resolveDefaultTurnWatchdogMs()
       }
     );
 
