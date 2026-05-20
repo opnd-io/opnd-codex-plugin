@@ -16,18 +16,18 @@
 | (A1) | approval-loop unbounded hang | **FIXED** | 본 세션 — `waitForApprovalDecision` timeout (`CODEX_PLUGIN_APPROVAL_WAIT_MS`, 기본 30 min) |
 | (A3) | broker teardown zombie | **FIXED** | 본 세션 — `teardownBrokerSession` 기본 `terminateProcessTree` killer |
 | #250 | per-tool timeout | **PARTIAL** | 전용 per-tool timeout 없음 (`codex.mjs` grep 0). 단 #312 per-turn watchdog(A2 기본 on) + finalizing-phase 5 min bound 이 silent-tool hang 을 상위에서 bound — per-tool 세분화는 미구현 |
-| #59 | state cross-read/write | **OPEN** | `state.mjs` 는 `CLAUDE_PLUGIN_DATA`/temp fallback 만, 워크스페이스 간 cross-read/write 없음 |
-| #75 | permission-deny bridge | **OPEN** | `approvals.mjs` 의 approval 이 host `.claude/settings.json` deny rule 과 분리 — 별도 권한 시스템. bridge 또는 limitation 명시 필요 |
-| #113 | install stderr decode | **OPEN** | `commands/setup.md` 에 install stderr decode 처리 부재 |
-| #238 | disable-model-invocation 문서 | **OPEN (docs)** | feature 자체는 9개 커맨드에 적용됨. 미흡한 것은 README 의 workaround 설명 — 코드 아닌 docs 갭 |
+| #59 | state cross-read/write | **FIXED** | upstream PR #125 manual port — `resolveStateDir` 가 tmpdir fallback state 를 plugin-data dir 로 자동 migrate + JSON 경로 rewrite. `state.test.mjs` 에 migration 테스트 추가 |
+| #75 | permission-deny bridge | **DOCUMENTED** | full bridge 는 size-L design. matrix 가 제시한 "limitation 명시" 채택 — `TROUBLESHOOTING.md` #15 에 host `.claude/settings.json` deny ↔ Codex approval 분리를 명문화. bridge 구현은 백로그 잔존 |
+| #113 | install stderr decode | **FIXED (docs)** | `commands/setup.md` 에 Windows mojibake install stderr 처리 추가 — garbled stderr 를 실패로 오판 말고 rerun 을 SoT 로 |
+| #238 | disable-model-invocation 문서 | **FIXED (docs)** | `README.md` FAQ 에 9개 `disable-model-invocation` 커맨드 설명 + workaround(`/codex:rescue`) 추가 |
 
 ## 요약
 
-- **FIXED (8)**: #312·#190·#289·#290·#314·#24/#311/#23 + A1 + A3 — handoff §5 B2 가 deferred 로 나열한 `#23 ANSI`·env sanitization·git `--end-of-options`·UTF-8 truncation 은 **이미 해결됨**. B2 목록에서 제거 대상.
-- **PARTIAL (1)**: #250 — 상위 bound 존재, per-tool 세분화만 미구현. 우선순위 낮음.
-- **OPEN (4)**: #59 state cross-rw / #75 permission-deny bridge / #113 install stderr decode / #238 docs — 진짜 미수정. 이것만 B2 후속 작업 대상.
+- **FIXED (11)**: #312·#190·#289·#290·#314·#24/#311/#23 + A1 + A3 + **#59 + #113 + #238**
+- **DOCUMENTED (1)**: #75 — limitation 명시 완료, full bridge 는 백로그 잔존
+- **PARTIAL (1)**: #250 — 상위 bound 존재, per-tool 세분화만 미구현. 우선순위 낮음
+- **OPEN (0)**: B2 의 진짜 미수정 항목 전부 처리됨
 
-## handoff ultraplan §5 B2 보정 권고
+## handoff ultraplan §5 B2 — 처리 완료
 
-B2 의 deferred 후보 목록 `(#23 ANSI, #59, #75, #113, #238, #250)` →
-**`#23` 제거(FIXED), `#250` PARTIAL 표기, 실제 OPEN 은 `#59·#75·#113·#238` 4건.**
+B2 의 OPEN 4건 (#59·#75·#113·#238) 전부 본 cycle 에서 처리. 향후 잔존 작업은 **#75 full permission-deny bridge (size L)** 와 **#250 per-tool timeout 세분화 (우선순위 낮음)** 뿐.

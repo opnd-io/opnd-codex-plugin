@@ -134,7 +134,7 @@ codex-plugin-cc/
 | ID | 항목 | 상태 | 비고 / 의도된 종료상태 |
 |---|---|---|---|
 | B1 | upstream Tier 2 (13 MEDIUM) **평가 + cherry-pick/수동포트** | deferred | scope/policy 검토 필요. 각 건을 cherry-pick vs 수동포트 vs 기각으로 판정 후 진행 |
-| B2 | fork-affected 실제 OPEN: **#59** state cross-rw, **#75** permission-deny bridge, **#113** install stderr decode, **#238** disable-model-invocation docs | deferred | `docs/upstream-tracking/2026-05-20-open-vs-fixed-matrix.md` 로 재검증 완료 — `#23 ANSI` 는 이미 FIXED(목록 제거), `#250` 은 PARTIAL(per-turn watchdog 가 상위 bound). 진짜 OPEN 은 이 4건만 |
+| B2 | fork-affected OPEN 4건 (#59·#75·#113·#238) | **거의 완료** | #59 FIXED(upstream PR #125 port), #113·#238 FIXED(docs), #75 DOCUMENTED(limitation 명시 — full bridge 는 size-L 백로그 잔존). 잔존: #75 bridge, #250 per-tool timeout(우선순위 낮음). 상세: `docs/upstream-tracking/2026-05-20-open-vs-fixed-matrix.md` |
 | B3 | codex-plugin-cc `/code-review` LOW 미해결 | open | (a) `invalidateTaskSession` — wire 하거나 제거 (현재 half-wired, **먼저 조사 후 결정**) (b) 신규 코드 테스트 추가 — auto capsule key·path-containment·secret-refusal 케이스 (동작은 이미 존재, 테스트만 부재) — `docs/code-review/2026-05-19-184449.md` |
 | B4 | **마켓플레이스 게시** | **미도달 마일스톤** | §2.1 — 실제 제출만 금지, 준비도 점검은 허용 |
 | B5 | 운영-모델 UltraPlan 2건 구현 | plan 존재, 미착수 | ① `2026-05-18-...token-efficiency` — Codex 호출 토큰 효율화 ② `2026-05-20-...competitive-pair` — Claude×Codex 경쟁 페어 운영 모델 (7-PR 로드맵 내장). 둘 다 L+ 규모, 사용자 우선순위 결정 필요 |

@@ -23,6 +23,7 @@ For BREAKING changes from v1.x, see [MIGRATION_v2.0.md](MIGRATION_v2.0.md) first
 | Plugin sessions burying real chats in Codex Desktop | [#11 Codex Desktop history pollution](#11-codex-desktop-history-pollution) |
 | `/codex:setup` reports `loggedIn: false` even though `codex login` succeeded | [#12 Plugin loggedIn false after codex login (v2.0.0 home isolation)](#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation) |
 | `node --test` fails ~5 tests locally that pass in CI | [#14 Local test failures inside a Claude Code session](#14-local-node---test-fails-5-tests-inside-a-claude-code-session) |
+| Host `.claude/settings.json` deny rule does not block a Codex action | [#15 Codex approvals separate from host deny rules](#15-codex-approvals-are-separate-from-host-claudesettingsjson-deny-rules-75) |
 
 ---
 
@@ -491,6 +492,41 @@ failure is a real defect or this interference.
 
 ---
 
+## 15. Codex approvals are separate from host `.claude/settings.json` deny rules (#75)
+
+**Symptom**: You added a `permissions.deny` rule (or an `Edit`/`Bash` deny
+pattern) to your project or user `.claude/settings.json`, expecting it to
+also block the matching action when Codex runs it through this plugin — but
+Codex still performs (or still prompts for) that action.
+
+**Cause**: this is a **known design limitation**, not a bug. The plugin runs
+Codex as a local subprocess with its **own** approval system
+(`plugins/codex/scripts/lib/approvals.mjs`): a hard-deny ruleset plus the
+interactive `/codex:approve` / `/codex:deny` flow, scoped by the Codex
+`--sandbox` / `--approval` settings. That system is **not bridged** to Claude
+Code's host `.claude/settings.json` `permissions.deny` rules. The two
+permission models are independent:
+
+- A command/path you denied for **Claude** is *not* automatically denied for
+  **Codex** tool calls.
+- The plugin's own hard-deny rules (e.g. broad recursive deletes) and
+  workspace-scoped path grants apply to Codex regardless of host settings.
+
+**What to do**: do not treat host `.claude/settings.json` deny rules as a
+safety boundary for Codex subprocess actions. Govern Codex instead with:
+
+- the `--sandbox` setting (`read-only` / `workspace-write` /
+  `danger-full-access`) — the primary blast-radius control;
+- the `--approval` mode and the `/codex:approve` / `/codex:deny` prompts —
+  review each approval request rather than auto-approving;
+- the plugin's hard-deny rules for outright-dangerous operations.
+
+A full host-permission ↔ Codex-approval bridge is a sizable design change
+tracked as upstream issue #75 and fork backlog item B2; until it lands, the
+two systems remain separate by design.
+
+---
+
 Known investigations in progress (not yet fixed in v2.0.0, no plugin-side mitigation yet):
 
 - #295 `CreateProcessAsUserW failed: 1920` on Windows + sandbox=elevated
@@ -501,7 +537,7 @@ Known investigations in progress (not yet fixed in v2.0.0, no plugin-side mitiga
 
 ## A. Diagnostic data to gather for the spike-grade open issues
 
-Sections #1-#14 ship plugin-side fixes / mitigations. The remaining items in the "Known investigations" list are **spike-grade** — root cause is in the OS layer, the codex CLI, or an upstream protocol, and the fix needs a dedicated investigation we have not yet been able to run. While that work is pending, the most useful thing a reporter can do is capture diagnostic data the next investigation can replay against. This section enumerates what to capture per issue so the eventual fix lands faster.
+Sections #1-#15 ship plugin-side fixes / mitigations / documented limitations. The remaining items in the "Known investigations" list are **spike-grade** — root cause is in the OS layer, the codex CLI, or an upstream protocol, and the fix needs a dedicated investigation we have not yet been able to run. While that work is pending, the most useful thing a reporter can do is capture diagnostic data the next investigation can replay against. This section enumerates what to capture per issue so the eventual fix lands faster.
 
 ### #295 — Windows `CreateProcessAsUserW failed: 1920`
 

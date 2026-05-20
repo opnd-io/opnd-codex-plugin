@@ -22,6 +22,18 @@ If the result says Codex is unavailable and npm is available:
 npm install -g @openai/codex
 ```
 
+Windows install error handling (#113):
+
+- The `npm install` stderr on a Windows non-UTF-8 console (CP-949 / CP-1252
+  etc.) often comes back **mojibake / garbled bytes**. Do **not** report
+  garbled install output as a failure from the raw bytes alone.
+- The rerun below is the source of truth. If it reports Codex **available**,
+  the install succeeded despite the unreadable stderr — proceed normally.
+- Only treat it as a real failure if the rerun still reports Codex
+  **unavailable**. In that case surface the install command's exit code
+  (not the garbled text) and advise the user to run
+  `npm install -g @openai/codex` manually in a UTF-8 terminal.
+
 - Then rerun:
 
 ```bash

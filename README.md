@@ -445,3 +445,15 @@ Yes. If you already use Codex, the plugin picks up the same [configuration](#com
 Yes. Because the plugin uses your local Codex CLI, your existing sign-in method and config still apply.
 
 If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
+
+### Why can't Claude run `/codex:status` (or `/codex:review`, `/codex:cancel`, …) on its own?
+
+Nine commands — `/codex:review`, `/codex:adversarial-review`, `/codex:agent`, `/codex:continue`, `/codex:status`, `/codex:result`, `/codex:cancel`, `/codex:approve`, `/codex:deny` — are marked `disable-model-invocation: true`. Claude Code's harness will not let the assistant auto-invoke them mid-reasoning; **only you (the human) can type them**.
+
+This is deliberate: these commands start or steer Codex runs (which cost tokens), mutate job state, or gate session-end review. Letting the assistant fire them autonomously could burn budget or take side-effecting actions without your explicit intent.
+
+What this means in practice:
+
+- To act on a Codex job, **run the command yourself** (e.g. type `/codex:status`), then ask Claude — it can read the printed output and reason about it.
+- For work you *do* want Claude to drive autonomously, use **`/codex:rescue`** — it is model-invocable (it delegates through the `codex:codex-rescue` subagent via the Agent tool) and is the intended entry point for assistant-driven Codex delegation.
+- There is no flag to flip this per-session; the policy is set in each command's frontmatter by design.
