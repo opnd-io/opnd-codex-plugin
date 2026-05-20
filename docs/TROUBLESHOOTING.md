@@ -22,6 +22,7 @@ For BREAKING changes from v1.x, see [MIGRATION_v2.0.md](MIGRATION_v2.0.md) first
 | All sessions show identical "Continue from the current..." name in Codex Desktop | [#10 Identical default-prompt session names](#10-identical-default-prompt-session-names) |
 | Plugin sessions burying real chats in Codex Desktop | [#11 Codex Desktop history pollution](#11-codex-desktop-history-pollution) |
 | `/codex:setup` reports `loggedIn: false` even though `codex login` succeeded | [#12 Plugin loggedIn false after codex login (v2.0.0 home isolation)](#12-plugin-says-loggedin-false-after-a-successful-codex-login-v200-home-isolation) |
+| `node --test` fails ~5 tests locally that pass in CI | [#14 Local test failures inside a Claude Code session](#14-local-node---test-fails-5-tests-inside-a-claude-code-session) |
 
 ---
 
@@ -447,6 +448,49 @@ grep -n "applyUtf8LocaleOverride" plugins/codex/scripts/lib/app-server.mjs
 
 ---
 
+## 14. Local `node --test` fails ~5 tests inside a Claude Code session
+
+**Symptom**: Running the suite (`npm test` / `node --test tests/*.test.mjs`)
+from a shell **inside a Claude Code session** fails a handful of tests
+that pass in CI — typically:
+
+```
+✖ resolveStateDir uses a temp-backed per-workspace directory
+✖ status shows phases, hints, and the latest finished job
+✖ status preserves adversarial review kind labels
+✖ result returns the stored output for the latest finished job by default
+```
+
+with assertions like `false !== true` or status output that says
+`No jobs recorded yet.` even though the test created jobs.
+
+**Cause**: Claude Code injects `CLAUDE_PLUGIN_DATA` into the shell env
+for every installed plugin. `lib/state.mjs` `resolveStateDir()` honors
+`CLAUDE_PLUGIN_DATA` by design, so when it is set the per-workspace
+state dir no longer falls back to `os.tmpdir()`. Tests that assert the
+tmpdir fallback — and tests that spawn the companion with one workspace
+while the assertions read another — then disagree about where state
+lives. CI runs without `CLAUDE_PLUGIN_DATA`, so it never sees this.
+
+**Fix**: unset the injected vars for the test run (this is what CI sees):
+
+```bash
+env -u CLAUDE_PLUGIN_DATA -u CODEX_COMPANION_SESSION_ID -u CLAUDE_PLUGIN_ROOT \
+  node --test tests/*.test.mjs
+```
+
+or run the suite from a plain terminal outside a Claude Code session.
+
+**Related — parallel test-file interference**: `node --test` runs files
+concurrently. `tests/state.test.mjs` and `tests/ultraplan-runtime.test.mjs`
+both exercise per-workspace state dirs and can occasionally collide
+(e.g. `task-key ...` failing with `Cannot read properties of undefined
+(reading 'threadId')`). Re-run the file in isolation
+(`node --test tests/ultraplan-runtime.test.mjs`) to confirm whether a
+failure is a real defect or this interference.
+
+---
+
 Known investigations in progress (not yet fixed in v2.0.0, no plugin-side mitigation yet):
 
 - #295 `CreateProcessAsUserW failed: 1920` on Windows + sandbox=elevated
@@ -457,7 +501,7 @@ Known investigations in progress (not yet fixed in v2.0.0, no plugin-side mitiga
 
 ## A. Diagnostic data to gather for the spike-grade open issues
 
-Sections #1-#13 ship plugin-side fixes / mitigations. The remaining items in the "Known investigations" list are **spike-grade** — root cause is in the OS layer, the codex CLI, or an upstream protocol, and the fix needs a dedicated investigation we have not yet been able to run. While that work is pending, the most useful thing a reporter can do is capture diagnostic data the next investigation can replay against. This section enumerates what to capture per issue so the eventual fix lands faster.
+Sections #1-#14 ship plugin-side fixes / mitigations. The remaining items in the "Known investigations" list are **spike-grade** — root cause is in the OS layer, the codex CLI, or an upstream protocol, and the fix needs a dedicated investigation we have not yet been able to run. While that work is pending, the most useful thing a reporter can do is capture diagnostic data the next investigation can replay against. This section enumerates what to capture per issue so the eventual fix lands faster.
 
 ### #295 — Windows `CreateProcessAsUserW failed: 1920`
 

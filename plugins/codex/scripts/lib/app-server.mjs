@@ -178,6 +178,16 @@ function sanitizePluginCodexEnv(baseEnv) {
     if (key.startsWith("BASH_FUNC_") || key.startsWith("BASH_FUNC ")) {
       continue;
     }
+    // Drop the `GIT_CONFIG_*` family. `GIT_CONFIG_COUNT` +
+    // `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` let any env writer
+    // inject arbitrary git config (e.g. `core.sshCommand`) into every
+    // `git` call lib/git.mjs makes — the same hijack as GIT_SSH_COMMAND
+    // but spread across numbered keys an exact-name Set cannot list.
+    // `GIT_CONFIG` / `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` are the
+    // same class.
+    if (key.startsWith("GIT_CONFIG")) {
+      continue;
+    }
     sanitized[key] = value;
   }
   return sanitized;

@@ -575,7 +575,13 @@ export function resolveJobFile(cwd, jobId) {
 }
 
 function sanitizeStateFileKey(value) {
-  const key = String(value ?? "").trim().replace(/[^a-zA-Z0-9._:-]+/g, "-").replace(/^-+|-+$/g, "");
+  // `:` is intentionally NOT in the allow-list: auto capsule keys look
+  // like `capsule:<hash>` and a literal `:` in a filename is the NTFS
+  // alternate-data-stream separator on Windows (`capsule:hash.json`
+  // would write a hidden stream on the `capsule` file). The logical
+  // key keeps its `:` inside the JSON payload; only the on-disk name
+  // is collapsed to `-`.
+  const key = String(value ?? "").trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   if (!key) {
     throw new Error("Task session key is required.");
   }
