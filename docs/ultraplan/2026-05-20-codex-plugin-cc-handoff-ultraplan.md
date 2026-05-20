@@ -114,6 +114,17 @@ codex-plugin-cc/
 ### 4.3 workstream B 기능 (PR #4 로 landing 됨)
 `/codex:pair`(foreground 읽기전용 페어 피드백), `--task-key`(세션 재사용), `--capsule`(대형 프롬프트 캡슐), `--output-profile`(구조화 산출 — `prompts/profiles/` 의 plan-review/root-cause/decision-triage/implementation/pair-programming), `codex-efficiency-report.mjs`, task-session 영속.
 
+### 4.4 현재 한계 ⚠️ (계획이 가정하면 안 되는 것)
+
+`docs/code-review/2026-05-20-pair-readiness-adversarial.md` 의 Claude×Codex 적대적 분석 결과 — 위 기능을 caveat 없이 신뢰하지 말 것:
+
+- **`--output-profile` 은 라벨 수준** — 임의 문자열 수용 + 항상 generic schema 1개. profile 이름이 강한 동작 매핑이 아님.
+- **`--task-key` 는 completed-run 한정** — `registerTaskSession` 이 `taskKey`+`threadId`+completed 모두 있어야 등록. 실패/무출력 run 은 재사용 세션이 안 됨.
+- **`invalidateTaskSession` 미배선** — export 됐으나 caller 0. task-session invalidation 경로 half-wired.
+- **Codex 는 검증자 불가 (hard ceiling)** — Codex sandbox 가 `node`/test/CLI 실행 불가. Codex 는 분석·리뷰·draft 엔진으로만 완전활용 가능, runtime 검증은 항상 Claude.
+- **페어는 매끄럽지 않음 (구조적)** — foreground 600s Bash 한계·broker 직렬화·polling·approval round-trip 은 "Bash tool 로 subprocess 구동" substrate 에 내재. 페어 라운드는 **background+poll 을 기본 패턴**으로 설계할 것.
+- **준비도 fix (PR #6)** — A1 approval-loop hang·A2 watchdog opt-in·A3 broker teardown zombie·A4 prompt-file containment 은 PR #6 `fix/pair-readiness-a1-a4` 에서 수정 진행 중. 머지 전이면 main 에 미반영 상태이므로 `git log` 로 확인.
+
 ---
 
 ## §5. 남은 작업 / 백로그 (사용자 승인 후 선택 진행)
@@ -123,7 +134,7 @@ codex-plugin-cc/
 | ID | 항목 | 상태 | 비고 / 의도된 종료상태 |
 |---|---|---|---|
 | B1 | upstream Tier 2 (13 MEDIUM) **평가 + cherry-pick/수동포트** | deferred | scope/policy 검토 필요. 각 건을 cherry-pick vs 수동포트 vs 기각으로 판정 후 진행 |
-| B2 | fork-affected 추가 후보 (#23 ANSI, #59 state cross-rw, #75 permission-deny bridge, #113 install stderr decode, #238 disable-model-invocation docs, #250 per-tool timeout) | deferred | 착수 전 각 후보를 미해결/부분해결/해결로 재판정 (#23·#250 은 Tier1 에서 부분 해결 — 중복작업 주의) |
+| B2 | fork-affected 실제 OPEN: **#59** state cross-rw, **#75** permission-deny bridge, **#113** install stderr decode, **#238** disable-model-invocation docs | deferred | `docs/upstream-tracking/2026-05-20-open-vs-fixed-matrix.md` 로 재검증 완료 — `#23 ANSI` 는 이미 FIXED(목록 제거), `#250` 은 PARTIAL(per-turn watchdog 가 상위 bound). 진짜 OPEN 은 이 4건만 |
 | B3 | codex-plugin-cc `/code-review` LOW 미해결 | open | (a) `invalidateTaskSession` — wire 하거나 제거 (현재 half-wired, **먼저 조사 후 결정**) (b) 신규 코드 테스트 추가 — auto capsule key·path-containment·secret-refusal 케이스 (동작은 이미 존재, 테스트만 부재) — `docs/code-review/2026-05-19-184449.md` |
 | B4 | **마켓플레이스 게시** | **미도달 마일스톤** | §2.1 — 실제 제출만 금지, 준비도 점검은 허용 |
 | B5 | 운영-모델 UltraPlan 2건 구현 | plan 존재, 미착수 | ① `2026-05-18-...token-efficiency` — Codex 호출 토큰 효율화 ② `2026-05-20-...competitive-pair` — Claude×Codex 경쟁 페어 운영 모델 (7-PR 로드맵 내장). 둘 다 L+ 규모, 사용자 우선순위 결정 필요 |
