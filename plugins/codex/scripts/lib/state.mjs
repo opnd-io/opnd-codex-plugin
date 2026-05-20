@@ -47,9 +47,60 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  const dirName = `${slug}-${hash}`;
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path.join(stateRoot, `${slug}-${hash}`);
+
+  // #59 fix (manual port of upstream PR #125) — when CLAUDE_PLUGIN_DATA is
+  // set the persistent state dir is authoritative, but a Bash command run
+  // without that env (the common `/codex:*` invocation outside a hook) writes
+  // to the tmpdir fallback instead. Without this migration the two contexts
+  // see different state dirs and jobs appear lost across them. If state
+  // exists ONLY in the tmpdir fallback, migrate it into the persistent
+  // location so future reads/writes converge and state survives tmp cleanup.
+  if (pluginDataDir) {
+    const primaryDir = path.join(pluginDataDir, "state", dirName);
+    const fallbackDir = path.join(FALLBACK_STATE_ROOT_DIR, dirName);
+    if (
+      !fs.existsSync(path.join(primaryDir, STATE_FILE_NAME)) &&
+      fs.existsSync(path.join(fallbackDir, STATE_FILE_NAME))
+    ) {
+      fs.cpSync(fallbackDir, primaryDir, { recursive: true });
+      // Rewrite paths in all migrated JSON files (state.json + jobs/*.json)
+      // so logFile and other absolute references point to the persistent
+      // location. Replace both raw paths and JSON-escaped paths (Windows
+      // backslashes are doubled inside JSON strings).
+      const escapedFallback = fallbackDir.replaceAll("\\", "\\\\");
+      const escapedPrimary = primaryDir.replaceAll("\\", "\\\\");
+      const rewritePaths = (filePath) => {
+        try {
+          let updated = fs.readFileSync(filePath, "utf8");
+          const original = updated;
+          updated = updated.replaceAll(fallbackDir, primaryDir);
+          if (escapedFallback !== fallbackDir) {
+            updated = updated.replaceAll(escapedFallback, escapedPrimary);
+          }
+          if (updated !== original) {
+            fs.writeFileSync(filePath, updated, "utf8");
+          }
+        } catch {
+          /* non-fatal — a migrated file that cannot be rewritten still works
+             for state reads; only absolute path references degrade. */
+        }
+      };
+      rewritePaths(path.join(primaryDir, STATE_FILE_NAME));
+      const jobsDir = path.join(primaryDir, JOBS_DIR_NAME);
+      if (fs.existsSync(jobsDir)) {
+        for (const entry of fs.readdirSync(jobsDir)) {
+          if (entry.endsWith(".json")) {
+            rewritePaths(path.join(jobsDir, entry));
+          }
+        }
+      }
+    }
+    return primaryDir;
+  }
+
+  return path.join(FALLBACK_STATE_ROOT_DIR, dirName);
 }
 
 export function resolveStateFile(cwd) {
