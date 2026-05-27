@@ -1,7 +1,7 @@
 # Plan: daily-evolve-pipeline — 점진적 self-improving 플러그인 routine
 
 > 날짜: 2026-05-27
-> 상태: **구현 중 — Phase 0+1+2+3+4 완료 (184 unit tests pass, branch `feat/daily-evolve-pipeline`, PR #1)** — Codex plan R1-R7 0 수렴 + Phase 0/1/2 implement reviews 0 수렴 + Phase 3 (7-source + PII) + Phase 4 (Action Executor + L5 heuristic + dedupe 7d + 5 PR cap). Phase 5.0/5 (`scheduled-tasks` MCP env probe + morning 9 KST 자동화) 대기
+> 상태: **구현 중 — Phase 0+1+2+3+4+5.0+5 완료 (201 unit tests pass, branch `feat/daily-evolve-pipeline`, PR #1)** — Codex plan R1-R7 0 수렴 + Phase 0/1/2 implement reviews 0 수렴 + Phase 3 (7-source + PII) + Phase 4 (Action Executor + L5 heuristic + dedupe) + Phase 5.0/5 (env probe scheduler_status enum + cron fallback + opt-out env). Phase 6 (Self-Evolve Meta Loop, magic 1.5× rollback + monthly self-change loop guard) 대기
 > 입력: research.md + plan-upstream-backlog.md + Codex R1 (`ab98b16aa54ed2503`) + 사용자 결정 6건 + Codex R2 (`ab5d78973718d82de`) + Codex R3 (`aa10c014e8e3285b6`)
 
 ## 목표

@@ -2728,10 +2728,27 @@ function _releaseDailyEvolveLock(lockPath, fsMod, ownToken) {
 }
 
 async function handleDailyEvolve(argv) {
+  // Phase 5.5 — opt-out env var (Plan §Phase 5.5). 자동 routine 일시 차단.
+  if (process.env.CODEX_PLUGIN_DAILY_EVOLVE_DISABLED === "1") {
+    process.stderr.write(
+      `[daily-evolve] disabled via CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1 — skip\n`,
+    );
+    process.exit(0);
+  }
   const dateArg = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
   const skipGhApi = argv.includes("--skip-gh-api");
   const phaseIdx = argv.indexOf("--phase");
   const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
+  const probeOnly = argv.includes("--probe");
+
+  // Phase 5.0 BLOCKING — env probe 별도 mode
+  if (probeOnly) {
+    const { probeAndRegister } = await import("./daily-evolve/schedule-setup.mjs");
+    const { probe, guidance } = probeAndRegister();
+    process.stdout.write(JSON.stringify(probe, null, 2) + "\n");
+    process.stderr.write("\n" + guidance.join("\n") + "\n");
+    return;
+  }
 
   if (phase > 4) {
     process.stderr.write(
