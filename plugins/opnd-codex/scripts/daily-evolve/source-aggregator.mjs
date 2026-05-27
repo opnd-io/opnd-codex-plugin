@@ -93,6 +93,159 @@ export function fetchUpstreamIssues() {
 }
 
 /**
+ * Phase 3 sub-source: memory diff — `~/.claude/projects/.../memory/feedback_*.md` scan.
+ * MEMORY-DRIFT signal_type 후보 추출.
+ *
+ * Best-effort: 디렉토리 부재 시 빈 배열. ENOENT 만 swallow.
+ */
+export function readMemoryFeedback() {
+  const memoryRoot = path.join(os.homedir(), ".claude", "projects");
+  const out = [];
+  if (!fs.existsSync(memoryRoot)) return out;
+  try {
+    const projects = fs.readdirSync(memoryRoot);
+    for (const proj of projects) {
+      const memDir = path.join(memoryRoot, proj, "memory");
+      if (!fs.existsSync(memDir)) continue;
+      let entries;
+      try {
+        entries = fs.readdirSync(memDir);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!/^feedback[_-].*\.md$/i.test(entry)) continue;
+        const full = path.join(memDir, entry);
+        try {
+          const stat = fs.statSync(full);
+          const text = fs.readFileSync(full, "utf8");
+          out.push({
+            project: proj,
+            file: entry,
+            modified_at: stat.mtime.toISOString(),
+            size_bytes: stat.size,
+            preview: text.slice(0, 500),
+          });
+        } catch {
+          /* skip unreadable entry */
+        }
+      }
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+  return out;
+}
+
+/**
+ * Phase 3 sub-source: CHANGELOG Unreleased ↔ 코드 grep diff.
+ * UNRELEASED-GAP signal_type — Unreleased 에 선언된 변경이 코드에 실제 반영됐는지.
+ *
+ * Heuristic (PoC):
+ *   - CHANGELOG `## Unreleased` 블록 추출
+ *   - 각 줄에서 ` `` ` 로 감싼 file path / 함수명 추출
+ *   - 그 path/함수가 fork 코드 grep 1+ 매칭이면 reflected, 아니면 gap
+ */
+export function readUnreleasedGap(repoRoot = process.cwd()) {
+  const file = path.join(repoRoot, "plugins", "opnd-codex", "CHANGELOG.md");
+  if (!fs.existsSync(file)) return [];
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  const unreleasedMatch = text.match(/##\s+Unreleased\s*\n([\s\S]+?)(?=\n##\s+\d|$)/);
+  if (!unreleasedMatch) return [];
+  const block = unreleasedMatch[1];
+  // 백틱으로 감싼 path/identifier 추출 — `foo.mjs` / `dir/file.mjs` / `funcName`
+  const refMatches = block.match(/`([^`]+)`/g) ?? [];
+  const refs = [...new Set(refMatches.map((m) => m.replace(/`/g, "")))];
+  const gaps = [];
+  for (const ref of refs) {
+    if (ref.length < 3) continue;
+    // path-like (slash 또는 dot 포함) 만 grep — naked identifier 는 noise 많음
+    if (!/[./]/.test(ref)) continue;
+    const grep = spawnSync(
+      "grep",
+      ["-rlF", "--include=*.mjs", "--include=*.md", ref, "plugins/opnd-codex", "tests"],
+      { encoding: "utf8", cwd: repoRoot },
+    );
+    const matched = grep.status === 0 && grep.stdout.trim().length > 0;
+    if (!matched) {
+      gaps.push({ ref, matched: false });
+    }
+  }
+  return gaps;
+}
+
+/**
+ * Phase 3 sub-source: TODO/FIXME stale (>30d) scan.
+ * TODO-STALE signal_type — TODO/FIXME 가 30d+ stale 이면 후보.
+ */
+export function readStaleTodos(repoRoot = process.cwd(), staleDays = RECENT_WINDOW_DAYS) {
+  const grep = spawnSync(
+    "grep",
+    ["-rnE", "--include=*.mjs", "(TODO|FIXME)\\b", "plugins/opnd-codex/scripts"],
+    { encoding: "utf8", cwd: repoRoot, maxBuffer: 10 * 1024 * 1024 },
+  );
+  if (grep.status !== 0) return [];
+  const hits = grep.stdout.split(/\r?\n/).filter((l) => l.length > 0);
+  const staleMs = Date.now() - staleDays * 24 * 60 * 60 * 1000;
+  const stale = [];
+  // git blame 으로 각 line 의 last-modified — 비싸지만 hit 수 제한적
+  for (const hit of hits.slice(0, 100)) {
+    // grep -n 출력: "path:line:body"
+    const m = hit.match(/^([^:]+):(\d+):(.+)$/);
+    if (!m) continue;
+    const [, file, lineNoStr, body] = m;
+    const lineNo = Number(lineNoStr);
+    const blame = spawnSync(
+      "git",
+      ["blame", "-L", `${lineNo},${lineNo}`, "--porcelain", "--", file],
+      { encoding: "utf8", cwd: repoRoot, maxBuffer: 1 * 1024 * 1024 },
+    );
+    if (blame.status !== 0) continue;
+    const authorTime = blame.stdout.match(/^author-time\s+(\d+)/m);
+    if (!authorTime) continue;
+    const tsMs = Number(authorTime[1]) * 1000;
+    if (Number.isFinite(tsMs) && tsMs < staleMs) {
+      stale.push({
+        file,
+        line: lineNo,
+        body: body.trim().slice(0, 200),
+        author_time_ms: tsMs,
+        age_days: Math.floor((Date.now() - tsMs) / (24 * 60 * 60 * 1000)),
+      });
+    }
+  }
+  return stale;
+}
+
+/**
+ * Phase 3 sub-source: telemetry failure cluster.
+ * UX-IMPROVEMENT signal_type — errorMessage top 5 cluster.
+ */
+export function readFailureCluster(telemetry) {
+  if (!Array.isArray(telemetry)) return [];
+  const failures = telemetry.filter(
+    (e) => e?.event === "failed" || e?.event === "terminated",
+  );
+  const counts = new Map();
+  for (const f of failures) {
+    const key =
+      (f?.extras?.errorMessage ?? f?.errorClass ?? "?")
+        .toString()
+        .slice(0, 200);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([message, count]) => ({ message, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+}
+
+/**
  * Read telemetry events.jsonl — codex-efficiency-report.mjs:14-23 패턴 그대로.
  */
 export function readTelemetry() {
@@ -121,6 +274,7 @@ export function aggregate({ date, outputRoot = "docs/upstream-tracking", repoRoo
   const outDir = path.join(repoRoot, outputRoot, dateStr);
   fs.mkdirSync(outDir, { recursive: true });
 
+  const telemetryData = safeCall(readTelemetry, "telemetry");
   const aggregated = {
     schema_version: SCHEMA_VERSION,
     aggregated_at: new Date().toISOString(),
@@ -128,7 +282,15 @@ export function aggregate({ date, outputRoot = "docs/upstream-tracking", repoRoo
     sources: {
       upstream_prs: safeCall(fetchUpstreamPRs, "upstream_prs"),
       upstream_issues: safeCall(fetchUpstreamIssues, "upstream_issues"),
-      telemetry: safeCall(readTelemetry, "telemetry"),
+      telemetry: telemetryData,
+      // Phase 3 신규 sub-source (best-effort, network 무관)
+      memory_feedback: safeCall(readMemoryFeedback, "memory_feedback"),
+      unreleased_gap: safeCall(() => readUnreleasedGap(repoRoot), "unreleased_gap"),
+      todo_stale: safeCall(() => readStaleTodos(repoRoot), "todo_stale"),
+      failure_cluster: safeCall(
+        () => readFailureCluster(Array.isArray(telemetryData) ? telemetryData : []),
+        "failure_cluster",
+      ),
     },
     errors: [],
   };

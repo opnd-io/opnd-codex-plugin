@@ -1,7 +1,7 @@
 # Plan: daily-evolve-pipeline — 점진적 self-improving 플러그인 routine
 
 > 날짜: 2026-05-27
-> 상태: **구현 중 — Phase 0 + 1 + 2 완료 (154 unit tests pass, branch `feat/daily-evolve-pipeline`, PR #1)** — Codex plan R1-R7 0 수렴 + Phase 0 implement R1-R3 0 수렴 + Phase 1 R1-R2 0 수렴 + Phase 2 active fork heuristic L7 통과. Phase 3 (7-source 통합 — memory/Unreleased/TODO/UX) 대기
+> 상태: **구현 중 — Phase 0 + 1 + 2 + 3 완료 (162 unit tests pass, branch `feat/daily-evolve-pipeline`, PR #1)** — Codex plan R1-R7 0 수렴 + Phase 0/1/2 implement reviews 0 수렴. Phase 3 = 7-source 완전 통합 (memory/Unreleased/TODO/UX) + PII redact. Phase 4 (Action Executor + L5) 대기
 > 입력: research.md + plan-upstream-backlog.md + Codex R1 (`ab98b16aa54ed2503`) + 사용자 결정 6건 + Codex R2 (`ab5d78973718d82de`) + Codex R3 (`aa10c014e8e3285b6`)
 
 ## 목표

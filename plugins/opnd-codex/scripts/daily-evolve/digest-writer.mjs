@@ -26,6 +26,10 @@ import { VERDICTS } from "./lib/verdict-schema.mjs";
 import { queryLastN } from "./lib/run-ledger.mjs";
 import { checkCitations } from "./lib/citation-check.mjs";
 import { buildMetricHeader, formatMetricHeader } from "./lib/triage-metric.mjs";
+import { redactAll } from "./lib/pii-redact.mjs";
+
+/** PII 가 surface 가능한 record field — 외부 출력 전 redact 필수. */
+const PII_REDACT_FIELDS = ["preview", "body", "error_message", "title"];
 
 const DIGEST_DIR = "docs/daily-evolve";
 const MAX_DIGEST_LINES = 500;
@@ -130,7 +134,31 @@ export function write({
   const outDir = path.join(repoRoot, DIGEST_DIR);
   fs.mkdirSync(outDir, { recursive: true });
 
-  const records = analyzed?.records ?? [];
+  // Phase 3 — Records 의 PII 가능 field redact (memory preview, telemetry errorMessage 등).
+  // immutable: 새 array + 새 record 객체.
+  const rawRecords = analyzed?.records ?? [];
+  let totalPiiHits = { email: 0, token: 0, path: 0 };
+  const records = rawRecords.map((r) => {
+    if (!r || typeof r !== "object") return r;
+    let redacted = r;
+    let mutated = false;
+    for (const field of PII_REDACT_FIELDS) {
+      const val = r[field];
+      if (typeof val !== "string") continue;
+      const { redacted: rOut, hits } = redactAll(val);
+      if (hits.email + hits.token + hits.path > 0) {
+        totalPiiHits.email += hits.email;
+        totalPiiHits.token += hits.token;
+        totalPiiHits.path += hits.path;
+        if (!mutated) {
+          redacted = { ...r };
+          mutated = true;
+        }
+        redacted[field] = rOut;
+      }
+    }
+    return redacted;
+  });
   const metrics = computeMetrics(records);
   const lastRuns = loadLastRuns(repoRoot);
   const citationResult = checkCitations({ citations, transcripts });
@@ -177,7 +205,11 @@ export function write({
 
   // === failures 섹션 (R5-L10 분리) ===
   const errors = raw?.errors ?? [];
+  const piiHitsTotal = totalPiiHits.email + totalPiiHits.token + totalPiiHits.path;
   const hasFailures = errors.length > 0 || !citationResult.passed;
+  if (piiHitsTotal > 0) {
+    // PII redact 발생 — failures 가 아니라 별도 notice
+  }
   lines.push("## failures");
   if (!hasFailures) {
     lines.push("_(no failures)_");

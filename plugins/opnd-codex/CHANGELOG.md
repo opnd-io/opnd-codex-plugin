@@ -38,6 +38,17 @@
   - `companion.mjs handleDailyEvolve` phase 분기 — `--phase 2` 시 fork-research 호출 + records 를 analyzed 에 append + triage 후 digest. phase 0/1 호환 유지
   - `digest-writer.mjs` 통합 — forkSummary inject 시 "Phase 2 Active Fork Research Summary" 박스 출력 (total_forks / license_skipped / active_forks / top_candidates / l7_calls / l7_cost_units / api_calls / n_final / austerity_mode)
   - 신규 36 unit tests (fork-ranking 18 + fork-tarball 9 + fork-research 9). daily-evolve unit tests **154/154 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36). 회귀 0
+- **daily-evolve-pipeline Phase 3 — 7-source 완전 통합 + PII redact** — `plan §Phase 3`:
+  - `scripts/daily-evolve/lib/pii-redact.mjs` (pure) — Email (RFC 5322 simplified) / GitHub PAT (ghp_/gho_/ghs_/ghu_) / OpenAI sk-* / Slack xox* / 40-hex / Windows `C:\Users\...` / POSIX `/home/...` `/Users/...` `/tmp/...` 절대경로 마스킹. `redactAll` / `containsPii` / `<email>` `<token>` `<path>` 마커 (grep 친화)
+  - `source-aggregator.mjs` 4 신규 sub-source: `readMemoryFeedback` (`~/.claude/projects/.../memory/feedback_*.md` scan) / `readUnreleasedGap` (CHANGELOG `## Unreleased` 의 백틱 path/ref ↔ fork 코드 grep diff) / `readStaleTodos` (TODO/FIXME grep + git blame author-time, ≥30d stale) / `readFailureCluster` (telemetry errorMessage top 5 count)
+  - `diff-analyzer.mjs` 4 신규 signal_type 분류:
+    - failure cluster → `verdict=NOT-FIXED, signal_type=telemetry-ux`
+    - memory feedback → `QUESTION, memory-drift`
+    - unreleased gap → `PARTIAL, unreleased-gap`
+    - stale TODO → `PARTIAL, todo-stale`
+  - `digest-writer.mjs` — record 의 PII surface field (`preview`/`body`/`error_message`/`title`) 모두 `redactAll` 적용 후 출력. 새 record 객체 immutable (mutation 없음). hits 누적 카운트
+  - `companion.mjs handleDailyEvolve` — phase > 3 차단 메시지 (Phase 0-3 only)
+  - 신규 8 unit tests (pii-redact). daily-evolve unit tests **162/162 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36 + Phase 3 8). 회귀 0
 - **Upstream backlog import + Tier-HIGH fixes** — a deep `/research` pass cross-checked all 118 OPEN `openai/codex-plugin-cc` issues against the fork's current code (58 already FIXED, 19 PARTIAL, 24 NOT-FIXED). The 43 unresolved items are now tracked in `docs/backlog/upstream-imported.md`, and the seven Tier-HIGH items were fixed:
   - **#338** — the SessionStart hook re-exported the generic `CLAUDE_PLUGIN_DATA` into the shared `CLAUDE_ENV_FILE`, hijacking every other plugin's per-plugin scoping. It now exports a codex-namespaced `CODEX_PLUGIN_DATA_DIR`; `resolveStateDir` / `resolveTelemetryDir` / `codex-efficiency-report` / `readTraceEvents` read `CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA`. `app-server.mjs` keeps `CLAUDE_PLUGIN_DATA` for its own children (broker + codex), which is not the shared-env leak (documented inline)
   - **#309** — the gpt-5.5 → gpt-5.4 "requires a newer version of Codex" fallback was review-only; on CLI 0.130 it also 400s `task`/`agent` runs. `runAppServerReview` keeps the shared `withModelFallback` helper; `runAppServerTurn` now retries **only `turn/start`, on the same already-created thread** — the thread is created once, so the fallback never leaves an orphan thread (a whole-function retry would re-run `thread/start`). The model-version 400 is a `turn/start`-time rejection, so the retried turn/start is the first and only real turn

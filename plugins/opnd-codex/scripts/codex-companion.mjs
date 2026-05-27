@@ -2733,9 +2733,9 @@ async function handleDailyEvolve(argv) {
   const phaseIdx = argv.indexOf("--phase");
   const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
 
-  if (phase > 2) {
+  if (phase > 3) {
     process.stderr.write(
-      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-2 only — see plan-daily-evolve-pipeline.md)\n`,
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-3 only — see plan-daily-evolve-pipeline.md)\n`,
     );
     process.exit(1);
   }
