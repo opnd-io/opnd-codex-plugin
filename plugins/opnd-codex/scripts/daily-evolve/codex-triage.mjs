@@ -185,7 +185,10 @@ export function triage(analyzed, opts = {}) {
         skip_reason: SKIP_REASONS.COST_CAP_EXCEEDED,
         skip_detail: `current=${cap.current} > cap=${cap.cap} (median × ${cap.cap / cap.baseline_median})`,
         codex_called: false,
+        // Codex Phase 1 review LOW — cap exceeded 시 실제 호출 비용은 0 (차단되었음).
+        // cost_units_blocked 가 차단된 예상 비용 (운영 분석 시 누락된 수요량 추적).
         cost_units: 0,
+        cost_units_blocked: cap.current,
         cost_source: costResult.source,
         cap: cap.cap,
         baseline_median: cap.baseline_median,

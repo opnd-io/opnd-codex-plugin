@@ -2767,7 +2767,7 @@ async function handleDailyEvolve(argv) {
   const inflight = buildEntry({
     run_id: runId,
     started_at: startedAt,
-    phase_reached: 0,
+    phase_reached: phase,
     digest_file: `docs/daily-evolve/${dateStr}.md`,
   });
   {
@@ -2830,7 +2830,7 @@ async function handleDailyEvolve(argv) {
   const finalized = finalizeEntry(inflight, {
     status,
     ended_at: endedAt,
-    phase_reached: 0,
+    phase_reached: phase,
     actionable_count: actionableCount,
     failure_reason: failureReason,
   });

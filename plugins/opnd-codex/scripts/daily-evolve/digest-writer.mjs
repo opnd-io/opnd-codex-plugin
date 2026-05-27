@@ -144,27 +144,12 @@ export function write({
   lines.push("");
 
   // === Cognitive Load metadata (R3-M5 + Phase 1 triage 통합) ===
+  // Codex Phase 1 review M2 — metric 계산은 final markdown 기준. records 추가 후 2-pass 로
+  // placeholder 자리에 final metric insert.
   lines.push("## Cognitive Load");
-  if (triageSummary && Array.isArray(records)) {
-    // Phase 1+ — triage-metric lib (decision_count by triage 3분류 + reading_minutes)
-    const draftMarkdown = lines.join("\n");
-    const metricHeader = buildMetricHeader({ records, markdown: draftMarkdown });
-    lines.push(formatMetricHeader(metricHeader));
-    lines.push("");
-    lines.push("### Codex L3 Triage Summary");
-    lines.push(`- fan_out: ${triageSummary.fan_out}`);
-    lines.push(`- skipped: ${triageSummary.skipped}`);
-    if (triageSummary.skip_reason) lines.push(`- skip_reason: ${triageSummary.skip_reason}`);
-    if (triageSummary.skip_detail) lines.push(`- skip_detail: ${triageSummary.skip_detail}`);
-    lines.push(`- codex_called: ${triageSummary.codex_called}`);
-    lines.push(`- cost_units: ${triageSummary.cost_units} (source=${triageSummary.cost_source})`);
-    lines.push(`- cap: ${triageSummary.cap} (baseline_median=${triageSummary.baseline_median})`);
-  } else {
-    // Phase 0 — simple metric (NOT-FIXED + PARTIAL count)
-    lines.push(`- decision_count: ${metrics.decision_count}`);
-    lines.push(`- estimated_reading_minutes: ${metrics.estimated_reading_minutes}`);
-    lines.push(`- manual_actions_required: ${metrics.manual_actions_required}`);
-  }
+  const COGNITIVE_PLACEHOLDER = "__DAILY_EVOLVE_COGNITIVE_PLACEHOLDER__";
+  const cognitivePlaceholderIdx = lines.length;
+  lines.push(COGNITIVE_PLACEHOLDER);
   lines.push("");
 
   // === last_3_runs header (R3-M6) ===
@@ -224,6 +209,35 @@ export function write({
       }
     }
   }
+
+  // === Pass 2: final metric 계산 + placeholder replace (Codex Phase 1 review M2) ===
+  // records 섹션까지 모두 추가된 후의 markdown 기준으로 estimateReadingMinutes 계산.
+  const cognitiveLines = [];
+  if (triageSummary && Array.isArray(records)) {
+    // Phase 1+ — triage-metric lib (decision_count by triage 3분류 + reading_minutes)
+    const finalMarkdown = lines.join("\n");
+    const metricHeader = buildMetricHeader({ records, markdown: finalMarkdown });
+    cognitiveLines.push(formatMetricHeader(metricHeader));
+    cognitiveLines.push("");
+    cognitiveLines.push("### Codex L3 Triage Summary");
+    cognitiveLines.push(`- fan_out: ${triageSummary.fan_out}`);
+    cognitiveLines.push(`- skipped: ${triageSummary.skipped}`);
+    if (triageSummary.skip_reason) cognitiveLines.push(`- skip_reason: ${triageSummary.skip_reason}`);
+    if (triageSummary.skip_detail) cognitiveLines.push(`- skip_detail: ${triageSummary.skip_detail}`);
+    cognitiveLines.push(`- codex_called: ${triageSummary.codex_called}`);
+    cognitiveLines.push(`- cost_units: ${triageSummary.cost_units} (source=${triageSummary.cost_source})`);
+    if (triageSummary.cost_units_blocked != null) {
+      cognitiveLines.push(`- cost_units_blocked: ${triageSummary.cost_units_blocked} (차단된 예상 비용)`);
+    }
+    cognitiveLines.push(`- cap: ${triageSummary.cap} (baseline_median=${triageSummary.baseline_median})`);
+  } else {
+    // Phase 0 — simple metric (NOT-FIXED + PARTIAL count)
+    cognitiveLines.push(`- decision_count: ${metrics.decision_count}`);
+    cognitiveLines.push(`- estimated_reading_minutes: ${metrics.estimated_reading_minutes}`);
+    cognitiveLines.push(`- manual_actions_required: ${metrics.manual_actions_required}`);
+  }
+  // splice in place of placeholder (1 line) — 모든 cognitiveLines 로 replace
+  lines.splice(cognitivePlaceholderIdx, 1, ...cognitiveLines);
 
   // === Apply ≤500줄 cap ===
   lines = applyLineCap(lines);
