@@ -129,6 +129,8 @@ export function write({
   date,
   triageSummary = null,
   forkSummary = null,
+  actionSummary = null,
+  actionCandidates = null,
 } = {}) {
   const dateStr = date ?? new Date().toISOString().slice(0, 10);
   const outDir = path.join(repoRoot, DIGEST_DIR);
@@ -170,8 +172,10 @@ export function write({
   lines.push("");
   lines.push(`> 생성: ${new Date().toISOString()}`);
   let phaseLabel;
-  if (forkSummary) {
-    phaseLabel = "0-2 (source 2 + L3 triage + active fork research)";
+  if (actionSummary) {
+    phaseLabel = "0-4 (7-source + L3 triage + active fork + L5 action executor)";
+  } else if (forkSummary) {
+    phaseLabel = "0-3 (7-source + L3 triage + active fork)";
   } else if (triageSummary) {
     phaseLabel = "0-1 (source 2 + Codex L3 triage)";
   } else {
@@ -272,6 +276,24 @@ export function write({
     }
     cognitiveLines.push(`- cap: ${triageSummary.cap} (baseline_median=${triageSummary.baseline_median})`);
 
+    if (actionSummary) {
+      cognitiveLines.push("");
+      cognitiveLines.push("### Phase 4 Action Executor Summary");
+      cognitiveLines.push(`- input_total: ${actionSummary.input_total}`);
+      cognitiveLines.push(`- autonomous_input: ${actionSummary.autonomous_input}`);
+      cognitiveLines.push(`- candidates: ${actionSummary.candidates_count} / ${actionSummary.pr_cap} cap${actionSummary.cap_exceeded ? " (⚠ exceeded)" : ""}`);
+      cognitiveLines.push(`- surfaced: ${actionSummary.surfaced_count} (needs_user / skip-with-value)`);
+      cognitiveLines.push(`- skipped: ${actionSummary.skipped_count}`);
+      cognitiveLines.push(`- cost_units: ${actionSummary.cost_units}`);
+      cognitiveLines.push(`- cache: ${actionSummary.cache_size_before} → ${actionSummary.cache_size_after} entries`);
+      if (Array.isArray(actionCandidates) && actionCandidates.length > 0) {
+        cognitiveLines.push("");
+        cognitiveLines.push("#### PR draft candidates");
+        for (const c of actionCandidates) {
+          cognitiveLines.push(`- \`${c.dedupe_key?.slice(0, 12) ?? "?"}\` — ${c.title ?? c.l5?.rationale ?? "?"}`);
+        }
+      }
+    }
     if (forkSummary) {
       cognitiveLines.push("");
       cognitiveLines.push("### Phase 2 Active Fork Research Summary");

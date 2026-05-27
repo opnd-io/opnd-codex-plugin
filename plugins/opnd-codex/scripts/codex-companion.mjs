@@ -2733,9 +2733,9 @@ async function handleDailyEvolve(argv) {
   const phaseIdx = argv.indexOf("--phase");
   const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
 
-  if (phase > 3) {
+  if (phase > 4) {
     process.stderr.write(
-      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-3 only — see plan-daily-evolve-pipeline.md)\n`,
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-4 only — see plan-daily-evolve-pipeline.md)\n`,
     );
     process.exit(1);
   }
@@ -2747,6 +2747,7 @@ async function handleDailyEvolve(argv) {
   const { analyze } = await import("./daily-evolve/diff-analyzer.mjs");
   const { triage } = await import("./daily-evolve/codex-triage.mjs");
   const { research: forkResearch } = await import("./daily-evolve/fork-research.mjs");
+  const { execute: actionExecute } = await import("./daily-evolve/action-executor.mjs");
   const { write: writeDigest } = await import("./daily-evolve/digest-writer.mjs");
   const {
     buildEntry,
@@ -2813,12 +2814,20 @@ async function handleDailyEvolve(argv) {
       triageResult = triage(withForkAnalyzed);
       triagedAnalyzed = { ...withForkAnalyzed, records: triageResult.records };
     }
+    // Phase 4+ — Action Executor (action-executor.mjs). triage 결과 records 의
+    // autonomous_safe 항목을 L5 협의 → PR candidate / needs_user / skip 분리.
+    let actionResult = null;
+    if (phase >= 4) {
+      actionResult = actionExecute({ records: triagedAnalyzed.records });
+    }
     const writeResult = writeDigest({
       analyzed: triagedAnalyzed,
       raw,
       date: dateStr,
       triageSummary: triageResult?.triage_summary ?? null,
       forkSummary: forkResult?.research_summary ?? null,
+      actionSummary: actionResult?.action_summary ?? null,
+      actionCandidates: actionResult?.candidates ?? null,
     });
     process.stdout.write(
       `[daily-evolve] ${dateStr} done: ${recordCount} records, actionable=${actionableCount}, digest=${writeResult.outFile}\n`,
