@@ -69,7 +69,12 @@ function ghApi(args, options = {}) {
   }
   try {
     return JSON.parse(result.stdout);
-  } catch {
+  } catch (err) {
+    // Codex Phase 2 R2 M3 — JSON parse silent null observability gap. log + null.
+    process.stderr.write(
+      `[fork-research] gh api ${args.join(" ")} JSON parse fail: ${err?.message ?? String(err)} ` +
+        `(stdout head: ${result.stdout?.slice(0, 80) ?? ""})\n`,
+    );
     return null;
   }
 }
@@ -252,9 +257,17 @@ export function research(opts = {}) {
   const licenseOk = forks.filter((f) => isLicenseCompatible(f?.license?.spdx_id));
   const licenseSkipped = forks.length - licenseOk.length;
 
-  // 3. Enrich (각 fork compare API call) — budget 안에서 처리. budget 초과 전 cutoff.
+  // 3. Codex Phase 2 R2 M2 — stars desc pre-sort: budget cap 도달 시 high-value fork
+  // (별점 높은 것) 우선 enrich. 동점은 pushed_at desc tie-break (최신 활동 우선).
+  const prioritized = [...licenseOk].sort((a, b) => {
+    const sd = (b?.stargazers_count ?? 0) - (a?.stargazers_count ?? 0);
+    if (sd !== 0) return sd;
+    return (b?.pushed_at ?? "").localeCompare(a?.pushed_at ?? "");
+  });
+
+  // 4. Enrich (각 fork compare API call) — budget 안에서 처리. budget 초과 전 cutoff.
   const enriched = [];
-  for (const fork of licenseOk) {
+  for (const fork of prioritized) {
     if (apiCalls >= API_BUDGET_PER_RUN) {
       budgetExceeded = true;
       break;
@@ -287,12 +300,10 @@ export function research(opts = {}) {
     TOP_N_CANDIDATES,
   );
 
-  // L7 cost budget — austerity (TOP_N=3) trigger 시
-  // Phase 2 PoC: 단순화 — 항상 TOP_N_FINAL 또는 N_AUSTERITY 결정 후 진행
-  // Plan §L7 cost trigger: cost > daily budget × 0.30 → N=3 (TOP_N_AUSTERITY)
-  const austerityMode = candidates.length > 0 && candidates[0].fork?._unique_touched_path_count != null
-    ? false // Phase 2 PoC: heuristic 사용. cost 누적은 measureCost 통해 측정만.
-    : false;
+  // Codex Phase 2 R2 M1 — Austerity trigger (Plan §L7 cost trigger):
+  //   - forks 수 > 50 → N_AUSTERITY (10→3) 축소
+  //   - (Phase 2.5+) cost_units 누적 > daily_budget × 0.30 — cost-cap baseline 통합 후 추가
+  const austerityMode = forks.length > 50;
   const nForL7 = austerityMode ? TOP_N_AUSTERITY : TOP_N_CANDIDATES;
 
   const l7Results = candidates.slice(0, nForL7).map((c) => {
