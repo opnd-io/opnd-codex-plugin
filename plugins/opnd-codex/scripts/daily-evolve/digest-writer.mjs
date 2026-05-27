@@ -25,6 +25,7 @@ import process from "node:process";
 import { VERDICTS } from "./lib/verdict-schema.mjs";
 import { queryLastN } from "./lib/run-ledger.mjs";
 import { checkCitations } from "./lib/citation-check.mjs";
+import { buildMetricHeader, formatMetricHeader } from "./lib/triage-metric.mjs";
 
 const DIGEST_DIR = "docs/daily-evolve";
 const MAX_DIGEST_LINES = 500;
@@ -122,6 +123,7 @@ export function write({
   transcripts = {},
   repoRoot = process.cwd(),
   date,
+  triageSummary = null,
 } = {}) {
   const dateStr = date ?? new Date().toISOString().slice(0, 10);
   const outDir = path.join(repoRoot, DIGEST_DIR);
@@ -141,11 +143,28 @@ export function write({
   lines.push("> Phase: 0 PoC (source 2개 — upstream PR/Issue + telemetry)");
   lines.push("");
 
-  // === Cognitive Load metadata (R3-M5) ===
+  // === Cognitive Load metadata (R3-M5 + Phase 1 triage 통합) ===
   lines.push("## Cognitive Load");
-  lines.push(`- decision_count: ${metrics.decision_count}`);
-  lines.push(`- estimated_reading_minutes: ${metrics.estimated_reading_minutes}`);
-  lines.push(`- manual_actions_required: ${metrics.manual_actions_required}`);
+  if (triageSummary && Array.isArray(records)) {
+    // Phase 1+ — triage-metric lib (decision_count by triage 3분류 + reading_minutes)
+    const draftMarkdown = lines.join("\n");
+    const metricHeader = buildMetricHeader({ records, markdown: draftMarkdown });
+    lines.push(formatMetricHeader(metricHeader));
+    lines.push("");
+    lines.push("### Codex L3 Triage Summary");
+    lines.push(`- fan_out: ${triageSummary.fan_out}`);
+    lines.push(`- skipped: ${triageSummary.skipped}`);
+    if (triageSummary.skip_reason) lines.push(`- skip_reason: ${triageSummary.skip_reason}`);
+    if (triageSummary.skip_detail) lines.push(`- skip_detail: ${triageSummary.skip_detail}`);
+    lines.push(`- codex_called: ${triageSummary.codex_called}`);
+    lines.push(`- cost_units: ${triageSummary.cost_units} (source=${triageSummary.cost_source})`);
+    lines.push(`- cap: ${triageSummary.cap} (baseline_median=${triageSummary.baseline_median})`);
+  } else {
+    // Phase 0 — simple metric (NOT-FIXED + PARTIAL count)
+    lines.push(`- decision_count: ${metrics.decision_count}`);
+    lines.push(`- estimated_reading_minutes: ${metrics.estimated_reading_minutes}`);
+    lines.push(`- manual_actions_required: ${metrics.manual_actions_required}`);
+  }
   lines.push("");
 
   // === last_3_runs header (R3-M6) ===

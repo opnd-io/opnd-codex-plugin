@@ -2733,9 +2733,9 @@ async function handleDailyEvolve(argv) {
   const phaseIdx = argv.indexOf("--phase");
   const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
 
-  if (phase !== 0) {
+  if (phase > 1) {
     process.stderr.write(
-      `[daily-evolve] phase ${phase} not yet implemented (Phase 0 PoC only — see plan-daily-evolve-pipeline.md)\n`,
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-1 only — see plan-daily-evolve-pipeline.md)\n`,
     );
     process.exit(1);
   }
@@ -2745,6 +2745,7 @@ async function handleDailyEvolve(argv) {
   const pathMod = await import("node:path");
   const { aggregate } = await import("./daily-evolve/source-aggregator.mjs");
   const { analyze } = await import("./daily-evolve/diff-analyzer.mjs");
+  const { triage } = await import("./daily-evolve/codex-triage.mjs");
   const { write: writeDigest } = await import("./daily-evolve/digest-writer.mjs");
   const {
     buildEntry,
@@ -2796,7 +2797,19 @@ async function handleDailyEvolve(argv) {
     actionableCount = analyzed.records.filter(
       (r) => r.verdict === "NOT-FIXED" || r.verdict === "PARTIAL",
     ).length;
-    const writeResult = writeDigest({ analyzed, raw, date: dateStr });
+    // Phase 1+ — Codex L3 triage 통합. analyzed.records 에 triage 필드 + triage_summary 부여.
+    let triageResult = null;
+    let triagedAnalyzed = analyzed;
+    if (phase >= 1) {
+      triageResult = triage(analyzed);
+      triagedAnalyzed = { ...analyzed, records: triageResult.records };
+    }
+    const writeResult = writeDigest({
+      analyzed: triagedAnalyzed,
+      raw,
+      date: dateStr,
+      triageSummary: triageResult?.triage_summary ?? null,
+    });
     process.stdout.write(
       `[daily-evolve] ${dateStr} done: ${recordCount} records, actionable=${actionableCount}, digest=${writeResult.outFile}\n`,
     );

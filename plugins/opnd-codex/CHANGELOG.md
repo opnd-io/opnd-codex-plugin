@@ -21,6 +21,16 @@
   - `package.json scripts.test` glob 확장 (`tests/*.test.mjs tests/daily-evolve/*.test.mjs`)
   - **Default 결정 7건 적용** (사용자 implement 진입 시): LLM 분담 (a) / CRON_TZ env-probe 분기 / status UI = digest header only / Phase 6 rollback 자동 draft / state lazy create / no needs_claude_judgment metric / token-normalized cost only
   - Phase 1+ (Codex L3 triage, active fork L7, autonomous PR L5, scheduled-tasks MCP, self-evolve meta loop) 는 후속 진입
+- **daily-evolve-pipeline Phase 1 — Codex L3 Triage 통합** — `plan §Phase 1`:
+  - `scripts/daily-evolve/lib/triage-metric.mjs` (pure) — decision_count (3분류 별) / estimated_reading_minutes (CJK+ASCII word count / 200wpm) / manual_actions_required / triage_budget_minutes 30 / exceeds_budget alert
+  - `scripts/daily-evolve/lib/cost-cap.mjs` (pure) — median 계산 + computeCap (baseline median × 3, initial=20) + appendBaseline (last 7 FIFO) + SKIP_REASONS enum (CLAUDE.md taxonomy 일치)
+  - `scripts/daily-evolve/codex-triage.mjs` (orchestrator) — N≥3 fan-out 후 triage 실행. Phase 1 PoC = heuristic stub (verdict 기반: FIXED/WONTFIX→autonomous_safe, QUESTION→needs_claude_judgment, PARTIAL/NOT-FIXED→needs_user). actual Codex pair 호출은 Phase 1.5+
+  - Cost cap: `state/daily-evolve-cost-baseline.json` lazy create + median × 3 초과 시 skip_reason=cost_cap_exceeded + 모든 record needs_user fallback. baseline append + last 7 trim
+  - State migrator 통합 — corrupt JSON backup `.corrupt-${ISO}.bak` + fresh start
+  - `digest-writer.mjs` 통합 — triageSummary inject 시 metric header (table 형식) + Codex L3 Triage Summary 박스 (fan_out / skipped / skip_reason / cost_units / cap / baseline_median) 출력. Phase 0 호환 (triageSummary 부재 시 기존 simple metric)
+  - `companion.mjs handleDailyEvolve` phase 분기 — `--phase 1` 시 triage 호출 후 결과 inject. phase 0 fallback 유지
+  - `tests/daily-evolve/{triage-metric,cost-cap,codex-triage}.test.mjs` — 23 신규 unit tests (lib pure + orchestrator stub + boundary fan_out=3)
+  - 총 daily-evolve unit tests **118/118 pass** (Phase 0 95 + Phase 1 23). 회귀 0
 - **Upstream backlog import + Tier-HIGH fixes** — a deep `/research` pass cross-checked all 118 OPEN `openai/codex-plugin-cc` issues against the fork's current code (58 already FIXED, 19 PARTIAL, 24 NOT-FIXED). The 43 unresolved items are now tracked in `docs/backlog/upstream-imported.md`, and the seven Tier-HIGH items were fixed:
   - **#338** — the SessionStart hook re-exported the generic `CLAUDE_PLUGIN_DATA` into the shared `CLAUDE_ENV_FILE`, hijacking every other plugin's per-plugin scoping. It now exports a codex-namespaced `CODEX_PLUGIN_DATA_DIR`; `resolveStateDir` / `resolveTelemetryDir` / `codex-efficiency-report` / `readTraceEvents` read `CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA`. `app-server.mjs` keeps `CLAUDE_PLUGIN_DATA` for its own children (broker + codex), which is not the shared-env leak (documented inline)
   - **#309** — the gpt-5.5 → gpt-5.4 "requires a newer version of Codex" fallback was review-only; on CLI 0.130 it also 400s `task`/`agent` runs. `runAppServerReview` keeps the shared `withModelFallback` helper; `runAppServerTurn` now retries **only `turn/start`, on the same already-created thread** — the thread is created once, so the fallback never leaves an orphan thread (a whole-function retry would re-run `thread/start`). The model-version 400 is a `turn/start`-time rejection, so the retried turn/start is the first and only real turn
