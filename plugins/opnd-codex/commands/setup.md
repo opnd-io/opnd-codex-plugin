@@ -7,7 +7,7 @@ allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
+"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json "$ARGUMENTS"
 ```
 
 If the result says Codex is unavailable and npm is available:
@@ -37,7 +37,7 @@ Windows install error handling (#113):
 - Then rerun:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
+"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json "$ARGUMENTS"
 ```
 
 If Codex is already installed or npm is unavailable:

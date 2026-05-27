@@ -24,7 +24,7 @@ Execution mode:
 - Otherwise, before starting Codex, check for a resumable rescue thread from this Claude session by running:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task-resume-candidate --json
+"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task-resume-candidate --json
 ```
 
 - If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current Codex thread or start a new one.
@@ -43,7 +43,7 @@ Non-interactive fallback (PR-7.8, #223):
 
 Operating rules:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` and return that command's stdout as-is.
+- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` and return that command's stdout as-is.
 - Return the Codex companion stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/opnd-codex:status`, fetch `/opnd-codex:result`, call `/opnd-codex:cancel`, summarize output, or do follow-up work of its own.
@@ -53,3 +53,11 @@ Operating rules:
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/opnd-codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.
+
+Approval handling (#232):
+
+- A foreground `task` run started with an approval policy (`--approval on-request` / `on-failure` / `untrusted`) can finish with one or more **pending approvals**: the Codex turn paused waiting for a command, file-change, or tool decision. The companion output renders these as a `Pending approvals:` block, one `<approval-id>` per line with its `Approve:` / `Deny:` slash-command hints.
+- The `codex:codex-rescue` subagent only has the `Bash` tool — it cannot prompt the user. Resolving pending approvals is therefore **this command's** responsibility (the command has `AskUserQuestion`); the subagent stays a pure forwarder.
+- After the subagent returns, if its verbatim output contains a `Pending approvals:` block, use `AskUserQuestion` — once, listing each pending `<approval-id>` — to ask the user to **Approve** or **Deny** each one. Then run `/opnd-codex:approve <approval-id>` or `/opnd-codex:deny <approval-id>` for each decision. If the user wants Codex to continue past the decision, re-issue the rescue with `--resume`.
+- Non-interactive fallback: if `AskUserQuestion` is unavailable (`claude --print` and similar), do **not** prompt — leave the verbatim output as-is. The rendered `Approve:` / `Deny:` lines let the operator act manually.
+- This approval step is the one action the command may take *after* the verbatim Codex output. It must never edit, summarize, or re-order that output — it only appends an interactive approval prompt beneath it.

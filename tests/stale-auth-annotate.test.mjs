@@ -40,3 +40,76 @@ test("codex.mjs source contains the stale-auth-cache restart guidance", async ()
   assert.match(source, /access token could not be refreshed/i, "match pattern still covers known phrasing");
   assert.match(source, /restart Claude Code/i, "guidance includes the restart hint");
 });
+
+// #41 — behavioral coverage for the stale-broker auto-restart. The auth probe
+// orchestrator is exposed via __testHooks with injected deps so the retry path
+// runs without a real broker / app-server.
+test("#41 — probeAuthWithStaleRetry restarts the broker once on a stale-auth probe, then re-probes", async () => {
+  const { probeAuthWithStaleRetry } = codex.__testHooks;
+  let connects = 0;
+  let restarts = 0;
+  const probes = [
+    { loggedIn: false, detail: "Your access token could not be refreshed. Please sign in again." },
+    { loggedIn: true, detail: "ChatGPT login active" }
+  ];
+  let probeIdx = 0;
+  const result = await probeAuthWithStaleRetry({
+    connect: async () => {
+      connects += 1;
+      return { close: async () => {} };
+    },
+    probe: async () => probes[probeIdx++],
+    restartBroker: async () => {
+      restarts += 1;
+    },
+    reuseBrokerEndpoint: false
+  });
+  assert.equal(restarts, 1, "broker restarted exactly once");
+  assert.equal(connects, 2, "reconnected after the restart");
+  assert.equal(result.restarted, true);
+  assert.equal(result.status.loggedIn, true, "second probe result is returned");
+});
+
+test("#41 — probeAuthWithStaleRetry does NOT restart when the first probe succeeds", async () => {
+  const { probeAuthWithStaleRetry } = codex.__testHooks;
+  let restarts = 0;
+  const result = await probeAuthWithStaleRetry({
+    connect: async () => ({ close: async () => {} }),
+    probe: async () => ({ loggedIn: true, detail: "ok" }),
+    restartBroker: async () => {
+      restarts += 1;
+    },
+    reuseBrokerEndpoint: false
+  });
+  assert.equal(restarts, 0, "no restart on healthy auth");
+  assert.equal(result.restarted, false);
+});
+
+test("#41 — probeAuthWithStaleRetry restarts AT MOST once (still-stale result is returned, no loop)", async () => {
+  const { probeAuthWithStaleRetry } = codex.__testHooks;
+  let restarts = 0;
+  const result = await probeAuthWithStaleRetry({
+    connect: async () => ({ close: async () => {} }),
+    probe: async () => ({ loggedIn: false, detail: "access token could not be refreshed" }),
+    restartBroker: async () => {
+      restarts += 1;
+    },
+    reuseBrokerEndpoint: false
+  });
+  assert.equal(restarts, 1, "restarted exactly once even though still stale");
+  assert.equal(result.status.loggedIn, false, "still-stale status returned without looping");
+});
+
+test("#41 — probeAuthWithStaleRetry skips the restart when an explicit broker endpoint is reused", async () => {
+  const { probeAuthWithStaleRetry } = codex.__testHooks;
+  let restarts = 0;
+  await probeAuthWithStaleRetry({
+    connect: async () => ({ close: async () => {} }),
+    probe: async () => ({ loggedIn: false, detail: "access token could not be refreshed" }),
+    restartBroker: async () => {
+      restarts += 1;
+    },
+    reuseBrokerEndpoint: true
+  });
+  assert.equal(restarts, 0, "an explicitly-managed broker endpoint is never torn down");
+});

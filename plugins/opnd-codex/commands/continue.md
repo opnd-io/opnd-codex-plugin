@@ -1,11 +1,10 @@
 ---
 description: Send a follow-up instruction to the latest Codex task, steering it if it is still running
 argument-hint: "[--job <job-id>|--task-key <key>] [--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [follow-up]"
-disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" continue "$ARGUMENTS"`
+!`"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" continue "$ARGUMENTS"`
 
 Present the command output exactly as-is.
 

@@ -466,17 +466,20 @@ with assertions like `false !== true` or status output that says
 `No jobs recorded yet.` even though the test created jobs.
 
 **Cause**: Claude Code injects `CLAUDE_PLUGIN_DATA` into the shell env
-for every installed plugin. `lib/state.mjs` `resolveStateDir()` honors
-`CLAUDE_PLUGIN_DATA` by design, so when it is set the per-workspace
-state dir no longer falls back to `os.tmpdir()`. Tests that assert the
-tmpdir fallback — and tests that spawn the companion with one workspace
-while the assertions read another — then disagree about where state
-lives. CI runs without `CLAUDE_PLUGIN_DATA`, so it never sees this.
+for every installed plugin, and (#338) the codex plugin's SessionStart
+hook re-exports it under the codex-namespaced `CODEX_PLUGIN_DATA_DIR`
+into `CLAUDE_ENV_FILE`. `lib/state.mjs` `resolveStateDir()` honors
+`CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA` by design, so when either
+is set the per-workspace state dir no longer falls back to `os.tmpdir()`.
+Tests that assert the tmpdir fallback — and tests that spawn the
+companion with one workspace while the assertions read another — then
+disagree about where state lives. CI runs without these vars, so it
+never sees this.
 
 **Fix**: unset the injected vars for the test run (this is what CI sees):
 
 ```bash
-env -u CLAUDE_PLUGIN_DATA -u CODEX_COMPANION_SESSION_ID -u CLAUDE_PLUGIN_ROOT \
+env -u CLAUDE_PLUGIN_DATA -u CODEX_PLUGIN_DATA_DIR -u CODEX_COMPANION_SESSION_ID -u CLAUDE_PLUGIN_ROOT \
   node --test tests/*.test.mjs
 ```
 
@@ -524,6 +527,34 @@ safety boundary for Codex subprocess actions. Govern Codex instead with:
 A full host-permission ↔ Codex-approval bridge is a sizable design change
 tracked as upstream issue #75 and fork backlog item B2; until it lands, the
 two systems remain separate by design.
+
+---
+
+## 16. `command not found: node` on the macOS app / GUI-launched sessions (#105)
+
+**Symptom**: every `/opnd-codex:*` command and the SessionStart/End/Stop hooks
+fail with `command not found: node` (or `node: not found`), even though `node`
+works fine in your normal terminal.
+
+**Cause**: a GUI-launched process (the macOS Claude app, some IDE integrations)
+does not inherit the PATH set up by your shell profile (`.zshrc` / `.bashrc`).
+Node installed via Homebrew or nvm lives in a directory that profile adds to
+PATH — so a non-login, non-interactive shell never sees it.
+
+**Mitigation (built in)**: the plugin's hook commands and slash-command
+invocations no longer call a bare `node`. They resolve it as:
+
+```sh
+"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)"
+```
+
+— i.e. PATH first, then the common Homebrew (Apple Silicon `/opt/homebrew`,
+Intel `/usr/local`) locations.
+
+**If it still fails**: your Node is in neither PATH nor those locations (e.g.
+an nvm-only install). Either (a) symlink your node into `/usr/local/bin`, or
+(b) install Node ≥18.18 via Homebrew, or (c) launch Claude Code from a terminal
+that has your full PATH. A bundled-runtime fix is tracked in the fork backlog.
 
 ---
 

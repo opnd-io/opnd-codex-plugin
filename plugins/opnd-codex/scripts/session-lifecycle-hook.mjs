@@ -19,6 +19,13 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+// #338 — the SessionStart hook must NOT re-export the generic CLAUDE_PLUGIN_DATA
+// into CLAUDE_ENV_FILE: that file is sourced by EVERY tool call and every other
+// plugin, so exporting it there overrides their own per-plugin CLAUDE_PLUGIN_DATA.
+// Re-export under a codex-namespaced name instead; the plugin's own consumers
+// (state.mjs / telemetry.mjs / codex-efficiency-report.mjs / codex-companion.mjs)
+// read `CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA`.
+const CODEX_PLUGIN_DATA_DIR_ENV = "CODEX_PLUGIN_DATA_DIR";
 
 // PR-1.6 (#120 / #247) — sync fs.readFileSync(0) crashes with EAGAIN whenever
 // the parent passes a non-blocking stdin fd. Switch to event-based async drain
@@ -76,7 +83,8 @@ function cleanupSessionJobs(cwd, sessionId) {
 
 function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
-  appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
+  // #338 — codex-namespaced so other plugins' CLAUDE_PLUGIN_DATA is untouched.
+  appendEnvVar(CODEX_PLUGIN_DATA_DIR_ENV, process.env[PLUGIN_DATA_ENV]);
 }
 
 async function handleSessionEnd(input) {

@@ -1,11 +1,10 @@
 ---
 description: Show active and recent Codex jobs for this repository, including review-gate status
 argument-hint: '[job-id] [--wait] [--timeout-ms <ms>] [--tail [--tail-lines <N>]] [--watch [--tail-lines <N>] [--watch-interval-ms <ms>]] [--all]'
-disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status "$ARGUMENTS"`
+!`"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status "$ARGUMENTS"`
 
 If the user did not pass a job ID:
 - Render the command output as a single Markdown table for the current and past runs in this session.

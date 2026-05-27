@@ -166,6 +166,13 @@ function sanitizePluginCodexEnv(baseEnv) {
     }
     // Drop Claude harness internals — codex CLI does not need them and
     // their leakage has caused sessionId confusion in the past.
+    // #338 note: CLAUDE_PLUGIN_DATA is intentionally kept. This env feeds the
+    // plugin's OWN children (codex app-server + the broker script,
+    // broker-lifecycle.mjs:188) — NOT the shared CLAUDE_ENV_FILE, so it is not
+    // the cross-plugin leak #338 is about. A hook-spawned broker only inherits
+    // CLAUDE_PLUGIN_DATA; it resolves its state dir from
+    // CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA. CODEX_PLUGIN_DATA_DIR is not
+    // a CLAUDE_ key, so it passes this filter on its own.
     if (key.startsWith("CLAUDE_") && key !== "CLAUDE_PLUGIN_ROOT" && key !== "CLAUDE_PLUGIN_DATA") {
       continue;
     }
@@ -459,7 +466,16 @@ class AppServerClientBase {
     }
 
     if (message.id !== undefined && message.method) {
-      void this.handleServerRequest(message);
+      // handleServerRequest is fire-and-forget, but its sendMessage() calls
+      // (success, error, and unsupported-method branches) can throw when the
+      // underlying transport is already closed. Without this .catch() that
+      // rejection escapes as an unhandledRejection and can abort the process.
+      this.handleServerRequest(message).catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stderr.write(
+          `[codex-app-server] server request ${message.method} failed to respond: ${detail}\n`
+        );
+      });
       return;
     }
 

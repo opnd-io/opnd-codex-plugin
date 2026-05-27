@@ -446,14 +446,22 @@ Yes. Because the plugin uses your local Codex CLI, your existing sign-in method 
 
 If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
 
-### Why can't Claude run `/opnd-codex:status` (or `/opnd-codex:review`, `/opnd-codex:cancel`, …) on its own?
+### Can Claude run `/opnd-codex:status` (or `/opnd-codex:review`, `/opnd-codex:cancel`, …) on its own?
 
-Nine commands — `/opnd-codex:review`, `/opnd-codex:adversarial-review`, `/opnd-codex:agent`, `/opnd-codex:continue`, `/opnd-codex:status`, `/opnd-codex:result`, `/opnd-codex:cancel`, `/opnd-codex:approve`, `/opnd-codex:deny` — are marked `disable-model-invocation: true`. Claude Code's harness will not let the assistant auto-invoke them mid-reasoning; **only you (the human) can type them**.
-
-This is deliberate: these commands start or steer Codex runs (which cost tokens), mutate job state, or gate session-end review. Letting the assistant fire them autonomously could burn budget or take side-effecting actions without your explicit intent.
+Yes. As of the `/analyze`-recommendation hardening (#211), **all** slash commands are
+model-invocable — none carry `disable-model-invocation: true` anymore. Earlier
+releases hid nine commands from the skill list; that also blocked them from
+appearing for user-initiated invocation in some hosts, so the marker was dropped.
 
 What this means in practice:
 
-- To act on a Codex job, **run the command yourself** (e.g. type `/opnd-codex:status`), then ask Claude — it can read the printed output and reason about it.
-- For work you *do* want Claude to drive autonomously, use **`/opnd-codex:rescue`** — it is model-invocable (it delegates through the `codex:codex-rescue` subagent via the Agent tool) and is the intended entry point for assistant-driven Codex delegation.
-- There is no flag to flip this per-session; the policy is set in each command's frontmatter by design.
+- The assistant *may* now invoke side-effecting commands — `/opnd-codex:review`,
+  `/opnd-codex:agent`, `/opnd-codex:approve`, `/opnd-codex:deny`,
+  `/opnd-codex:cancel` — directly. These start or steer Codex runs (which cost
+  tokens), mutate job state, or resolve approvals.
+- If you want a hard guard against the assistant firing a specific command
+  autonomously, use Claude Code's own `permissions.deny` rules in
+  `.claude/settings.json` (e.g. deny the matching `Bash(node:*)` invocation) —
+  that is the supported, per-project control, not a plugin frontmatter flag.
+- **`/opnd-codex:rescue`** remains the intended entry point for assistant-driven
+  Codex delegation — it routes through the `codex:codex-rescue` subagent.

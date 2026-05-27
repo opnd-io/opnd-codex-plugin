@@ -43,8 +43,9 @@ import fs from "node:fs";
 
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
-import { loadBrokerSession } from "./broker-lifecycle.mjs";
+import { clearBrokerSession, loadBrokerSession, teardownBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
+import { withBrokerLockAsync } from "./state.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -773,11 +774,45 @@ function applyTurnNotification(state, message) {
   }
 }
 
+// Overlapping captureTurn() calls on the same client must restore the
+// notification handler correctly even when they finish out of LIFO order.
+// A single save/restore slot clobbers a still-active sibling capture when an
+// earlier one finishes first. Track handlers as a per-client stack instead:
+// the active handler is always the stack top, and a finished capture removes
+// itself by identity rather than blindly reinstating its captured predecessor.
+const notificationHandlerStacks = new WeakMap();
+
+function pushNotificationHandler(client, handler) {
+  let stack = notificationHandlerStacks.get(client);
+  if (!stack) {
+    // Seed index 0 with the handler already installed so the final pop
+    // restores the original base handler rather than null.
+    stack = [client.notificationHandler ?? null];
+    notificationHandlerStacks.set(client, stack);
+  }
+  stack.push(handler);
+  client.setNotificationHandler(handler);
+}
+
+function popNotificationHandler(client, handler) {
+  const stack = notificationHandlerStacks.get(client);
+  if (!stack) {
+    client.setNotificationHandler(null);
+    return;
+  }
+  const index = stack.lastIndexOf(handler);
+  // index 0 is the seeded base handler — never splice it out.
+  if (index > 0) {
+    stack.splice(index, 1);
+  }
+  client.setNotificationHandler(stack[stack.length - 1] ?? null);
+}
+
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
 
-  client.setNotificationHandler((message) => {
+  const turnNotificationHandler = (message) => {
     // Manual port of upstream PR #312 — every JSON-RPC notification kicks
     // the inactivity watchdog forward. Opt-in (no-op when watchdogMs unset).
     kickWatchdog(state);
@@ -805,7 +840,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     }
 
     applyTurnNotification(state, message);
-  });
+  };
+  pushNotificationHandler(client, turnNotificationHandler);
 
   try {
     armWatchdog(state);
@@ -834,7 +870,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   } finally {
     clearCompletionTimer(state);
     disarmWatchdog(state);
-    client.setNotificationHandler(previousHandler ?? null);
+    popNotificationHandler(client, turnNotificationHandler);
   }
 }
 
@@ -869,6 +905,8 @@ async function withAppServer(cwd, fn, options = {}) {
       (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED"));
 
     if (client) {
+      // Teardown best-effort: a failed close has no recovery path and must
+      // not mask the primary turn error/result being propagated.
       await client.close().catch(() => {});
       client = null;
     }
@@ -1157,11 +1195,19 @@ export async function getCodexAuthStatus(cwd, options = {}) {
 
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd, {
-      env: options.env,
-      reuseExistingBroker: true
+    // #41 — a reused broker can hold an invalidated token after the user ran
+    // `codex logout && codex login`. getCodexAuthStatusFromClient swallows the
+    // resulting error into a loggedIn:false status object, so the orchestrator
+    // detects the stale-auth signature on `status.detail` (not only thrown
+    // exceptions) and restarts the broker ONCE before re-probing.
+    const reuseBrokerEndpoint = Boolean(options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV]);
+    const { status } = await probeAuthWithStaleRetry({
+      connect: () => CodexAppServerClient.connect(cwd, { env: options.env, reuseExistingBroker: true }),
+      probe: (probeClient) => getCodexAuthStatusFromClient(probeClient, cwd),
+      restartBroker: () => restartStaleBrokerSession(cwd),
+      reuseBrokerEndpoint
     });
-    return await getCodexAuthStatusFromClient(client, cwd);
+    return status;
   } catch (error) {
     const hasExplicitBrokerEndpoint = Boolean(options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV]);
     if (!hasExplicitBrokerEndpoint && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED")) {
@@ -1186,6 +1232,8 @@ export async function getCodexAuthStatus(cwd, options = {}) {
     });
   } finally {
     if (client) {
+      // Teardown best-effort: a failed close has no recovery path and must
+      // not mask the primary turn error/result being propagated.
       await client.close().catch(() => {});
     }
   }
@@ -1229,6 +1277,8 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
       detail: error instanceof Error ? error.message : String(error)
     };
   } finally {
+    // Teardown best-effort: a failed close has no recovery path and must
+    // not mask the primary error/result being propagated.
     await client?.close().catch(() => {});
   }
 }
@@ -1273,6 +1323,55 @@ function annotateStaleAuthCacheError(error) {
   return Object.assign(new Error(original + guidance), { cause: error, code: error.code ?? null });
 }
 
+// #41 — a reused broker app-server caches its OpenAI token at startup and does
+// NOT re-read ~/.codex/auth.json after `codex logout && codex login`. The auth
+// probe then comes back with the stale-auth signature even though the user just
+// logged in fresh. Tear the stale broker down — under the broker lock so this
+// is safe against concurrent /opnd-codex:* callers (#286) — and clear
+// broker.json; the next connect respawns a fresh app-server that re-reads
+// auth.json. Caller bounds this to one restart per probe.
+async function restartStaleBrokerSession(cwd) {
+  await withBrokerLockAsync(cwd, async () => {
+    const session = loadBrokerSession(cwd);
+    if (session) {
+      teardownBrokerSession({
+        endpoint: session.endpoint ?? null,
+        pidFile: session.pidFile ?? null,
+        logFile: session.logFile ?? null,
+        sessionDir: session.sessionDir ?? null,
+        pid: session.pid ?? null
+      });
+    }
+    clearBrokerSession(cwd);
+  });
+}
+
+// #41 — orchestrates the auth probe + one-shot stale-broker restart. Extracted
+// with injected deps (`connect` / `probe` / `restartBroker`) so the behavioral
+// test can drive the retry path without a real broker or app-server. Returns
+// `{ status, restarted }`. The restart is bounded to exactly one attempt — a
+// second stale-auth result after the restart is returned as-is (no loop).
+async function probeAuthWithStaleRetry({ connect, probe, restartBroker, reuseBrokerEndpoint }) {
+  let client = await connect();
+  let restarted = false;
+  try {
+    let status = await probe(client);
+    if (!reuseBrokerEndpoint && !status?.loggedIn && isStaleAuthCacheError(status?.detail)) {
+      restarted = true;
+      await client.close().catch(() => {});
+      client = null;
+      await restartBroker();
+      client = await connect();
+      status = await probe(client);
+    }
+    return { status, restarted };
+  } finally {
+    if (client) {
+      await client.close().catch(() => {});
+    }
+  }
+}
+
 function isModelRequiresNewerCodexError(error) {
   if (!error) {
     return false;
@@ -1281,6 +1380,33 @@ function isModelRequiresNewerCodexError(error) {
   // Match the upstream phrasing; keep the regex loose enough that minor
   // wording changes (e.g. CLI vs app suggestion variants) still trip it.
   return /requires a newer version of Codex/i.test(String(text));
+}
+
+// #309 — shared model-version fallback for BOTH the review and the task/turn
+// paths (was review-only; gpt-5.5 on CLI 0.130 also 400s task/agent runs).
+// `runWithModel(modelOverride)` MUST: (a) return a result object with an
+// `.error` field rather than throwing for the model-version case, and (b) be
+// safe to call twice — re-issuing thread + turn/start from scratch.
+//
+// Retrying the whole function is safe ONLY because the "requires a newer
+// version of Codex" failure is a request-time 400 (invalid_request) rejection
+// of the thread/start or turn/start call: the server never created a turn, so
+// the retry IS the first and only real turn. Do NOT broaden
+// `isModelRequiresNewerCodexError` to mid-turn errors without removing this
+// whole-function retry — that would create a duplicate server-side turn.
+async function withModelFallback(runWithModel, { explicitModel, onProgress, label }) {
+  const firstAttempt = await runWithModel(undefined);
+  // Only auto-fallback when the user did NOT explicitly select a model, so an
+  // intentional choice is never silently overridden.
+  if (!explicitModel && isModelRequiresNewerCodexError(firstAttempt?.error)) {
+    emitProgress(
+      onProgress,
+      `${label} failed: default model unavailable. Retrying with model="${REVIEW_MODEL_FALLBACK}".`,
+      "warn"
+    );
+    return await runWithModel(REVIEW_MODEL_FALLBACK);
+  }
+  return firstAttempt;
 }
 
 export async function runAppServerReview(cwd, options = {}) {
@@ -1343,22 +1469,12 @@ export async function runAppServerReview(cwd, options = {}) {
     }, { profile: options.profile, fast: options.fast });
   }
 
-  const firstAttempt = await executeReviewWithModel(undefined);
-  // Only auto-fallback when the user did NOT explicitly select a model (so
-  // we never silently override an intentional choice). The condition is:
-  //   - no options.model provided
-  //   - the failure signature matches the "requires newer Codex" wording
   const explicitModel = options.model != null && String(options.model).length > 0;
-  if (!explicitModel && isModelRequiresNewerCodexError(firstAttempt.error)) {
-    emitProgress(
-      options.onProgress,
-      `Codex review failed: default model unavailable for structured review. Retrying with model="${REVIEW_MODEL_FALLBACK}".`,
-      "warn"
-    );
-    const retry = await executeReviewWithModel(REVIEW_MODEL_FALLBACK);
-    return retry;
-  }
-  return firstAttempt;
+  return withModelFallback(executeReviewWithModel, {
+    explicitModel,
+    onProgress: options.onProgress,
+    label: "Codex review"
+  });
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
@@ -1402,32 +1518,50 @@ export async function runAppServerTurn(cwd, options = {}) {
       throw new Error("A prompt is required for this Codex run.");
     }
 
-    const turnState = await captureTurn(
-      client,
-      threadId,
-      () =>
-        client.request("turn/start", {
-          threadId,
-          input: buildTurnInput(prompt),
-          model: options.model ?? null,
-          effort: options.effort ?? null,
-          approvalPolicy: options.approvalPolicy ?? null,
-          outputSchema: options.outputSchema ?? null
-        }),
-      {
-        onProgress: options.onProgress,
-        // PR-G-B (manual port of upstream PR #312) + A2 fix — per-turn
-        // inactivity watchdog. An explicit `options.watchdogMs` from the
-        // direct caller (companion / task path) wins; otherwise it resolves
-        // to `CODEX_TURN_WATCHDOG_MS` env, then the default-on 10 min bound
-        // (`resolveDefaultTurnWatchdogMs`). `CODEX_TURN_WATCHDOG_MS=0`
-        // disables; an explicit `null` option also disables.
-        watchdogMs:
-          typeof options.watchdogMs === "number"
-            ? options.watchdogMs
-            : resolveDefaultTurnWatchdogMs()
-      }
-    );
+    // #309 — retry ONLY turn/start, on the SAME already-created thread, with
+    // the stable fallback model when the default model 400s. The thread is
+    // created exactly once above, so — unlike a whole-function retry — no
+    // orphan thread is left behind (Codex audit BUG fix). The model-version
+    // 400 is a turn/start-time rejection (thread/start already succeeded);
+    // re-issuing turn/start on the same thread is the first and only real turn.
+    const runTurn = (modelOverride) =>
+      captureTurn(
+        client,
+        threadId,
+        () =>
+          client.request("turn/start", {
+            threadId,
+            input: buildTurnInput(prompt),
+            model: (modelOverride ?? options.model) ?? null,
+            effort: options.effort ?? null,
+            approvalPolicy: options.approvalPolicy ?? null,
+            outputSchema: options.outputSchema ?? null
+          }),
+        {
+          onProgress: options.onProgress,
+          // PR-G-B (manual port of upstream PR #312) + A2 fix — per-turn
+          // inactivity watchdog. An explicit `options.watchdogMs` from the
+          // direct caller (companion / task path) wins; otherwise it resolves
+          // to `CODEX_TURN_WATCHDOG_MS` env, then the default-on 10 min bound
+          // (`resolveDefaultTurnWatchdogMs`). `CODEX_TURN_WATCHDOG_MS=0`
+          // disables; an explicit `null` option also disables.
+          watchdogMs:
+            typeof options.watchdogMs === "number"
+              ? options.watchdogMs
+              : resolveDefaultTurnWatchdogMs()
+        }
+      );
+
+    let turnState = await runTurn(undefined);
+    const explicitModel = options.model != null && String(options.model).length > 0;
+    if (!explicitModel && isModelRequiresNewerCodexError(turnState.error)) {
+      emitProgress(
+        options.onProgress,
+        `Codex task failed: default model unavailable. Retrying with model="${REVIEW_MODEL_FALLBACK}".`,
+        "warn"
+      );
+      turnState = await runTurn(REVIEW_MODEL_FALLBACK);
+    }
 
     return {
       status: buildResultStatus(turnState),
@@ -1551,5 +1685,11 @@ export const __testHooks = {
   failTurn,
   FINALIZING_PHASE_TIMEOUT_MS,
   resolveSandboxValue,
-  buildThreadParams
+  buildThreadParams,
+  // #41 — exposed so the behavioral test can drive the stale-broker restart
+  // retry without a real broker/app-server.
+  probeAuthWithStaleRetry,
+  isStaleAuthCacheError,
+  withModelFallback,
+  isModelRequiresNewerCodexError
 };

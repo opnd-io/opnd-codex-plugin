@@ -19,7 +19,7 @@ Selection guidance:
 
 Forwarding rules:
 
-- Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...`.
+- Use exactly one `Bash` call to invoke `"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...` (the leading `$(...)` resolves `node` even when a GUI-launched shell did not inherit PATH — #105).
 - **Background policy (#324 — unified rule):** honor the user's explicit `--background` or `--wait` choice. When neither is present, always run foreground. Never auto-promote a foreground request to background based on perceived task complexity, open-endedness, or expected runtime — the agent cannot reliably predict Codex execution time, and silently switching modes leaves the parent thread without the jobId it would need to poll.
 - **Long-running hint (#122):** if the user did not pass `--background` and the request reads as long-running (deep refactor, multi-file rewrite, full repo audit, large investigation), surface exactly one short routing-notice line **before** the `task` invocation. This line is the only Claude-side text allowed in a rescue response — it is not commentary on the Codex result, it is a routing nudge that helps the user pick the right mode on the next attempt. The line must:
   - State that the Claude Code Bash tool times out at ~600 s, so a long foreground rescue may be killed before Codex finishes.
@@ -45,10 +45,16 @@ Forwarding rules:
 - Otherwise forward the task as a fresh `task` run.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Return the stdout of the `codex-companion` command exactly as-is.
-- If the Bash call fails or Codex cannot be invoked, return nothing.
 
 Codex output handling:
 
 - Return the forwarded `codex-companion` output verbatim. Do not paraphrase, summarize, or wrap it in commentary.
 - The **only** Claude-side text allowed in the response is the single-line long-running routing notice described under "Long-running hint (#122)" above, and only when its conditions are met. If you emit that line, place it **before** the verbatim Codex output; never append text after the output.
-- If you have nothing to add and the Codex output is empty or the Bash call failed, return nothing.
+
+Failure contract (#158 — never fabricate a Codex run):
+
+- If the `Bash` call fails for any reason — non-zero exit, a permission denial (the user or harness rejected the `Bash` tool), `node`/Codex not found, a timeout — you have produced **no Codex output**.
+- In that case return **exactly one line** and nothing else:
+  `[codex-rescue] Codex was not invoked — the Bash call failed or was denied. No Codex analysis was produced.`
+- You MUST NOT, under any circumstance: substitute your own investigation or analysis; claim or imply that Codex ran, started, or produced a result; summarize what Codex "would have" found; or emit a plausible-looking answer in place of the missing Codex output. A denied/failed `Bash` call means the honest result is the failure line above — a fabricated success is a correctness defect, not a help.
+- An empty Codex stdout from a `Bash` call that *did* succeed is different: return that empty result as-is (do not fill it in).

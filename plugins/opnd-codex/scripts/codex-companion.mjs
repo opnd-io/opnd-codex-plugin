@@ -29,7 +29,7 @@ import {
   normalizeApprovalPolicy,
   pendingApprovalCount
 } from "./lib/approvals.mjs";
-import { readStdinIfPiped } from "./lib/fs.mjs";
+import { readStdinAsync } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
@@ -1166,9 +1166,9 @@ function buildTaskRequest({
 const PROMPT_INLINE_SIZE_WARN_BYTES = 3 * 1024;
 let inlinePromptWarningEmitted = false;
 
-function readTaskPrompt(cwd, options, positionals) {
+async function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-stdin"]) {
-    return readStdinIfPiped();
+    return readStdinAsync();
   }
   if (options["prompt-file"]) {
     // PR-G-C (manual port of upstream PR #289) — `path.resolve(cwd, raw)`
@@ -1224,13 +1224,13 @@ function readTaskPrompt(cwd, options, positionals) {
         "argv-size rejection that surfaces as a generic 'user denied' error (#308).\n"
     );
   }
-  return positionalPrompt || readStdinIfPiped();
+  return positionalPrompt || (await readStdinAsync());
 }
 
-function readTaskPromptSource(cwd, options, positionals) {
+async function readTaskPromptSource(cwd, options, positionals) {
   if (!options.capsule) {
     return {
-      prompt: readTaskPrompt(cwd, options, positionals),
+      prompt: await readTaskPrompt(cwd, options, positionals),
       promptSource: "inline",
       capsule: null
     };
@@ -1637,7 +1637,7 @@ async function handleTask(argv) {
         "surrounding machine is already isolated.\n"
     );
   }
-  const promptSource = readTaskPromptSource(cwd, options, positionals);
+  const promptSource = await readTaskPromptSource(cwd, options, positionals);
   let prompt = applyPromptAdditions(promptSource.prompt, options);
   // PR-7.3 (#284) — --context <text> prepends a small context block to the
   // user prompt so callers can pass orientation (module, working area, etc.)
@@ -2005,7 +2005,7 @@ async function handleContinue(argv) {
   // only model + effort flow through the resolvers here.
   const model = resolveModel(options.model);
   const effort = resolveEffort(options.effort);
-  const promptSource = readTaskPromptSource(cwd, options, positionals);
+  const promptSource = await readTaskPromptSource(cwd, options, positionals);
   let prompt = applyPromptAdditions(promptSource.prompt, options);
   if (!prompt) {
     throw new Error("Provide a prompt, a prompt file, or piped stdin for continue.");
@@ -2213,7 +2213,8 @@ const READ_TRACE_EVENTS_PARTIAL_READ_BYTES = 1024 * 1024;
 
 function readTraceEvents(traceId, { env = process.env, maxEvents = 50 } = {}) {
   if (!traceId) return [];
-  const dataDir = env.CLAUDE_PLUGIN_DATA;
+  // #338 — codex-namespaced var first (see session-lifecycle-hook.mjs).
+  const dataDir = env.CODEX_PLUGIN_DATA_DIR ?? env.CLAUDE_PLUGIN_DATA;
   if (!dataDir) return [];
   const file = path.join(dataDir, "telemetry", "events.jsonl");
   if (!fs.existsSync(file)) return [];

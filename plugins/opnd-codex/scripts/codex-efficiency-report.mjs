@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const pluginData = process.env.CLAUDE_PLUGIN_DATA ?? path.join(os.tmpdir(), "codex-companion");
+// #338 — codex-namespaced var first (see session-lifecycle-hook.mjs), then the
+// generic CLAUDE_PLUGIN_DATA (hook context), then the tmpdir fallback.
+const pluginData =
+  process.env.CODEX_PLUGIN_DATA_DIR ?? process.env.CLAUDE_PLUGIN_DATA ?? path.join(os.tmpdir(), "codex-companion");
 const telemetryFile = path.join(pluginData, "telemetry", "events.jsonl");
 
 function readEvents(filePath) {

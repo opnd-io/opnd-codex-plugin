@@ -41,6 +41,8 @@ import os from "node:os";
 import path from "node:path";
 
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+// #338 — codex-namespaced plugin-data var (see session-lifecycle-hook.mjs).
+const CODEX_PLUGIN_DATA_DIR_ENV = "CODEX_PLUGIN_DATA_DIR";
 const DISABLE_ENV = "CODEX_PLUGIN_TELEMETRY_DISABLED";
 const FALLBACK_DATA_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const TELEMETRY_DIR_NAME = "telemetry";
@@ -94,7 +96,7 @@ export function isTelemetryDisabled(env = process.env) {
 }
 
 export function resolveTelemetryDir(env = process.env) {
-  const pluginDataDir = env[PLUGIN_DATA_ENV];
+  const pluginDataDir = env[CODEX_PLUGIN_DATA_DIR_ENV] ?? env[PLUGIN_DATA_ENV];
   const root = pluginDataDir ? pluginDataDir : FALLBACK_DATA_ROOT_DIR;
   return path.join(root, TELEMETRY_DIR_NAME);
 }

@@ -157,10 +157,17 @@ function runStopReview(cwd, input = {}) {
     ...process.env,
     ...(input.session_id ? { [SESSION_ID_ENV]: input.session_id } : {})
   };
-  const result = spawnSync(process.execPath, [scriptPath, "task", "--json", prompt], {
+  // PR-fix (analyze HIGH-1) — the stop-review prompt embeds
+  // last_assistant_message, which can be arbitrarily large. Passing it as an
+  // argv element trips the OS argv-size limit (E2BIG on POSIX, a silent
+  // truncation/spawn failure on Windows), and the gate then skips with no
+  // review ever running. Feed the prompt over stdin via --prompt-stdin so the
+  // payload size is bounded only by the pipe, not by ARG_MAX.
+  const result = spawnSync(process.execPath, [scriptPath, "task", "--json", "--prompt-stdin"], {
     cwd,
     env: childEnv,
     encoding: "utf8",
+    input: prompt,
     timeout: STOP_REVIEW_TIMEOUT_MS
   });
 

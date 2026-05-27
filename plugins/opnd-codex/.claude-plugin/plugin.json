@@ -1,6 +1,6 @@
 {
   "name": "opnd-codex",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Use Codex from Claude Code to review code or delegate tasks. Fork of openai/codex-plugin-cc maintained by opnd-io with v2.0.0/v2.1.0 hardening + observability.",
   "author": {
     "name": "opnd-io"

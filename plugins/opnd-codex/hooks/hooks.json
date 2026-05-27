@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && node scripts/session-lifecycle-hook.mjs SessionStart",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && \"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)\" scripts/session-lifecycle-hook.mjs SessionStart",
             "timeout": 5
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && node scripts/session-lifecycle-hook.mjs SessionEnd",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && \"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)\" scripts/session-lifecycle-hook.mjs SessionEnd",
             "timeout": 5
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && node scripts/stop-review-gate-hook.mjs",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && \"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)\" scripts/stop-review-gate-hook.mjs",
             "timeout": 900
           }
         ]

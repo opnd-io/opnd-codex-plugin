@@ -212,6 +212,8 @@ async function main() {
     for (const socket of sockets) {
       socket.end();
     }
+    // Teardown best-effort: a failed app-server close has no recovery action
+    // and must not abort the rest of broker shutdown (socket + server close).
     await appClient.close().catch(() => {});
     await new Promise((resolve) => server.close(resolve));
     if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
@@ -228,8 +230,9 @@ async function main() {
     sockets.add(socket);
     socket.setEncoding("utf8");
     let buffer = "";
+    let dataChain = Promise.resolve();
 
-    socket.on("data", async (chunk) => {
+    const processSocketChunk = async (chunk) => {
       buffer += chunk;
       if (buffer.length > MAX_JSONL_LINE_BYTES && buffer.indexOf("\n") === -1) {
         send(socket, {
@@ -361,6 +364,23 @@ async function main() {
           }
         }
       }
+    };
+
+    // PR-fix (analyze MEDIUM-1) — processSocketChunk is async and yields at
+    // `await appClient.request(...)`. Node serializes the *invocation* of
+    // data listeners but not their async *completion*: a second `data`
+    // event could otherwise start mutating `buffer` and broker turn-ownership
+    // state (activeRequestSocket / activeStreamSocket) while the prior chunk's
+    // await is still pending. Chain each chunk onto the previous so buffer
+    // parsing and turn routing stay strictly sequential per socket.
+    socket.on("data", (chunk) => {
+      dataChain = dataChain
+        .then(() => processSocketChunk(chunk))
+        .catch((error) => {
+          process.stderr.write(
+            `[codex-broker] socket data handler error: ${error?.message ?? error}\n`
+          );
+        });
     });
 
     socket.on("close", () => {

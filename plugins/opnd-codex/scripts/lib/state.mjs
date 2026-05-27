@@ -8,6 +8,11 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+// #338 — codex-namespaced plugin-data var. The SessionStart hook exports the
+// CLAUDE_PLUGIN_DATA value under this name so command subprocesses can resolve
+// the state dir without the hook having to hijack the generic CLAUDE_PLUGIN_DATA
+// in the shared session env file.
+const CODEX_PLUGIN_DATA_DIR_ENV = "CODEX_PLUGIN_DATA_DIR";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
@@ -48,7 +53,10 @@ export function resolveStateDir(cwd) {
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
   const dirName = `${slug}-${hash}`;
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  // #338 — prefer the codex-namespaced var (set by the SessionStart hook for
+  // command subprocesses); fall back to the generic CLAUDE_PLUGIN_DATA which is
+  // natively present in the hook context itself.
+  const pluginDataDir = process.env[CODEX_PLUGIN_DATA_DIR_ENV] ?? process.env[PLUGIN_DATA_ENV];
 
   // #59 fix (manual port of upstream PR #125) — when CLAUDE_PLUGIN_DATA is
   // set the persistent state dir is authoritative, but a Bash command run

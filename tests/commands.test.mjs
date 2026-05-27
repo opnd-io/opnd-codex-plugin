@@ -26,7 +26,8 @@ test("review command uses AskUserQuestion and background Bash while staying revi
   assert.match(source, /review "\$ARGUMENTS"/);
   assert.match(source, /\[--scope auto\|working-tree\|branch\]/);
   assert.match(source, /run_in_background:\s*true/);
-  assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" review "\$ARGUMENTS"`/);
+  // #105 — the node invocation is resolved via a PATH-fallback shell expression.
+  assert.match(source, /command:\s*`"\$\(command -v node[\s\S]*?codex-companion\.mjs" review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex review"/);
   assert.match(source, /Do not call `BashOutput`/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
@@ -54,7 +55,8 @@ test("adversarial review command uses AskUserQuestion and background Bash while 
   assert.match(source, /adversarial-review "\$ARGUMENTS"/);
   assert.match(source, /\[--scope auto\|working-tree\|branch\] \[focus \.\.\.\]/);
   assert.match(source, /run_in_background:\s*true/);
-  assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
+  // #105 — the node invocation is resolved via a PATH-fallback shell expression.
+  assert.match(source, /command:\s*`"\$\(command -v node[\s\S]*?codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex adversarial review"/);
   assert.match(source, /Do not call `BashOutput`/);
   assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
@@ -166,7 +168,10 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /If the user asks for `spark`, map that to `--model gpt-5\.3-codex-spark`/i);
   assert.match(agent, /If the user asks for a concrete model name such as `gpt-5\.4-mini`, pass it through with `--model`/i);
   assert.match(agent, /Return the stdout of the `codex-companion` command exactly as-is/i);
-  assert.match(agent, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
+  // #158 — failure contract: a denied/failed Bash call returns one explicit
+  // failure line and never a fabricated Codex result.
+  assert.match(agent, /Codex was not invoked — the Bash call failed or was denied/i);
+  assert.match(agent, /MUST NOT[\s\S]*substitute your own investigation/i);
   assert.match(agent, /gpt-5-4-prompting/);
   assert.match(agent, /only to tighten the user's request into a better Codex prompt/i);
   assert.match(agent, /Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work/i);
@@ -220,9 +225,11 @@ test("result and cancel commands are exposed as deterministic runtime entrypoint
   const cancel = read("commands/cancel.md");
   const resultHandling = read("skills/codex-result-handling/SKILL.md");
 
-  assert.match(result, /disable-model-invocation:\s*true/);
+  // #211 — disable-model-invocation removed from all commands so they are no
+  // longer hidden from the skill list. Assert it stays removed.
+  assert.doesNotMatch(result, /disable-model-invocation:\s*true/);
   assert.match(result, /codex-companion\.mjs" result "\$ARGUMENTS"/);
-  assert.match(cancel, /disable-model-invocation:\s*true/);
+  assert.doesNotMatch(cancel, /disable-model-invocation:\s*true/);
   assert.match(cancel, /codex-companion\.mjs" cancel "\$ARGUMENTS"/);
   assert.match(resultHandling, /do not turn a failed or incomplete Codex run into a Claude-side implementation attempt/i);
   assert.match(resultHandling, /if Codex was never successfully invoked, do not generate a substitute answer at all/i);
@@ -316,7 +323,7 @@ test("setup command can offer Codex install and still points users to codex logi
   assert.match(setup, /argument-hint:\s*'\[--enable-review-gate\|--disable-review-gate\]'/);
   assert.match(setup, /AskUserQuestion/);
   assert.match(setup, /npm install -g @openai\/codex/);
-  assert.match(setup, /codex-companion\.mjs" setup --json \$ARGUMENTS/);
+  assert.match(setup, /codex-companion\.mjs" setup --json "\$ARGUMENTS"/);
   assert.match(readme, /!codex login/);
   assert.match(readme, /offer to install Codex for you/i);
   assert.match(readme, /\/opnd-codex:setup --enable-review-gate/);

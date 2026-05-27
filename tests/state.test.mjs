@@ -18,14 +18,31 @@ import {
   writeJobFile
 } from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
+// #338 — resolveStateDir reads `CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA`.
+// Tests that exercise a specific resolution path must control BOTH vars so a
+// value injected by the surrounding Claude Code session does not leak in.
+// Returns a restore fn. (see docs/TROUBLESHOOTING.md #14)
+function snapshotPluginDataEnv() {
+  const saved = {
+    CLAUDE_PLUGIN_DATA: process.env.CLAUDE_PLUGIN_DATA,
+    CODEX_PLUGIN_DATA_DIR: process.env.CODEX_PLUGIN_DATA_DIR
+  };
+  delete process.env.CLAUDE_PLUGIN_DATA;
+  delete process.env.CODEX_PLUGIN_DATA_DIR;
+  return () => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
+}
+
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
-  // #59 fix (PR #125) — this test asserts the tmpdir fallback, so it must
-  // run with CLAUDE_PLUGIN_DATA unset. The Claude Code harness injects that
-  // env for installed plugins, so without this guard the test fails locally
-  // (see docs/TROUBLESHOOTING.md #14).
-  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  delete process.env.CLAUDE_PLUGIN_DATA;
+  const restoreEnv = snapshotPluginDataEnv();
 
   try {
     const stateDir = resolveStateDir(workspace);
@@ -34,19 +51,14 @@ test("resolveStateDir uses a temp-backed per-workspace directory", () => {
     assert.match(path.basename(stateDir), /.+-[a-f0-9]{16}$/);
     assert.match(stateDir, new RegExp(`^${os.tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   } finally {
-    if (previousPluginDataDir == null) {
-      delete process.env.CLAUDE_PLUGIN_DATA;
-    } else {
-      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
-    }
+    restoreEnv();
   }
 });
 
 test("resolveStateDir migrates tmpdir state to the plugin data dir", () => {
   const workspace = makeTempDir();
   const pluginDataDir = makeTempDir();
-  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  delete process.env.CLAUDE_PLUGIN_DATA;
+  const restoreEnv = snapshotPluginDataEnv();
 
   // Write state to the tmpdir fallback (simulates a /opnd-codex:* Bash command
   // run without CLAUDE_PLUGIN_DATA).
@@ -66,18 +78,14 @@ test("resolveStateDir migrates tmpdir state to the plugin data dir", () => {
     const migrated = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
     assert.equal(migrated.config.stopReviewGate, true);
   } finally {
-    if (previousPluginDataDir == null) {
-      delete process.env.CLAUDE_PLUGIN_DATA;
-    } else {
-      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
-    }
+    restoreEnv();
   }
 });
 
 test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
   const workspace = makeTempDir();
   const pluginDataDir = makeTempDir();
-  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const restoreEnv = snapshotPluginDataEnv();
   process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
 
   try {
@@ -90,12 +98,37 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
       new RegExp(`^${path.join(pluginDataDir, "state").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
     );
   } finally {
-    if (previousPluginDataDir == null) {
-      delete process.env.CLAUDE_PLUGIN_DATA;
-    } else {
-      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
-    }
+    restoreEnv();
   }
+});
+
+test("#338 — resolveStateDir prefers CODEX_PLUGIN_DATA_DIR over CLAUDE_PLUGIN_DATA", () => {
+  const workspace = makeTempDir();
+  const namespacedDir = makeTempDir();
+  const genericDir = makeTempDir();
+  const restoreEnv = snapshotPluginDataEnv();
+  process.env.CLAUDE_PLUGIN_DATA = genericDir;
+  process.env.CODEX_PLUGIN_DATA_DIR = namespacedDir;
+
+  try {
+    const stateDir = resolveStateDir(workspace);
+    assert.equal(stateDir.startsWith(path.join(namespacedDir, "state")), true);
+    assert.equal(stateDir.startsWith(genericDir), false);
+  } finally {
+    restoreEnv();
+  }
+});
+
+test("#338 — SessionStart hook exports CODEX_PLUGIN_DATA_DIR, not CLAUDE_PLUGIN_DATA, into the shared env file", () => {
+  const src = fs.readFileSync(
+    new URL("../plugins/opnd-codex/scripts/session-lifecycle-hook.mjs", import.meta.url),
+    "utf8"
+  );
+  // handleSessionStart must append the codex-namespaced var into CLAUDE_ENV_FILE.
+  assert.match(src, /appendEnvVar\(CODEX_PLUGIN_DATA_DIR_ENV,/);
+  // It must NOT append the generic CLAUDE_PLUGIN_DATA (PLUGIN_DATA_ENV) — that
+  // hijacks every other plugin's per-plugin scoping (the #338 leak).
+  assert.doesNotMatch(src, /appendEnvVar\(PLUGIN_DATA_ENV,/);
 });
 
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {
