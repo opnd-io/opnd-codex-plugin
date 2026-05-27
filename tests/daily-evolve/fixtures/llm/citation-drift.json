@@ -1,0 +1,51 @@
+{
+  "_fixture": "citation-drift",
+  "_description": "L4 digest 의 Codex finding 인용에서 transcript line drift 발생. fuzzy threshold 0.8 미만이면 strip + warning. plan §L4 Citation Check, codex review MEDIUM R3-L3.",
+  "_consumer_tests": ["fixture-matrix.test.mjs"],
+  "_planned_consumer_tests": ["citation-check.test.mjs (Phase 0 — 기존 unit)", "digest-writer.test.mjs (Phase 1 강화)"],
+  "transcript": {
+    "agentId": "abc12345def67890",
+    "lines": [
+      "  - claim: Phase 5.0의 LOCAL_TZ_ONLY 변환식은 DST drift 위험이 있음",
+      "  - verdict: CONFIRMED",
+      "  - confidence: certain"
+    ]
+  },
+  "citations": [
+    {
+      "_case": "exact match",
+      "agentId": "abc12345def67890",
+      "line_ref": 1,
+      "quoted_text": "  - claim: Phase 5.0의 LOCAL_TZ_ONLY 변환식은 DST drift 위험이 있음",
+      "expected": { "passed": true, "reason": "exact_match", "similarity": 1 }
+    },
+    {
+      "_case": "fuzzy match (≥0.8) — minor wording drift",
+      "agentId": "abc12345def67890",
+      "line_ref": 1,
+      "quoted_text": "  - claim: Phase 5.0 LOCAL_TZ_ONLY 변환식은 DST drift 위험이 있음",
+      "expected": { "passed": true, "reason": "fuzzy_match" }
+    },
+    {
+      "_case": "fuzzy fail (<0.8) — substantial drift",
+      "agentId": "abc12345def67890",
+      "line_ref": 1,
+      "quoted_text": "completely different sentence with no real similarity at all",
+      "expected": { "passed": false, "reason": "fuzzy_fail" }
+    },
+    {
+      "_case": "line_ref out of range",
+      "agentId": "abc12345def67890",
+      "line_ref": 99,
+      "quoted_text": "anything",
+      "expected": { "passed": false, "reason": "line_ref_out_of_range" }
+    },
+    {
+      "_case": "agentId not found (transcript missing)",
+      "agentId": "deadbeef00000000",
+      "line_ref": 1,
+      "quoted_text": "anything",
+      "expected": { "passed": false, "reason": "transcript_missing" }
+    }
+  ]
+}

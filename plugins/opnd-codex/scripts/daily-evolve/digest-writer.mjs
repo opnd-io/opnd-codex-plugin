@@ -1,0 +1,232 @@
+#!/usr/bin/env node
+/**
+ * digest-writer.mjs — daily-evolve Phase 0 digest markdown writer
+ *
+ * Plan reference: plan-daily-evolve-pipeline.md
+ *   - § 접근법 Component 4 (Daily Digest Writer L4)
+ *   - Phase 0.4 — `docs/daily-evolve/{YYYY-MM-DD}.md` 생성
+ *   - R3-M5 cognitive load metadata header (decision_count / estimated_reading_minutes / manual_actions_required)
+ *   - R3-M6 last_3_runs header (run-ledger 통합)
+ *   - R5-L10 no_changes / failures / run_status 별도 섹션
+ *   - R3-M3 citation check pass (lib/citation-check.mjs)
+ *   - Output Discipline ≤500줄 (CLAUDE.md)
+ *
+ * Phase 0 PoC: Codex citation 없이 record listing 만. Phase 1+ 에서 Codex L3 triage 결과
+ * 인용 추가, citation-check 가 fail-closed 검증.
+ *
+ * Side effect 허용 (orchestrator): filesystem read (state/runs) + write (digest md).
+ * lib (verdict-schema / run-ledger / citation-check) 는 pure — 본 orchestrator 가 IO.
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import process from "node:process";
+
+import { VERDICTS } from "./lib/verdict-schema.mjs";
+import { queryLastN } from "./lib/run-ledger.mjs";
+import { checkCitations } from "./lib/citation-check.mjs";
+
+const DIGEST_DIR = "docs/daily-evolve";
+const MAX_DIGEST_LINES = 500;
+const READING_SECONDS_PER_RECORD = 30; // 30s per record estimate
+const TIER_ORDER = Object.freeze([
+  VERDICTS.NOT_FIXED,
+  VERDICTS.PARTIAL,
+  VERDICTS.FIXED,
+  VERDICTS.QUESTION,
+  VERDICTS.WONTFIX,
+]);
+
+/**
+ * Group records by (verdict, signal_type) pair. Pure helper for digest layout.
+ */
+function groupRecords(records) {
+  const groups = {};
+  for (const r of records) {
+    const key = `${r.verdict}::${r.signal_type}`;
+    if (!groups[key]) {
+      groups[key] = { verdict: r.verdict, signal_type: r.signal_type, records: [] };
+    }
+    groups[key].records.push(r);
+  }
+  return groups;
+}
+
+/**
+ * Compute cognitive load metric (R3-M5).
+ *   - decision_count = actionable items (NOT-FIXED + PARTIAL — 사용자 결정 필요)
+ *   - estimated_reading_minutes = ceil(records × 30s / 60)
+ *   - manual_actions_required = decision_count (Phase 0 stub — Phase 1+ 에서 Codex triage 결과로 세분화)
+ */
+export function computeMetrics(records) {
+  const actionable = records.filter(
+    (r) => r.verdict === VERDICTS.NOT_FIXED || r.verdict === VERDICTS.PARTIAL,
+  );
+  return {
+    decision_count: actionable.length,
+    estimated_reading_minutes: Math.max(
+      1,
+      Math.ceil((records.length * READING_SECONDS_PER_RECORD) / 60),
+    ),
+    manual_actions_required: actionable.length,
+  };
+}
+
+/**
+ * Load current-year ledger and return last N runs. Returns [] if file missing or corrupt.
+ */
+export function loadLastRuns(repoRoot, n = 3) {
+  const year = new Date().toISOString().slice(0, 4);
+  const file = path.join(repoRoot, "state", `daily-evolve-runs-${year}.json`);
+  if (!fs.existsSync(file)) return [];
+  try {
+    const ledger = JSON.parse(fs.readFileSync(file, "utf8"));
+    return queryLastN(ledger, n);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Apply ≤500 line cap (Output Discipline). Returns truncated lines if exceeded.
+ */
+function applyLineCap(lines) {
+  if (lines.length <= MAX_DIGEST_LINES) return lines;
+  const truncated = lines.slice(0, MAX_DIGEST_LINES - 4);
+  truncated.push("");
+  truncated.push("---");
+  truncated.push(
+    `_(${lines.length - MAX_DIGEST_LINES + 4}줄 truncated — 전체는 raw.json + analyzed.json 참조)_`,
+  );
+  truncated.push("");
+  return truncated;
+}
+
+/**
+ * Write daily digest markdown.
+ *
+ * @param {{
+ *   analyzed: { records: object[], analyzed_at: string },
+ *   raw: { aggregated_at: string, errors?: object[] },
+ *   citations?: Array<{ agentId, line_ref, quoted_text }>,
+ *   transcripts?: Record<string, { agentId, lines }>,
+ *   repoRoot?: string,
+ *   date?: string
+ * }} input
+ * @returns {{ outFile: string, lineCount: number, metrics: object, citationResult: object }}
+ */
+export function write({
+  analyzed,
+  raw,
+  citations = [],
+  transcripts = {},
+  repoRoot = process.cwd(),
+  date,
+} = {}) {
+  const dateStr = date ?? new Date().toISOString().slice(0, 10);
+  const outDir = path.join(repoRoot, DIGEST_DIR);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const records = analyzed?.records ?? [];
+  const metrics = computeMetrics(records);
+  const lastRuns = loadLastRuns(repoRoot);
+  const citationResult = checkCitations({ citations, transcripts });
+
+  let lines = [];
+
+  // === Header ===
+  lines.push(`# Daily Evolve Digest — ${dateStr}`);
+  lines.push("");
+  lines.push(`> 생성: ${new Date().toISOString()}`);
+  lines.push("> Phase: 0 PoC (source 2개 — upstream PR/Issue + telemetry)");
+  lines.push("");
+
+  // === Cognitive Load metadata (R3-M5) ===
+  lines.push("## Cognitive Load");
+  lines.push(`- decision_count: ${metrics.decision_count}`);
+  lines.push(`- estimated_reading_minutes: ${metrics.estimated_reading_minutes}`);
+  lines.push(`- manual_actions_required: ${metrics.manual_actions_required}`);
+  lines.push("");
+
+  // === last_3_runs header (R3-M6) ===
+  lines.push("## last_3_runs");
+  if (lastRuns.length === 0) {
+    lines.push("_(no previous runs)_");
+  } else {
+    for (const r of lastRuns) {
+      const dur = r.duration_ms != null ? `${r.duration_ms}ms` : "running";
+      lines.push(
+        `- ${r.started_at} — status=${r.status}, ${dur}, actionable=${r.actionable_count ?? "?"}`,
+      );
+    }
+  }
+  lines.push("");
+
+  // === failures 섹션 (R5-L10 분리) ===
+  const errors = raw?.errors ?? [];
+  const hasFailures = errors.length > 0 || !citationResult.passed;
+  lines.push("## failures");
+  if (!hasFailures) {
+    lines.push("_(no failures)_");
+  } else {
+    for (const e of errors) {
+      lines.push(`- source \`${e.source}\`: ${e.message}`);
+    }
+    for (const f of citationResult.failures) {
+      lines.push(
+        `- citation fail: reason=${f.reason} (agentId=${f.citation?.agentId ?? "n/a"}, line_ref=${f.citation?.line_ref ?? "n/a"})`,
+      );
+    }
+  }
+  lines.push("");
+
+  // === Records 분류 or no_changes (R5-L10) ===
+  if (records.length === 0) {
+    lines.push("## no_changes");
+    lines.push("_(no signals detected today)_");
+    lines.push("");
+  } else {
+    const groups = groupRecords(records);
+    for (const verdict of TIER_ORDER) {
+      const matches = Object.values(groups).filter((g) => g.verdict === verdict);
+      if (matches.length === 0) continue;
+      lines.push(`## ${verdict}`);
+      for (const grp of matches) {
+        lines.push(`### ${grp.signal_type} (${grp.records.length})`);
+        for (const r of grp.records.slice(0, 20)) {
+          const ref = r.issue_ref ?? "";
+          const title = r.issue_title ?? r.title ?? "";
+          lines.push(`- ${ref} ${title}`.trim());
+        }
+        if (grp.records.length > 20) {
+          lines.push(`- _(${grp.records.length - 20}개 항목 더 — analyzed.json 참조)_`);
+        }
+        lines.push("");
+      }
+    }
+  }
+
+  // === Apply ≤500줄 cap ===
+  lines = applyLineCap(lines);
+
+  const outFile = path.join(outDir, `${dateStr}.md`);
+  fs.writeFileSync(outFile, lines.join("\n") + "\n");
+
+  return { outFile, lineCount: lines.length, metrics, citationResult };
+}
+
+// CLI entry — `node digest-writer.mjs <analyzed.json> [raw.json]`
+if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+  const analyzedFile = process.argv[2];
+  const rawFile = process.argv[3];
+  if (!analyzedFile) {
+    process.stderr.write("usage: digest-writer.mjs <analyzed.json> [raw.json]\n");
+    process.exit(1);
+  }
+  const analyzed = JSON.parse(fs.readFileSync(analyzedFile, "utf8"));
+  const raw = rawFile ? JSON.parse(fs.readFileSync(rawFile, "utf8")) : {};
+  const result = write({ analyzed, raw });
+  process.stdout.write(
+    `[digest-writer] ${result.outFile} (${result.lineCount} lines, decision_count=${result.metrics.decision_count})\n`,
+  );
+}

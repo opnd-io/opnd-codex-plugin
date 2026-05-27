@@ -2676,6 +2676,180 @@ async function handleCancel(argv) {
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);
 }
 
+// daily-evolve pipeline (Phase 0 PoC) — orchestrate source-aggregator → diff-analyzer → digest-writer.
+// Plan: plan-daily-evolve-pipeline.md. Run ledger entry on each invocation (run-ledger.mjs).
+//
+// Concurrency model (Codex Phase 0 review HIGH R1 / R2):
+//   manual + cron 동시 trigger 시 read→append→rename race 로 entry lost 가능했음.
+//   해결: file-level advisory lock (`${ledgerPath}.lock`, O_EXCL).
+//     - acquire 는 read-modify-write 의 atomic 구간만 wrapping (pipeline 실행은 lock 외부)
+//     - stale lock (mtime > 60s) 자동 steal — 이전 process crash 복구
+//     - finalize 의 idx<0 silent skip 도 race 의 증상이라 lock 으로 해결됨. fallback 으로 re-append.
+//   R2 HIGH: stale steal 직후 구소유자 release 가 새 lock 을 unlink 하던 race 차단 —
+//     lockfile 첫 줄에 UUID token 기록, release 시 token 일치 확인 후만 unlink.
+async function _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod, { maxRetries = 200, retryMs = 50, staleMs = 60_000 } = {}) {
+  const token = cryptoMod.randomUUID();
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const fd = fsMod.openSync(lockPath, "wx"); // O_EXCL — fail if exists
+      fsMod.writeSync(fd, `${token}\n${process.pid}\n${new Date().toISOString()}\n`);
+      fsMod.closeSync(fd);
+      return token;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        const stat = fsMod.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          fsMod.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        /* lock disappeared between stat and unlink — retry */
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
+  }
+  throw new Error(`daily-evolve: failed to acquire ledger lock after ${maxRetries} retries (${lockPath})`);
+}
+
+function _releaseDailyEvolveLock(lockPath, fsMod, ownToken) {
+  // Codex R2 HIGH — token mismatch 시 unlink 차단 (stale steal 후 구소유자 보호).
+  try {
+    const content = fsMod.readFileSync(lockPath, "utf8");
+    const headToken = content.split(/\r?\n/, 1)[0] ?? "";
+    if (headToken !== ownToken) {
+      // 우리가 만든 lock 이 아님 — 누군가 steal 했음. unlink 금지.
+      return;
+    }
+    fsMod.unlinkSync(lockPath);
+  } catch {
+    /* already released or stolen — best effort */
+  }
+}
+
+async function handleDailyEvolve(argv) {
+  const dateArg = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
+  const skipGhApi = argv.includes("--skip-gh-api");
+  const phaseIdx = argv.indexOf("--phase");
+  const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
+
+  if (phase !== 0) {
+    process.stderr.write(
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0 PoC only — see plan-daily-evolve-pipeline.md)\n`,
+    );
+    process.exit(1);
+  }
+
+  const cryptoMod = await import("node:crypto");
+  const fsMod = await import("node:fs");
+  const pathMod = await import("node:path");
+  const { aggregate } = await import("./daily-evolve/source-aggregator.mjs");
+  const { analyze } = await import("./daily-evolve/diff-analyzer.mjs");
+  const { write: writeDigest } = await import("./daily-evolve/digest-writer.mjs");
+  const {
+    buildEntry,
+    finalizeEntry,
+    appendEntry,
+    yearlyFilePath,
+    emptyLedger,
+    RUN_STATUS,
+  } = await import("./daily-evolve/lib/run-ledger.mjs");
+
+  const dateStr = dateArg ?? new Date().toISOString().slice(0, 10);
+  const startedAt = new Date().toISOString();
+  const runId = cryptoMod.randomUUID();
+  const ledgerPath = pathMod.join(process.cwd(), yearlyFilePath(startedAt));
+  const lockPath = `${ledgerPath}.lock`;
+
+  // 1. write in-flight ledger entry (lock + atomic temp + rename)
+  fsMod.mkdirSync(pathMod.dirname(ledgerPath), { recursive: true });
+  const inflight = buildEntry({
+    run_id: runId,
+    started_at: startedAt,
+    phase_reached: 0,
+    digest_file: `docs/daily-evolve/${dateStr}.md`,
+  });
+  {
+    const lockToken1 = await _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod);
+    try {
+      const ledgerBefore = fsMod.existsSync(ledgerPath)
+        ? JSON.parse(fsMod.readFileSync(ledgerPath, "utf8"))
+        : emptyLedger(Number(startedAt.slice(0, 4)));
+      const ledgerInflight = appendEntry(ledgerBefore, inflight);
+      const tmp1 = `${ledgerPath}.tmp-${process.pid}-${Date.now()}`;
+      fsMod.writeFileSync(tmp1, JSON.stringify(ledgerInflight, null, 2) + "\n");
+      fsMod.renameSync(tmp1, ledgerPath);
+    } finally {
+      _releaseDailyEvolveLock(lockPath, fsMod, lockToken1);
+    }
+  }
+
+  // 2. run pipeline (long — no lock so concurrent runs can pipeline)
+  let status = RUN_STATUS.SUCCESS;
+  let failureReason = null;
+  let actionableCount = 0;
+  let recordCount = 0;
+  try {
+    const raw = aggregate({ date: dateStr });
+    const analyzed = analyze(raw, { skipGhApi });
+    recordCount = analyzed.records.length;
+    actionableCount = analyzed.records.filter(
+      (r) => r.verdict === "NOT-FIXED" || r.verdict === "PARTIAL",
+    ).length;
+    const writeResult = writeDigest({ analyzed, raw, date: dateStr });
+    process.stdout.write(
+      `[daily-evolve] ${dateStr} done: ${recordCount} records, actionable=${actionableCount}, digest=${writeResult.outFile}\n`,
+    );
+    if ((raw.errors ?? []).length > 0) {
+      status = RUN_STATUS.PARTIAL;
+      failureReason = `${raw.errors.length} source error(s): ${raw.errors.map((e) => e.source).join(", ")}`;
+      // Codex R3 LOW — 문서와 정합: partial 시 stderr 알림
+      process.stderr.write(`[daily-evolve] partial: ${failureReason}\n`);
+    }
+  } catch (err) {
+    status = RUN_STATUS.FAILURE;
+    failureReason = err?.message ?? String(err);
+    process.stderr.write(`[daily-evolve] failure: ${failureReason}\n`);
+  }
+
+  // 3. finalize ledger entry (lock + atomic re-write + idx<0 fallback = re-append)
+  const endedAt = new Date().toISOString();
+  const finalized = finalizeEntry(inflight, {
+    status,
+    ended_at: endedAt,
+    phase_reached: 0,
+    actionable_count: actionableCount,
+    failure_reason: failureReason,
+  });
+  {
+    const lockToken2 = await _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod);
+    try {
+      const ledgerCurrent = fsMod.existsSync(ledgerPath)
+        ? JSON.parse(fsMod.readFileSync(ledgerPath, "utf8"))
+        : emptyLedger(Number(startedAt.slice(0, 4)));
+      const idx = ledgerCurrent.runs.findIndex((r) => r.run_id === runId);
+      if (idx >= 0) {
+        ledgerCurrent.runs[idx] = finalized;
+      } else {
+        // race with another process stole/dropped our inflight entry — re-append finalized
+        // (안전망 — Codex review HIGH "silent skip" 방어)
+        ledgerCurrent.runs.push(finalized);
+        process.stderr.write(
+          `[daily-evolve] warning: in-flight entry ${runId} not found in ledger — appending finalized entry as recovery\n`,
+        );
+      }
+      const tmp2 = `${ledgerPath}.tmp-${process.pid}-${Date.now()}`;
+      fsMod.writeFileSync(tmp2, JSON.stringify(ledgerCurrent, null, 2) + "\n");
+      fsMod.renameSync(tmp2, ledgerPath);
+    } finally {
+      _releaseDailyEvolveLock(lockPath, fsMod, lockToken2);
+    }
+  }
+
+  if (status === RUN_STATUS.FAILURE) process.exit(1);
+  if (status === RUN_STATUS.PARTIAL) process.exit(2);
+}
+
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (!subcommand || subcommand === "help" || subcommand === "--help") {
@@ -2732,6 +2906,9 @@ async function main() {
       break;
     case "cancel":
       await handleCancel(argv);
+      break;
+    case "daily-evolve":
+      await handleDailyEvolve(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

@@ -14,7 +14,7 @@
     "prebuild": "node -e \"require('node:fs').mkdirSync('plugins/opnd-codex/.generated/app-server-types',{recursive:true})\" && codex app-server generate-ts --out plugins/opnd-codex/.generated/app-server-types",
     "build": "tsc -p tsconfig.app-server.json",
     "efficiency-report": "node plugins/opnd-codex/scripts/codex-efficiency-report.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs tests/daily-evolve/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

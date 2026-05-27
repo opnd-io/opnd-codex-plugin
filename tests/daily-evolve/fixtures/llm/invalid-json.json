@@ -1,0 +1,12 @@
+{
+  "_fixture": "invalid-json",
+  "_description": "Codex response 의 본문이 JSON parse fail. L5/L7 contract 의 fallback(needs_user/maintain)이 발동해야 함. plan §L5/L7 Machine-Readable Contract, codex review MEDIUM R3-L3.",
+  "_consumer_tests": ["fixture-matrix.test.mjs"],
+  "_planned_consumer_tests": ["llm-router.test.mjs (Phase 1)", "action-executor.test.mjs (Phase 4)"],
+  "raw_response": "decision: pr_draft\nrationale: this is not actually JSON — Codex returned plain text by accident",
+  "expected": {
+    "L5_decision": "needs_user",
+    "L5_fallback_used": true,
+    "L7_adjustment": "maintain"
+  }
+}

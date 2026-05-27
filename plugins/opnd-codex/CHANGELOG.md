@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **daily-evolve-pipeline Phase 0 PoC** (`plan-daily-evolve-pipeline.md`) — 매일 morning 9 KST 자동 routine 의 첫 phase. Codex pair R1-R7 0-수렴 (총 50 finding 적용, 합의 25건) 후 implement 진입. Phase 0 scope:
+  - `scripts/daily-evolve/lib/` — 7 pure modules (zero npm, node 내장만):
+    - `verdict-schema.mjs` — (verdict, signal_type) 2-축 enum + JSON schema (R2-M6)
+    - `dedupe-key.mjs` — sha256 PR dedupe key + normalized_title (R3-M1 강화 — CJK punctuation / Extended_Pictographic / semver prerelease / PR/Issue 번호 lookbehind)
+    - `fixed-resolver.mjs` — FIXED 3-evidence + reject pattern (R3-M2)
+    - `cost-profile-registry.mjs` — Codex pair profile cost_units (R3-H3 / R4-M2 / R5-L1 max(1,ceil) / R5-L2 schema)
+    - `state-migrator.mjs` — schema migration runner + MigrationError + 5 fail-closed reason enum (R3-H4 / R4-H2)
+    - `run-ledger.mjs` — `daily-evolve-runs-YYYY.json` schema + buildEntry/finalizeEntry/queryLastN/mergeLedgers (R3-M6 / R4-M4 / R5-M5)
+    - `citation-check.mjs` — Levenshtein similarity + agentId 형식 + fuzzy threshold 0.8 (R3-M3)
+  - `scripts/daily-evolve/` — 3 orchestrators (side effect 허용):
+    - `source-aggregator.mjs` — upstream PR + Issue (gh api) + telemetry (events.jsonl) → `docs/upstream-tracking/{YYYY-MM-DD}/raw.json`
+    - `diff-analyzer.mjs` — (verdict, signal_type) 분류 + fixed-resolver 통합 (touchedPath/testAssertion/linkedPRMerge evidence inject)
+    - `digest-writer.mjs` — `docs/daily-evolve/{YYYY-MM-DD}.md` + cognitive metadata header (decision_count / estimated_reading_minutes / manual_actions_required) + no_changes/failures/last_3_runs 별도 섹션 + ≤500줄 cap + citation-check 통합
+  - `commands/daily-evolve.md` + `codex-companion.mjs handleDailyEvolve` — 수동 trigger (`/opnd-codex:daily-evolve [YYYY-MM-DD] [--skip-gh-api]`) + atomic run-ledger entry write
+  - `tests/daily-evolve/*.test.mjs` — 8 test files, 88 unit tests (verdict-schema / dedupe-key / fixed-resolver / cost-profile-registry / state-migrator / run-ledger / citation-check / lib-dependency-rule). Phase 0.9 lib dep rule guard 가 lib/*.mjs 의 forbidden fs/network import 검출
+  - `state/daily-evolve-runs-YYYY.json` — run status ledger (FULL git tracked per 사용자 #1, tarball cache 만 gitignore 예외)
+  - `package.json scripts.test` glob 확장 (`tests/*.test.mjs tests/daily-evolve/*.test.mjs`)
+  - **Default 결정 7건 적용** (사용자 implement 진입 시): LLM 분담 (a) / CRON_TZ env-probe 분기 / status UI = digest header only / Phase 6 rollback 자동 draft / state lazy create / no needs_claude_judgment metric / token-normalized cost only
+  - Phase 1+ (Codex L3 triage, active fork L7, autonomous PR L5, scheduled-tasks MCP, self-evolve meta loop) 는 후속 진입
 - **Upstream backlog import + Tier-HIGH fixes** — a deep `/research` pass cross-checked all 118 OPEN `openai/codex-plugin-cc` issues against the fork's current code (58 already FIXED, 19 PARTIAL, 24 NOT-FIXED). The 43 unresolved items are now tracked in `docs/backlog/upstream-imported.md`, and the seven Tier-HIGH items were fixed:
   - **#338** — the SessionStart hook re-exported the generic `CLAUDE_PLUGIN_DATA` into the shared `CLAUDE_ENV_FILE`, hijacking every other plugin's per-plugin scoping. It now exports a codex-namespaced `CODEX_PLUGIN_DATA_DIR`; `resolveStateDir` / `resolveTelemetryDir` / `codex-efficiency-report` / `readTraceEvents` read `CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA`. `app-server.mjs` keeps `CLAUDE_PLUGIN_DATA` for its own children (broker + codex), which is not the shared-env leak (documented inline)
   - **#309** — the gpt-5.5 → gpt-5.4 "requires a newer version of Codex" fallback was review-only; on CLI 0.130 it also 400s `task`/`agent` runs. `runAppServerReview` keeps the shared `withModelFallback` helper; `runAppServerTurn` now retries **only `turn/start`, on the same already-created thread** — the thread is created once, so the fallback never leaves an orphan thread (a whole-function retry would re-run `thread/start`). The model-version 400 is a `turn/start`-time rejection, so the retried turn/start is the first and only real turn

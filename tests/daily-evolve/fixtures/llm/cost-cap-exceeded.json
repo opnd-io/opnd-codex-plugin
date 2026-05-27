@@ -1,0 +1,14 @@
+{
+  "_fixture": "cost-cap-exceeded",
+  "_description": "당일 cost_units 누적이 baseline median × 3 을 넘은 시점. 후속 L5/L7 호출 모두 skip + skip_reason 기록. plan §Codex Triage Orchestrator cost cap, codex review MEDIUM R3-L3.",
+  "_consumer_tests": ["fixture-matrix.test.mjs"],
+  "_planned_consumer_tests": ["codex-triage.test.mjs (Phase 1)", "action-executor.test.mjs (Phase 4)"],
+  "baseline_median_units": 20,
+  "daily_cap_units": 60,
+  "current_consumed": 61,
+  "expected": {
+    "skip_reason": "cost_cap_exceeded",
+    "skip_should_propagate_to_subsequent_calls": true,
+    "digest_failures_entry": true
+  }
+}
