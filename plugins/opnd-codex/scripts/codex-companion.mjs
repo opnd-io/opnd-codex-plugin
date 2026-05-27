@@ -2750,9 +2750,21 @@ async function handleDailyEvolve(argv) {
     return;
   }
 
-  if (phase > 4) {
+  // Phase 6 — Self-Evolve Meta Loop (별도 mode: --self-evolve)
+  if (argv.includes("--self-evolve")) {
+    const { selfEvolve } = await import("./daily-evolve/self-evolve.mjs");
+    const typeIdx = argv.indexOf("--type");
+    const reviewType = typeIdx >= 0 ? argv[typeIdx + 1] : "weekly_normal";
+    const force = argv.includes("--force");
+    const result = selfEvolve({ reviewType, force });
+    process.stdout.write(JSON.stringify({ fired: result.fired, reason: result.reason, review_id: result.entry?.review_id ?? null }) + "\n");
+    if (result.report) process.stderr.write("\n" + result.report + "\n");
+    return;
+  }
+
+  if (phase > 5) {
     process.stderr.write(
-      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-4 only — see plan-daily-evolve-pipeline.md)\n`,
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-5 + --self-evolve for Phase 6 — see plan-daily-evolve-pipeline.md)\n`,
     );
     process.exit(1);
   }
