@@ -2733,9 +2733,9 @@ async function handleDailyEvolve(argv) {
   const phaseIdx = argv.indexOf("--phase");
   const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
 
-  if (phase > 1) {
+  if (phase > 2) {
     process.stderr.write(
-      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-1 only — see plan-daily-evolve-pipeline.md)\n`,
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-2 only — see plan-daily-evolve-pipeline.md)\n`,
     );
     process.exit(1);
   }
@@ -2746,6 +2746,7 @@ async function handleDailyEvolve(argv) {
   const { aggregate } = await import("./daily-evolve/source-aggregator.mjs");
   const { analyze } = await import("./daily-evolve/diff-analyzer.mjs");
   const { triage } = await import("./daily-evolve/codex-triage.mjs");
+  const { research: forkResearch } = await import("./daily-evolve/fork-research.mjs");
   const { write: writeDigest } = await import("./daily-evolve/digest-writer.mjs");
   const {
     buildEntry,
@@ -2797,18 +2798,27 @@ async function handleDailyEvolve(argv) {
     actionableCount = analyzed.records.filter(
       (r) => r.verdict === "NOT-FIXED" || r.verdict === "PARTIAL",
     ).length;
+    // Phase 2+ — Active Fork Research (fork-research.mjs). IMPORT-CANDIDATE record 들을
+    // analyzed.records 에 append. L7 cost 는 triage cost cap 과 별도 카운트 (PoC).
+    let forkResult = null;
+    let withForkAnalyzed = analyzed;
+    if (phase >= 2) {
+      forkResult = forkResearch();
+      withForkAnalyzed = { ...analyzed, records: [...analyzed.records, ...forkResult.records] };
+    }
     // Phase 1+ — Codex L3 triage 통합. analyzed.records 에 triage 필드 + triage_summary 부여.
     let triageResult = null;
-    let triagedAnalyzed = analyzed;
+    let triagedAnalyzed = withForkAnalyzed;
     if (phase >= 1) {
-      triageResult = triage(analyzed);
-      triagedAnalyzed = { ...analyzed, records: triageResult.records };
+      triageResult = triage(withForkAnalyzed);
+      triagedAnalyzed = { ...withForkAnalyzed, records: triageResult.records };
     }
     const writeResult = writeDigest({
       analyzed: triagedAnalyzed,
       raw,
       date: dateStr,
       triageSummary: triageResult?.triage_summary ?? null,
+      forkSummary: forkResult?.research_summary ?? null,
     });
     process.stdout.write(
       `[daily-evolve] ${dateStr} done: ${recordCount} records, actionable=${actionableCount}, digest=${writeResult.outFile}\n`,

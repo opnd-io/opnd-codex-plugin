@@ -124,6 +124,7 @@ export function write({
   repoRoot = process.cwd(),
   date,
   triageSummary = null,
+  forkSummary = null,
 } = {}) {
   const dateStr = date ?? new Date().toISOString().slice(0, 10);
   const outDir = path.join(repoRoot, DIGEST_DIR);
@@ -140,7 +141,15 @@ export function write({
   lines.push(`# Daily Evolve Digest — ${dateStr}`);
   lines.push("");
   lines.push(`> 생성: ${new Date().toISOString()}`);
-  lines.push("> Phase: 0 PoC (source 2개 — upstream PR/Issue + telemetry)");
+  let phaseLabel;
+  if (forkSummary) {
+    phaseLabel = "0-2 (source 2 + L3 triage + active fork research)";
+  } else if (triageSummary) {
+    phaseLabel = "0-1 (source 2 + Codex L3 triage)";
+  } else {
+    phaseLabel = "0 PoC (source 2개 — upstream PR/Issue + telemetry)";
+  }
+  lines.push(`> Phase: ${phaseLabel}`);
   lines.push("");
 
   // === Cognitive Load metadata (R3-M5 + Phase 1 triage 통합) ===
@@ -230,6 +239,21 @@ export function write({
       cognitiveLines.push(`- cost_units_blocked: ${triageSummary.cost_units_blocked} (차단된 예상 비용)`);
     }
     cognitiveLines.push(`- cap: ${triageSummary.cap} (baseline_median=${triageSummary.baseline_median})`);
+
+    if (forkSummary) {
+      cognitiveLines.push("");
+      cognitiveLines.push("### Phase 2 Active Fork Research Summary");
+      cognitiveLines.push(`- total_forks: ${forkSummary.total_forks}`);
+      cognitiveLines.push(`- license_skipped: ${forkSummary.license_skipped}`);
+      cognitiveLines.push(`- active_forks: ${forkSummary.active_forks}`);
+      cognitiveLines.push(`- top_candidates: ${forkSummary.top_candidates} (L7 호출 ${forkSummary.l7_calls})`);
+      cognitiveLines.push(`- l7_cost_units: ${forkSummary.l7_cost_units}`);
+      cognitiveLines.push(`- api_calls: ${forkSummary.api_calls} / 19 budget${forkSummary.budget_exceeded ? " (⚠ exceeded)" : ""}`);
+      cognitiveLines.push(`- n_final: ${forkSummary.n_final}${forkSummary.austerity_mode ? " (austerity mode)" : ""}`);
+      if (forkSummary.skipped) {
+        cognitiveLines.push(`- skipped: ${forkSummary.skip_reason}`);
+      }
+    }
   } else {
     // Phase 0 — simple metric (NOT-FIXED + PARTIAL count)
     cognitiveLines.push(`- decision_count: ${metrics.decision_count}`);
