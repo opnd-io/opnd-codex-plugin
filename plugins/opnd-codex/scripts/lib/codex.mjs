@@ -1075,6 +1075,21 @@ async function getCodexAuthStatusFromClient(client, cwd) {
 
     return buildAppServerAuthStatus(accountResponse, configResponse);
   } catch (error) {
+    // Broker busy is transient — actual auth state unknown, NOT a logged-out signal.
+    // Without this branch, setup --json reports `loggedIn: false` for any concurrent
+    // broker request (e.g., another plugin call in flight, broker init handshake in
+    // progress, 28MB+ SQLite WAL flush blocking new requests). That produces a
+    // false-negative mirror of the false-positive pattern documented in
+    // plan-issue-setup-advisory-false-positive.md — caller cannot distinguish
+    // "user actually logged out" vs "transient broker contention".
+    if (error?.rpcCode === BROKER_BUSY_RPC_CODE) {
+      return buildAuthStatus({
+        loggedIn: null,
+        detail: "Broker busy — actual auth state unknown. Retry setup --json after broker init completes (typically 5-30s; longer if plugin home SQLite WAL is large).",
+        source: "app-server",
+        transient: true,
+      });
+    }
     return buildAuthStatus({
       loggedIn: false,
       detail: error instanceof Error ? error.message : String(error),
