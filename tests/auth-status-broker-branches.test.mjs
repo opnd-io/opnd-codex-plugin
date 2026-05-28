@@ -15,7 +15,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const codex = await import("../plugins/opnd-codex/scripts/lib/codex.mjs");
-const { getCodexAuthStatusFromClient, BROKER_BUSY_RPC_CODE } = codex.__testHooks;
+const {
+  getCodexAuthStatusFromClient,
+  BROKER_BUSY_RPC_CODE,
+  isStaleAuthCacheError,
+  isUsageLimitError,
+  annotateUsageLimitError,
+} = codex.__testHooks;
 
 function makeMockClient(error) {
   return {
@@ -72,4 +78,51 @@ test("getCodexAuthStatusFromClient — string error (non-Error) 도 안전 처�
 
 test("BROKER_BUSY_RPC_CODE === -32001 (JSON-RPC error code 보존)", () => {
   assert.equal(BROKER_BUSY_RPC_CODE, -32001, "JSON-RPC error code -32001 정합");
+});
+
+// Phase A1 — telemetry cluster #2 (auth expired) pattern 확장
+test("isStaleAuthCacheError — 'authentication expired' 신규 pattern (telemetry cluster #2)", () => {
+  // 본 pattern 은 daily-evolve digest 의 가장 빈도 높은 auth failure (12건)
+  assert.equal(isStaleAuthCacheError("authentication expired; run codex login"), true);
+  assert.equal(isStaleAuthCacheError(new Error("authentication expired")), true);
+  // 기존 pattern 도 회귀 없는지
+  assert.equal(isStaleAuthCacheError("access token could not be refreshed"), true);
+  assert.equal(isStaleAuthCacheError("Please sign in again"), true);
+  // 다른 error 는 매치 안 됨
+  assert.equal(isStaleAuthCacheError("permission denied"), false);
+});
+
+// Phase A1 — telemetry cluster #4 (usage limit) 신규 helper
+test("isUsageLimitError — 4 pattern (usage limit / rate limit / too many requests / quota exceeded)", () => {
+  assert.equal(isUsageLimitError("You've hit your usage limit. Visit https://chatgpt.com/c"), true);
+  assert.equal(isUsageLimitError("rate limit exceeded"), true);
+  assert.equal(isUsageLimitError("HTTP 429: Too Many Requests"), true);
+  assert.equal(isUsageLimitError(new Error("quota exceeded")), true);
+  // 다른 error 는 매치 안 됨
+  assert.equal(isUsageLimitError("connection refused"), false);
+  assert.equal(isUsageLimitError(null), false);
+});
+
+test("annotateUsageLimitError — recovery guidance 5 항목 포함", () => {
+  const err = new Error("You've hit your usage limit");
+  const annotated = annotateUsageLimitError(err);
+  assert.match(annotated.message, /Check current limits/);
+  assert.match(annotated.message, /chatgpt\.com|platform\.openai\.com/);
+  assert.match(annotated.message, /Wait for limit reset/);
+  assert.match(annotated.message, /Fallback to a smaller model|gpt-5\.4/);
+  assert.match(annotated.message, /--fast/); // backtick wrap (`--fast`) 도 cover
+  // 원본 error 보존
+  assert.equal(annotated.cause, err);
+});
+
+test("annotateUsageLimitError — non-matching error 는 그대로 passthrough", () => {
+  const err = new Error("permission denied");
+  const result = annotateUsageLimitError(err);
+  assert.equal(result, err, "non-matching error 는 unchanged");
+});
+
+test("annotateUsageLimitError — string error 도 안전 처리", () => {
+  const result = annotateUsageLimitError("rate limit exceeded");
+  assert.match(result, /Check current limits/);
+  assert.match(result, /rate limit exceeded/);
 });

@@ -532,6 +532,46 @@ function renderApprovalDecisionResult(payload) {
   return `${lines.join("\n")}\n`;
 }
 
+// Phase A4 — plugin home freshness inspection (Phase 5.5+ 자동화 backlog 의 detect 부분).
+// 본 세션 (2026-05-28) 발견 + 복구 검증된 false-negative 패턴의 사용자 advisory:
+//   - root ~/.codex/auth.json 이 plugin ~/.codex/claude-code/auth.json 보다 최신이면 staleAuth: true
+//   - plugin home 의 SQLite WAL 합 > 10MB 이면 broker init 막힘 가능 → largeWalBytes 신호
+// 본 함수는 pure read (filesystem stat only) — destructive action 안 함. caller 가 nextSteps 로 안내.
+function inspectPluginHomeFreshness() {
+  const advisory = { staleAuth: false, staleAuthDeltaSec: 0, largeWalBytes: 0 };
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (!home) return advisory;
+    const rootAuth = path.join(home, ".codex", "auth.json");
+    const pluginAuth = path.join(home, ".codex", "claude-code", "auth.json");
+    if (fs.existsSync(rootAuth) && fs.existsSync(pluginAuth)) {
+      const rootMtime = fs.statSync(rootAuth).mtimeMs;
+      const pluginMtime = fs.statSync(pluginAuth).mtimeMs;
+      if (rootMtime > pluginMtime) {
+        advisory.staleAuth = true;
+        advisory.staleAuthDeltaSec = Math.round((rootMtime - pluginMtime) / 1000);
+      }
+    }
+    const pluginHomeDir = path.join(home, ".codex", "claude-code");
+    if (fs.existsSync(pluginHomeDir)) {
+      const walFiles = ["logs_2.sqlite-wal", "state_5.sqlite-wal", "goals_1.sqlite-wal"];
+      let totalBytes = 0;
+      for (const wal of walFiles) {
+        const walPath = path.join(pluginHomeDir, wal);
+        if (fs.existsSync(walPath)) {
+          totalBytes += fs.statSync(walPath).size;
+        }
+      }
+      if (totalBytes > 10 * 1024 * 1024) {
+        advisory.largeWalBytes = totalBytes;
+      }
+    }
+  } catch {
+    // freshness inspection 은 advisory 만 — fail silently (graceful degrade)
+  }
+  return advisory;
+}
+
 async function buildSetupReport(cwd, actionsTaken = []) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
@@ -540,13 +580,31 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const authStatus = await getCodexAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
 
+  // Phase A4 (Phase 5.5+ 자동화 backlog 의 부분 구현) — plugin home auth.json 의 staleness +
+  // SQLite WAL size 검사. 본 세션 직접 발견 + 복구 검증된 패턴의 사용자 advisory.
+  const pluginHomeAdvisory = inspectPluginHomeFreshness();
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
   }
-  if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
+  // A1 fix — transient (broker busy / timeout) 분기를 NOT_LOGGED_IN 과 구분된 nextSteps 로 안내.
+  // authStatus.transient === true 이면 broker recovery 안내 우선 (PR #4 의 false-negative fix 정합).
+  if (authStatus.transient === true) {
+    nextSteps.push("Broker transient state — wait 5-30s and re-run `/opnd-codex:setup`.");
+    nextSteps.push("If broker stuck persists: kill stale brokers (Windows PowerShell: `Get-Process | Where-Object { $_.ProcessName -ceq 'codex' } | Stop-Process -Force`; macOS/Linux: `pkill -f 'codex.*app-server'`).");
+    nextSteps.push("Large plugin home SQLite WAL (>10MB) can stall broker init — see advisory above.");
+  } else if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
+  }
+  // Plugin home freshness advisory (A4) — root home auth 가 plugin home 보다 최신이면 sync 제안
+  if (pluginHomeAdvisory.staleAuth) {
+    nextSteps.push(`Plugin home auth stale (root ${pluginHomeAdvisory.staleAuthDeltaSec}s newer) — sync: \`cp ~/.codex/auth.json ~/.codex/claude-code/auth.json\` + restart Claude Code.`);
+  }
+  if (pluginHomeAdvisory.largeWalBytes > 0) {
+    const mb = (pluginHomeAdvisory.largeWalBytes / 1048576).toFixed(1);
+    nextSteps.push(`Plugin home SQLite WAL is large (${mb} MB) — broker init may stall. Recovery: kill brokers + \`rm ~/.codex/claude-code/*.sqlite-wal ~/.codex/claude-code/*.sqlite-shm\` (audit log only — safe).`);
   }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/opnd-codex:setup --enable-review-gate` to require a fresh review before stop.");
@@ -554,6 +612,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
   return {
     ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
+    pluginHomeAdvisory,
     node: nodeStatus,
     npm: npmStatus,
     codex: codexStatus,
