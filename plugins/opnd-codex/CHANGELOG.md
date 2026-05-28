@@ -1,6 +1,32 @@
 # Changelog
 
+## 2.2.0 (2026-05-28)
+
+Highlights — daily-evolve self-evolution pipeline + plugin auth false-positive/negative discipline + telemetry UX + Windows fixes:
+
+- **daily-evolve pipeline** (Phase 0~6 + 0.5 + 1.5a + budget) — morning routine source aggregation → Codex L3 triage → active fork research → autonomous-safe PR draft + needs-user decision queue. Phase 1.5a adds Codex auth health pre-flight + heuristic fallback (refresh-token expired ≠ routine fail).
+- **plugin auth bug fix** (BROKER_BUSY_RPC_CODE + timeout regex 분기) — `getCodexAuthStatusFromClient` no longer swallows transient broker contention as `loggedIn: false`. New `HEALTH_STATUS.TRANSIENT` enum + cross-platform recovery hint (Windows PowerShell + macOS/Linux pkill + plugin home SQLite WAL cleanup).
+- **setup advisory** — `buildSetupReport` adds `pluginHomeAdvisory` (root vs plugin home auth.json mtime detect + WAL size detect >10MB). `commands/setup.md` disclaimer documents single-use refresh token rotation false-positive pattern.
+- **telemetry UX** — `isStaleAuthCacheError` covers "authentication expired" pattern (cluster #2 12건); new `isUsageLimitError` + `annotateUsageLimitError` (cluster #4 5건) with 5-step recovery (chatgpt.com / platform.openai.com limit URL + reset wait + fallback model + auth switch + --fast flag); `codex-companion.mjs` "No previous Codex task thread" / "Provide a prompt" error messages strengthened with actionable next steps.
+- **upstream port fixes**:
+  - #331 — `terminateProcessTree` Windows 분기에서 `taskkill /PID` → `cmd.exe /d /s /c call taskkill /PID` 로 MSYS path translator 경계 밖에서 실행
+  - #333 — `parseReviewArgv()` 신규 (lib/args.mjs): adversarial-review focus text 의 `--FLAG VALUE` substring 이 CLI option 으로 소비되지 않도록 known options 만 greedy 파싱 + 첫 unknown 이후 모두 focusTokens
+- **self-fork exclude** — `fork-research.mjs` `SELF_FORKS` Set 으로 `opnd-io/opnd-codex-plugin` self-reference false-positive 제거. `source-aggregator.mjs` `UNRELEASED_SELF_REFERENCE_RE` 로 docs/daily-evolve/ + docs/upstream-tracking/ + state/ + `.corrupt-*.bak` self-ref 제외.
+- **verified-no-change** — upstream #288 (sendBrokerShutdown timeout) + #337 (Windows spawn shell:true) 이미 v2.0+ sprint 에서 해결됨 확인 + upstream gh issue 답글 후보
+- **fork attribution** — Apache 2.0 §4-b/c 준수 (NOTICE + plugin.json contributors[] + README first block-quote 모두 정합)
+- **CLAUDE.md (신규)** — plugin home 격리 / daily-evolve state tracked / commands ↔ companion phase gate 동기 / lib pure 정책 / Codex pair iteration / Apache 2.0 attribution / fixture schema parity (R1-R3 lesson)
+- **docs/exploration/** — suminerProxy fork evaluation (HIGH 6 cherry-pick 후보 + dependency graph + Apache 2.0 HARD PRECONDITION) + upstream issue classification (cover 8건 upstream gh issue 답글 후보 + HIGH port 후보 8건) + upstream HIGH port plan (#330 #345 #350 #349 #336 #295)
+- **docs/upstream-comments/** — upstream gh issue 답글 8건 (#281, #282, #285, #287, #288, #298, #337, #342) body — 사용자 manual 등록 (classifier external write 차단으로 Claude 자동 등록 불가)
+- 신규 tests: `tests/auth-status-broker-branches.test.mjs` (12) + `tests/daily-evolve/*.test.mjs` (22 files, 254 cases) + `auth-health-check` (28 — +5 TRANSIENT + 2 PII redact + 1 real-shape regression + 1 broad pattern boundary)
+- 252+ daily-evolve unit tests pass + full npm test exit 0 회귀 0
+
+Codex pair review: 9 PR 모두 0 수렴 (총 ~35+ rounds across audit + R1-R5 cycles).
+
 ## Unreleased
+
+(다음 sprint backlog — suminerProxy cherry-pick Phase 1 foundation port / upstream HIGH 6 remaining port / quality-review-agent frontmatter 갱신 등)
+
+## 2.1.0
 
 - fix: exclude self-fork (opnd-io/opnd-codex-plugin) from fork discovery results in `fork-research.mjs` [Phase 3.5]
 - fix: skip self-reference paths (docs/daily-evolve/, docs/upstream-tracking/, state/, .corrupt-*.bak) in unreleased-gap detection in `source-aggregator.mjs` [Phase 3.5]
