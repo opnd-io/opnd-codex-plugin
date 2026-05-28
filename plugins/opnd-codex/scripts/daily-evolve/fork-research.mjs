@@ -48,7 +48,13 @@ import { measureCost } from "./lib/cost-profile-registry.mjs";
 import { SIGNAL_TYPES, VERDICTS } from "./lib/verdict-schema.mjs";
 
 const UPSTREAM = "openai/codex-plugin-cc";
-const API_BUDGET_PER_RUN = 19;
+// API budget: 사용자 요청으로 default unlimited (Infinity). gh API rate limit
+// (5000/h authenticated) 안 100 forks × 1 compare = 100 calls 매우 안전.
+// 단 env var 로 명시 cap 가능 — production 환경 또는 큰 fork 수 (예: 1000+) 에서 안전망.
+// 이전 default = 19 (Plan §R1 HIGH-2 보호용) — 사용자 평가 후 unlimited 로 완화.
+const API_BUDGET_PER_RUN = Number.isFinite(Number(process.env.CODEX_PLUGIN_FORK_API_BUDGET))
+  ? Number(process.env.CODEX_PLUGIN_FORK_API_BUDGET)
+  : Infinity;
 const FORK_TARBALL_MAX_BYTES = 100 * 1024 * 1024; // 100MB, plan §위험 요소
 const L7_COST_BUDGET_RATIO = 0.30; // austerity trigger: 30% of daily budget
 
@@ -354,7 +360,8 @@ export function research(opts = {}) {
       api_calls: apiCalls,
       l7_calls: l7Calls,
       l7_cost_units: l7CostUnits,
-      budget_exceeded: budgetExceeded,
+      api_budget: API_BUDGET_PER_RUN,
+      budget_exceeded: Number.isFinite(API_BUDGET_PER_RUN) && budgetExceeded,
       n_final: finalTop.length,
       austerity_mode: austerityMode,
       skipped: false,

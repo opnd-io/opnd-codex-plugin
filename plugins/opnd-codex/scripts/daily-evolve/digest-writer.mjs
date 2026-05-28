@@ -302,7 +302,11 @@ export function write({
       cognitiveLines.push(`- active_forks: ${forkSummary.active_forks}`);
       cognitiveLines.push(`- top_candidates: ${forkSummary.top_candidates} (L7 호출 ${forkSummary.l7_calls})`);
       cognitiveLines.push(`- l7_cost_units: ${forkSummary.l7_cost_units}`);
-      cognitiveLines.push(`- api_calls: ${forkSummary.api_calls} / 19 budget${forkSummary.budget_exceeded ? " (⚠ exceeded)" : ""}`);
+      // Phase 0.5 fix — budget Infinity (unlimited) 시 stale "19 budget" 표시 회피.
+      const budgetLabel = Number.isFinite(forkSummary.api_budget)
+        ? `${forkSummary.api_calls} / ${forkSummary.api_budget} budget${forkSummary.budget_exceeded ? " (⚠ exceeded)" : ""}`
+        : `${forkSummary.api_calls} (unlimited — env CODEX_PLUGIN_FORK_API_BUDGET 으로 cap 가능)`;
+      cognitiveLines.push(`- api_calls: ${budgetLabel}`);
       cognitiveLines.push(`- n_final: ${forkSummary.n_final}${forkSummary.austerity_mode ? " (austerity mode)" : ""}`);
       if (forkSummary.skipped) {
         cognitiveLines.push(`- skipped: ${forkSummary.skip_reason}`);
