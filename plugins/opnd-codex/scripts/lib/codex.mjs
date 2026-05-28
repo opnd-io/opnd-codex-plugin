@@ -1097,7 +1097,7 @@ async function getCodexAuthStatusFromClient(client, cwd) {
     if (/timed out|timeout|ECONNRESET|EPIPE/i.test(errorMessage)) {
       return buildAuthStatus({
         loggedIn: null,
-        detail: `Broker stuck (${errorMessage}) — actual auth state unknown. Recovery: kill plugin codex.exe brokers (lowercase only, exclude Codex Desktop) + check plugin home SQLite WAL (~/.codex/claude-code/*.sqlite-wal). See plan-issue-setup-advisory-false-positive.md.`,
+        detail: `Broker stuck (${errorMessage}) — actual auth state unknown. Recovery: kill plugin broker processes (Windows PowerShell: \`Get-Process | Where-Object { $_.ProcessName -ceq 'codex' } | Stop-Process -Force\` — case-sensitive lowercase only, excludes Codex Desktop GUI; macOS/Linux: \`pkill -f 'codex.*app-server'\`) + check plugin home SQLite WAL (~/.codex/claude-code/*.sqlite-wal — delete if >10MB). See plan-issue-setup-advisory-false-positive.md.`,
         source: "app-server",
         transient: true,
       });
@@ -1718,5 +1718,8 @@ export const __testHooks = {
   probeAuthWithStaleRetry,
   isStaleAuthCacheError,
   withModelFallback,
-  isModelRequiresNewerCodexError
+  isModelRequiresNewerCodexError,
+  // Codex R1 M2 (본 세션 발견 false-negative pattern) — broker busy / timeout 분기 직접 test 가능하도록 export
+  getCodexAuthStatusFromClient,
+  BROKER_BUSY_RPC_CODE
 };
