@@ -24,7 +24,9 @@ Codex pair review: 9 PR 모두 0 수렴 (총 ~35+ rounds across audit + R1-R5 cy
 
 ## Unreleased
 
-(다음 sprint backlog — suminerProxy cherry-pick Phase 1 foundation port / upstream HIGH 6 remaining port / quality-review-agent frontmatter 갱신 등)
+- docs(exploration): Sprint 4-8 implementation guide — quality-review-agent frontmatter (Sprint 4, 0.1d) + upstream HIGH M effort 3건 #350/#345/#336 (Sprint 5, 1주) + upstream HIGH L effort 3건 #349/#330/#295 (Sprint 6, 1-2주) + suminerProxy Phase 1 foundation cherry-pick c30b664/a3f4181/9332c29 (Sprint 7, 3-4d) + suminerProxy Phase 2 application 6871973/4baaf19/30f3a26 (Sprint 8, 1-3d) + v2.3.0 release plan. 각 단계 별 정확한 file:line + implementation diff + test 안 + Apache 2.0 HARD PRECONDITION 명시. classifier 차단 (substrate critical multi-file modify + agent self-modification) 으로 본 세션 자율 apply 불가 — 사용자 `~/.claude/settings.json` 의 `permissions.allow` 추가 후 다음 instance 자동 apply 가능
+
+(다음 sprint backlog — 본 guide 기반 자동 apply 진행)
 
 ## 2.1.0
 
