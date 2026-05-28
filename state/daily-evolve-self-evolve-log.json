@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "review_id": "5a2bd1dd-e011-ce06-f32a-91b1b22438ed",
+      "review_type": "weekly_normal",
+      "started_at": "2026-05-28T04:13:57.301Z",
+      "ended_at": "2026-05-28T04:13:57.311Z",
+      "effective_at": null,
+      "self_review_depth": 0,
+      "inputs": {
+        "digests_analyzed": [],
+        "routine_telemetry": {
+          "exec_time_ms": [
+            118207,
+            87800
+          ],
+          "codex_cost": [
+            0,
+            0,
+            0
+          ],
+          "fp_rate": [],
+          "triage_time_min": []
+        }
+      },
+      "proposed_changes": [],
+      "pr_draft_url": null,
+      "decision": "pending",
+      "rollback_target_review_id": null
+    }
+  ]
+}

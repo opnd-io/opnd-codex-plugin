@@ -1,0 +1,17 @@
+{
+  "_fixture": "timeout",
+  "_description": "Codex pair 호출이 timeout. fail-closed 로 needs_user 반환 + cost_units 는 conservative 1 unit 카운트. plan §위험 요소 'Codex L7 cost 폭증', codex review MEDIUM R3-L3.",
+  "_consumer_tests": ["fixture-matrix.test.mjs"],
+  "_planned_consumer_tests": ["llm-router.test.mjs (Phase 1)", "codex-triage.test.mjs (Phase 1)"],
+  "simulated_error": {
+    "code": "ETIMEDOUT",
+    "message": "Codex pair call exceeded 120000ms deadline"
+  },
+  "expected": {
+    "L5_decision": "needs_user",
+    "L5_fallback_used": true,
+    "cost_units": 1,
+    "cost_source": "conservative",
+    "warning_emitted": true
+  }
+}

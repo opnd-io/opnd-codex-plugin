@@ -2676,6 +2676,292 @@ async function handleCancel(argv) {
   outputCommandResult(payload, renderCancelReport(nextJob), options.json);
 }
 
+// daily-evolve pipeline (Phase 0 PoC) — orchestrate source-aggregator → diff-analyzer → digest-writer.
+// Plan: plan-daily-evolve-pipeline.md. Run ledger entry on each invocation (run-ledger.mjs).
+//
+// Concurrency model (Codex Phase 0 review HIGH R1 / R2):
+//   manual + cron 동시 trigger 시 read→append→rename race 로 entry lost 가능했음.
+//   해결: file-level advisory lock (`${ledgerPath}.lock`, O_EXCL).
+//     - acquire 는 read-modify-write 의 atomic 구간만 wrapping (pipeline 실행은 lock 외부)
+//     - stale lock (mtime > 60s) 자동 steal — 이전 process crash 복구
+//     - finalize 의 idx<0 silent skip 도 race 의 증상이라 lock 으로 해결됨. fallback 으로 re-append.
+//   R2 HIGH: stale steal 직후 구소유자 release 가 새 lock 을 unlink 하던 race 차단 —
+//     lockfile 첫 줄에 UUID token 기록, release 시 token 일치 확인 후만 unlink.
+async function _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod, { maxRetries = 200, retryMs = 50, staleMs = 60_000 } = {}) {
+  const token = cryptoMod.randomUUID();
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const fd = fsMod.openSync(lockPath, "wx"); // O_EXCL — fail if exists
+      fsMod.writeSync(fd, `${token}\n${process.pid}\n${new Date().toISOString()}\n`);
+      fsMod.closeSync(fd);
+      return token;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        const stat = fsMod.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          fsMod.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        /* lock disappeared between stat and unlink — retry */
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
+  }
+  throw new Error(`daily-evolve: failed to acquire ledger lock after ${maxRetries} retries (${lockPath})`);
+}
+
+function _releaseDailyEvolveLock(lockPath, fsMod, ownToken) {
+  // Codex R2 HIGH — token mismatch 시 unlink 차단 (stale steal 후 구소유자 보호).
+  try {
+    const content = fsMod.readFileSync(lockPath, "utf8");
+    const headToken = content.split(/\r?\n/, 1)[0] ?? "";
+    if (headToken !== ownToken) {
+      // 우리가 만든 lock 이 아님 — 누군가 steal 했음. unlink 금지.
+      return;
+    }
+    fsMod.unlinkSync(lockPath);
+  } catch {
+    /* already released or stolen — best effort */
+  }
+}
+
+async function handleDailyEvolve(argv) {
+  // Phase 5.5 — opt-out env var (Plan §Phase 5.5). 자동 routine 일시 차단.
+  if (process.env.CODEX_PLUGIN_DAILY_EVOLVE_DISABLED === "1") {
+    process.stderr.write(
+      `[daily-evolve] disabled via CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1 — skip\n`,
+    );
+    process.exit(0);
+  }
+  const dateArg = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
+  const skipGhApi = argv.includes("--skip-gh-api");
+  const phaseIdx = argv.indexOf("--phase");
+  const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
+  const probeOnly = argv.includes("--probe");
+
+  // Phase 5.0 BLOCKING — env probe 별도 mode
+  if (probeOnly) {
+    const { probeAndRegister } = await import("./daily-evolve/schedule-setup.mjs");
+    const { probe, guidance } = probeAndRegister();
+    process.stdout.write(JSON.stringify(probe, null, 2) + "\n");
+    process.stderr.write("\n" + guidance.join("\n") + "\n");
+    return;
+  }
+
+  // Phase 6 — Self-Evolve Meta Loop (별도 mode: --self-evolve)
+  if (argv.includes("--self-evolve")) {
+    const { selfEvolve } = await import("./daily-evolve/self-evolve.mjs");
+    const typeIdx = argv.indexOf("--type");
+    const reviewType = typeIdx >= 0 ? argv[typeIdx + 1] : "weekly_normal";
+    const force = argv.includes("--force");
+    const result = selfEvolve({ reviewType, force });
+    process.stdout.write(JSON.stringify({ fired: result.fired, reason: result.reason, review_id: result.entry?.review_id ?? null }) + "\n");
+    if (result.report) process.stderr.write("\n" + result.report + "\n");
+    return;
+  }
+
+  if (phase > 5) {
+    process.stderr.write(
+      `[daily-evolve] phase ${phase} not yet implemented (Phase 0-5 + --self-evolve for Phase 6 — see plan-daily-evolve-pipeline.md)\n`,
+    );
+    process.exit(1);
+  }
+
+  const cryptoMod = await import("node:crypto");
+  const fsMod = await import("node:fs");
+  const pathMod = await import("node:path");
+  const childProcMod = await import("node:child_process");
+  const { aggregate } = await import("./daily-evolve/source-aggregator.mjs");
+  const { analyze } = await import("./daily-evolve/diff-analyzer.mjs");
+  const { triage } = await import("./daily-evolve/codex-triage.mjs");
+  const { research: forkResearch } = await import("./daily-evolve/fork-research.mjs");
+  const { execute: actionExecute } = await import("./daily-evolve/action-executor.mjs");
+  const { write: writeDigest } = await import("./daily-evolve/digest-writer.mjs");
+  const {
+    parseSetupJson,
+    decideDegrade,
+    buildFailureMessage,
+    DEGRADE_ACTION,
+  } = await import("./daily-evolve/lib/auth-health-check.mjs");
+
+  // Phase 1.5a — Codex auth health check pre-flight. routine 자체는 heuristic
+  // fallback 으로 degrade — 실패 X. 사용자가 digest failures 섹션 에서 인지.
+  // R1 review: argv path 구성에 fileURLToPath() 사용 (UNC / 공백 path portability).
+  let authHealth = { status: "unknown", details: { reason: "not_probed" } };
+  try {
+    const selfPath = fileURLToPath(import.meta.url);
+    const setupResult = childProcMod.spawnSync(
+      process.execPath,
+      [selfPath, "setup", "--json"],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    if (setupResult.status === 0 && typeof setupResult.stdout === "string") {
+      authHealth = parseSetupJson(setupResult.stdout);
+    } else {
+      authHealth = parseSetupJson(null);
+    }
+  } catch (err) {
+    authHealth = { status: "unknown", details: { reason: "health_check_exception", error: String(err?.message ?? err) } };
+  }
+  const degradeAction = decideDegrade(authHealth.status);
+  const healthFailureMsg = buildFailureMessage(authHealth);
+  if (degradeAction !== DEGRADE_ACTION.PROCEED) {
+    process.stderr.write(
+      `[daily-evolve] auth health: ${authHealth.status} — degrade=${degradeAction} (${healthFailureMsg})\n`,
+    );
+  }
+  const {
+    buildEntry,
+    finalizeEntry,
+    appendEntry,
+    yearlyFilePath,
+    emptyLedger,
+    RUN_STATUS,
+  } = await import("./daily-evolve/lib/run-ledger.mjs");
+
+  const dateStr = dateArg ?? new Date().toISOString().slice(0, 10);
+  const startedAt = new Date().toISOString();
+  const runId = cryptoMod.randomUUID();
+  const ledgerPath = pathMod.join(process.cwd(), yearlyFilePath(startedAt));
+  const lockPath = `${ledgerPath}.lock`;
+
+  // 1. write in-flight ledger entry (lock + atomic temp + rename)
+  fsMod.mkdirSync(pathMod.dirname(ledgerPath), { recursive: true });
+  const inflight = buildEntry({
+    run_id: runId,
+    started_at: startedAt,
+    phase_reached: phase,
+    digest_file: `docs/daily-evolve/${dateStr}.md`,
+  });
+  {
+    const lockToken1 = await _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod);
+    try {
+      const ledgerBefore = fsMod.existsSync(ledgerPath)
+        ? JSON.parse(fsMod.readFileSync(ledgerPath, "utf8"))
+        : emptyLedger(Number(startedAt.slice(0, 4)));
+      const ledgerInflight = appendEntry(ledgerBefore, inflight);
+      const tmp1 = `${ledgerPath}.tmp-${process.pid}-${Date.now()}`;
+      fsMod.writeFileSync(tmp1, JSON.stringify(ledgerInflight, null, 2) + "\n");
+      fsMod.renameSync(tmp1, ledgerPath);
+    } finally {
+      _releaseDailyEvolveLock(lockPath, fsMod, lockToken1);
+    }
+  }
+
+  // 2. run pipeline (long — no lock so concurrent runs can pipeline)
+  let status = RUN_STATUS.SUCCESS;
+  let failureReason = null;
+  let actionableCount = 0;
+  let recordCount = 0;
+  // Phase 0.5 fix — finalize block 에서 참조하므로 try 밖으로 hoist (이전 scope 오류 fix).
+  let forkResult = null;
+  let triageResult = null;
+  let actionResult = null;
+  try {
+    const raw = aggregate({ date: dateStr });
+    const analyzed = analyze(raw, { skipGhApi });
+    recordCount = analyzed.records.length;
+    actionableCount = analyzed.records.filter(
+      (r) => r.verdict === "NOT-FIXED" || r.verdict === "PARTIAL",
+    ).length;
+    // Phase 2+ — Active Fork Research (fork-research.mjs). IMPORT-CANDIDATE record 들을
+    // analyzed.records 에 append. L7 cost 는 triage cost cap 과 별도 카운트 (PoC).
+    let withForkAnalyzed = analyzed;
+    if (phase >= 2) {
+      forkResult = forkResearch();
+      withForkAnalyzed = { ...analyzed, records: [...analyzed.records, ...forkResult.records] };
+    }
+    // Phase 1+ — Codex L3 triage 통합. analyzed.records 에 triage 필드 + triage_summary 부여.
+    let triagedAnalyzed = withForkAnalyzed;
+    if (phase >= 1) {
+      triageResult = triage(withForkAnalyzed);
+      triagedAnalyzed = { ...withForkAnalyzed, records: triageResult.records };
+    }
+    // Phase 4+ — Action Executor (action-executor.mjs). triage 결과 records 의
+    // autonomous_safe 항목을 L5 협의 → PR candidate / needs_user / skip 분리.
+    if (phase >= 4) {
+      actionResult = actionExecute({ records: triagedAnalyzed.records });
+    }
+    const writeResult = writeDigest({
+      analyzed: triagedAnalyzed,
+      raw,
+      date: dateStr,
+      triageSummary: triageResult?.triage_summary ?? null,
+      forkSummary: forkResult?.research_summary ?? null,
+      actionSummary: actionResult?.action_summary ?? null,
+      actionCandidates: actionResult?.candidates ?? null,
+      authHealthFailureMessage: healthFailureMsg, // Phase 1.5a
+    });
+    process.stdout.write(
+      `[daily-evolve] ${dateStr} done: ${recordCount} records, actionable=${actionableCount}, digest=${writeResult.outFile}\n`,
+    );
+    if ((raw.errors ?? []).length > 0) {
+      status = RUN_STATUS.PARTIAL;
+      failureReason = `${raw.errors.length} source error(s): ${raw.errors.map((e) => e.source).join(", ")}`;
+      // Codex R3 LOW — 문서와 정합: partial 시 stderr 알림
+      process.stderr.write(`[daily-evolve] partial: ${failureReason}\n`);
+    }
+  } catch (err) {
+    status = RUN_STATUS.FAILURE;
+    failureReason = err?.message ?? String(err);
+    process.stderr.write(`[daily-evolve] failure: ${failureReason}\n`);
+  }
+
+  // 3. finalize ledger entry (lock + atomic re-write + idx<0 fallback = re-append)
+  const endedAt = new Date().toISOString();
+  // Phase 0.5 fix — ledger 의 decision_count propagation (이전 {0,0,0} hard-code 였음).
+  // triage 결과의 records 에서 triage 필드 카운트.
+  let decisionCount = { autonomous_safe: 0, needs_user: 0, needs_claude_judgment: 0 };
+  if (triageResult?.records) {
+    for (const r of triageResult.records) {
+      if (r?.triage && r.triage in decisionCount) decisionCount[r.triage] += 1;
+    }
+  }
+  const finalized = finalizeEntry(inflight, {
+    status,
+    ended_at: endedAt,
+    phase_reached: phase,
+    actionable_count: actionableCount,
+    decision_count: decisionCount,
+    cost_units_consumed:
+      (triageResult?.triage_summary?.cost_units ?? 0) +
+      (forkResult?.research_summary?.l7_cost_units ?? 0) +
+      (actionResult?.action_summary?.cost_units ?? 0),
+    failure_reason: failureReason,
+  });
+  // Phase 1.5a — ledger entry 에 auth_health 추가 (Phase 6 expiry streak 분석 input).
+  finalized.auth_health = authHealth;
+  {
+    const lockToken2 = await _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod);
+    try {
+      const ledgerCurrent = fsMod.existsSync(ledgerPath)
+        ? JSON.parse(fsMod.readFileSync(ledgerPath, "utf8"))
+        : emptyLedger(Number(startedAt.slice(0, 4)));
+      const idx = ledgerCurrent.runs.findIndex((r) => r.run_id === runId);
+      if (idx >= 0) {
+        ledgerCurrent.runs[idx] = finalized;
+      } else {
+        // race with another process stole/dropped our inflight entry — re-append finalized
+        // (안전망 — Codex review HIGH "silent skip" 방어)
+        ledgerCurrent.runs.push(finalized);
+        process.stderr.write(
+          `[daily-evolve] warning: in-flight entry ${runId} not found in ledger — appending finalized entry as recovery\n`,
+        );
+      }
+      const tmp2 = `${ledgerPath}.tmp-${process.pid}-${Date.now()}`;
+      fsMod.writeFileSync(tmp2, JSON.stringify(ledgerCurrent, null, 2) + "\n");
+      fsMod.renameSync(tmp2, ledgerPath);
+    } finally {
+      _releaseDailyEvolveLock(lockPath, fsMod, lockToken2);
+    }
+  }
+
+  if (status === RUN_STATUS.FAILURE) process.exit(1);
+  if (status === RUN_STATUS.PARTIAL) process.exit(2);
+}
+
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (!subcommand || subcommand === "help" || subcommand === "--help") {
@@ -2732,6 +3018,9 @@ async function main() {
       break;
     case "cancel":
       await handleCancel(argv);
+      break;
+    case "daily-evolve":
+      await handleDailyEvolve(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

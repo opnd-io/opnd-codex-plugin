@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "probed_at": "2026-05-28T02:19:06.386Z",
+  "scheduler_status": "MCP_UNAVAILABLE",
+  "user_machine_tz": "Asia/Seoul",
+  "machine_offset_minutes": 540,
+  "probe_details": {
+    "mcp_installed": false,
+    "mcp_cron_api_docs_found": false,
+    "cron_tz_supported": null,
+    "fallback_required": true
+  }
+}

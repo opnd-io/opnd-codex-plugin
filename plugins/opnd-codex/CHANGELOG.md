@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **daily-evolve-pipeline Phase 0 PoC** (`plan-daily-evolve-pipeline.md`) — 매일 morning 9 KST 자동 routine 의 첫 phase. Codex pair R1-R7 0-수렴 (총 50 finding 적용, 합의 25건) 후 implement 진입. Phase 0 scope:
+  - `scripts/daily-evolve/lib/` — 7 pure modules (zero npm, node 내장만):
+    - `verdict-schema.mjs` — (verdict, signal_type) 2-축 enum + JSON schema (R2-M6)
+    - `dedupe-key.mjs` — sha256 PR dedupe key + normalized_title (R3-M1 강화 — CJK punctuation / Extended_Pictographic / semver prerelease / PR/Issue 번호 lookbehind)
+    - `fixed-resolver.mjs` — FIXED 3-evidence + reject pattern (R3-M2)
+    - `cost-profile-registry.mjs` — Codex pair profile cost_units (R3-H3 / R4-M2 / R5-L1 max(1,ceil) / R5-L2 schema)
+    - `state-migrator.mjs` — schema migration runner + MigrationError + 5 fail-closed reason enum (R3-H4 / R4-H2)
+    - `run-ledger.mjs` — `daily-evolve-runs-YYYY.json` schema + buildEntry/finalizeEntry/queryLastN/mergeLedgers (R3-M6 / R4-M4 / R5-M5)
+    - `citation-check.mjs` — Levenshtein similarity + agentId 형식 + fuzzy threshold 0.8 (R3-M3)
+  - `scripts/daily-evolve/` — 3 orchestrators (side effect 허용):
+    - `source-aggregator.mjs` — upstream PR + Issue (gh api) + telemetry (events.jsonl) → `docs/upstream-tracking/{YYYY-MM-DD}/raw.json`
+    - `diff-analyzer.mjs` — (verdict, signal_type) 분류 + fixed-resolver 통합 (touchedPath/testAssertion/linkedPRMerge evidence inject)
+    - `digest-writer.mjs` — `docs/daily-evolve/{YYYY-MM-DD}.md` + cognitive metadata header (decision_count / estimated_reading_minutes / manual_actions_required) + no_changes/failures/last_3_runs 별도 섹션 + ≤500줄 cap + citation-check 통합
+  - `commands/daily-evolve.md` + `codex-companion.mjs handleDailyEvolve` — 수동 trigger (`/opnd-codex:daily-evolve [YYYY-MM-DD] [--skip-gh-api]`) + atomic run-ledger entry write
+  - `tests/daily-evolve/*.test.mjs` — 8 test files, 88 unit tests (verdict-schema / dedupe-key / fixed-resolver / cost-profile-registry / state-migrator / run-ledger / citation-check / lib-dependency-rule). Phase 0.9 lib dep rule guard 가 lib/*.mjs 의 forbidden fs/network import 검출
+  - `state/daily-evolve-runs-YYYY.json` — run status ledger (FULL git tracked per 사용자 #1, tarball cache 만 gitignore 예외)
+  - `package.json scripts.test` glob 확장 (`tests/*.test.mjs tests/daily-evolve/*.test.mjs`)
+  - **Default 결정 7건 적용** (사용자 implement 진입 시): LLM 분담 (a) / CRON_TZ env-probe 분기 / status UI = digest header only / Phase 6 rollback 자동 draft / state lazy create / no needs_claude_judgment metric / token-normalized cost only
+  - Phase 1+ (Codex L3 triage, active fork L7, autonomous PR L5, scheduled-tasks MCP, self-evolve meta loop) 는 후속 진입
+- **daily-evolve-pipeline Phase 1 — Codex L3 Triage 통합** — `plan §Phase 1`:
+  - `scripts/daily-evolve/lib/triage-metric.mjs` (pure) — decision_count (3분류 별) / estimated_reading_minutes (CJK+ASCII word count / 200wpm) / manual_actions_required / triage_budget_minutes 30 / exceeds_budget alert
+  - `scripts/daily-evolve/lib/cost-cap.mjs` (pure) — median 계산 + computeCap (baseline median × 3, initial=20) + appendBaseline (last 7 FIFO) + SKIP_REASONS enum (CLAUDE.md taxonomy 일치)
+  - `scripts/daily-evolve/codex-triage.mjs` (orchestrator) — N≥3 fan-out 후 triage 실행. Phase 1 PoC = heuristic stub (verdict 기반: FIXED/WONTFIX→autonomous_safe, QUESTION→needs_claude_judgment, PARTIAL/NOT-FIXED→needs_user). actual Codex pair 호출은 Phase 1.5+
+  - Cost cap: `state/daily-evolve-cost-baseline.json` lazy create + median × 3 초과 시 skip_reason=cost_cap_exceeded + 모든 record needs_user fallback. baseline append + last 7 trim
+  - State migrator 통합 — corrupt JSON backup `.corrupt-${ISO}.bak` + fresh start
+  - `digest-writer.mjs` 통합 — triageSummary inject 시 metric header (table 형식) + Codex L3 Triage Summary 박스 (fan_out / skipped / skip_reason / cost_units / cap / baseline_median) 출력. Phase 0 호환 (triageSummary 부재 시 기존 simple metric)
+  - `companion.mjs handleDailyEvolve` phase 분기 — `--phase 1` 시 triage 호출 후 결과 inject. phase 0 fallback 유지
+  - `tests/daily-evolve/{triage-metric,cost-cap,codex-triage}.test.mjs` — 23 신규 unit tests (lib pure + orchestrator stub + boundary fan_out=3)
+  - 총 daily-evolve unit tests **118/118 pass** (Phase 0 95 + Phase 1 23). 회귀 0
+- **daily-evolve-pipeline Phase 2 — Active Fork Research + L7 Codex 가중치 조정** — `plan §Phase 2`:
+  - `scripts/daily-evolve/lib/fork-ranking.mjs` (pure) — 5-axis baseline score (upstream_merge_recency 0.30 / matching_plugin_paths 0.25 / unique_touched_paths 0.20 / commit_author_diversity 0.15 / non_vendor_diff_ratio 0.10) + `isActive` 정의 (pushed<30d / ahead≥5 / author_diversity≥2 / non_vendor_ratio≥0.3 / not archived) + `RENAME_MAP` effective_after 2026-05-20 (PR #8 rename) + `LICENSE_WHITELIST` (Apache-2.0 / MIT / BSD-2/3) + `applyL7Adjustment` (boost 1.3 / demote 0.7 / maintain 1.0 / insufficient_info 1.0) + `selectTopN` (score desc + stars tie-breaker, longest-prefix 매칭으로 sub-directory baseline cover 정확)
+  - `scripts/daily-evolve/lib/fork-tarball.mjs` (pure) — vendor path patterns (node_modules / vendor / dist / build / .nuxt / target / __pycache__ / .venv / coverage) + vendor file patterns (*.lock / *.min.js / *.bundle.js / *-lock.json) + binary extension/size/magic heuristic + `nonVendorDiffRatio` + `normalizePosixPath` (Windows `\` → `/`)
+  - `scripts/daily-evolve/fork-research.mjs` (orchestrator) — `gh api .../forks` + license filter + per-fork compare (budget guard ≤ 19 API calls/run) + active 정의 check + Top N=10 baseline score + L7 heuristic stub (boost/demote/maintain/insufficient_info, Phase 2 PoC — actual Codex pair 호출은 Phase 2.5+) + Top N=5 final (austerity mode N=3 trigger) + IMPORT-CANDIDATE record 변환
+  - `companion.mjs handleDailyEvolve` phase 분기 — `--phase 2` 시 fork-research 호출 + records 를 analyzed 에 append + triage 후 digest. phase 0/1 호환 유지
+  - `digest-writer.mjs` 통합 — forkSummary inject 시 "Phase 2 Active Fork Research Summary" 박스 출력 (total_forks / license_skipped / active_forks / top_candidates / l7_calls / l7_cost_units / api_calls / n_final / austerity_mode)
+  - 신규 36 unit tests (fork-ranking 18 + fork-tarball 9 + fork-research 9). daily-evolve unit tests **154/154 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36). 회귀 0
+- **daily-evolve-pipeline Phase 3 — 7-source 완전 통합 + PII redact** — `plan §Phase 3`:
+  - `scripts/daily-evolve/lib/pii-redact.mjs` (pure) — Email (RFC 5322 simplified) / GitHub PAT (ghp_/gho_/ghs_/ghu_) / OpenAI sk-* / Slack xox* / 40-hex / Windows `C:\Users\...` / POSIX `/home/...` `/Users/...` `/tmp/...` 절대경로 마스킹. `redactAll` / `containsPii` / `<email>` `<token>` `<path>` 마커 (grep 친화)
+  - `source-aggregator.mjs` 4 신규 sub-source: `readMemoryFeedback` (`~/.claude/projects/.../memory/feedback_*.md` scan) / `readUnreleasedGap` (CHANGELOG `## Unreleased` 의 백틱 path/ref ↔ fork 코드 grep diff) / `readStaleTodos` (TODO/FIXME grep + git blame author-time, ≥30d stale) / `readFailureCluster` (telemetry errorMessage top 5 count)
+  - `diff-analyzer.mjs` 4 신규 signal_type 분류:
+    - failure cluster → `verdict=NOT-FIXED, signal_type=telemetry-ux`
+    - memory feedback → `QUESTION, memory-drift`
+    - unreleased gap → `PARTIAL, unreleased-gap`
+    - stale TODO → `PARTIAL, todo-stale`
+  - `digest-writer.mjs` — record 의 PII surface field (`preview`/`body`/`error_message`/`title`) 모두 `redactAll` 적용 후 출력. 새 record 객체 immutable (mutation 없음). hits 누적 카운트
+  - `companion.mjs handleDailyEvolve` — phase > 3 차단 메시지 (Phase 0-3 only)
+  - 신규 8 unit tests (pii-redact). daily-evolve unit tests **162/162 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36 + Phase 3 8). 회귀 0
+- **daily-evolve-pipeline Phase 4 — Action Executor + L5 협의 + dedupe + PR draft 후보** — `plan §Phase 4`:
+  - `scripts/daily-evolve/lib/action-policy.mjs` (pure) — L5 heuristic stub (signal_type+verdict 기반: TODO_STALE ≥30d→pr_draft / UNRELEASED_GAP→needs_user / TELEMETRY_UX→needs_user (HIGH surface) / MEMORY_DRIFT→needs_user (HIGH) / FORK_IMPORT_CANDIDATE→needs_user / upstream FIXED→skip / 그 외→skip + low) + `isLive` 7d TTL boundary + `pruneCache` (immutable) + `buildPRBody` (verdict+signal_type+L5+dedupe+rollback schema) + L5_DECISIONS/L5_SURFACE_VALUES enum
+  - `scripts/daily-evolve/action-executor.mjs` (orchestrator) — autonomous_safe filter → L5 협의 → dedupe key 확인 → PR candidate (cap 안) or surface (needs_user / skip-with-value) or skip. `state/daily-evolve-pr-cache.json` lazy create + state-migrator 통합 + corrupt JSON backup `.corrupt-${ISO}.bak`. 5 PR 동시 cap 초과 시 needs_user 로 strand
+  - `codex-companion.mjs handleDailyEvolve` phase 분기 — `--phase 4` 시 actionExecute 호출 후 결과 writeDigest 에 inject. phase > 4 차단
+  - `digest-writer.mjs` 통합 — actionSummary inject 시 "Phase 4 Action Executor Summary" 박스 출력 (input_total / autonomous_input / candidates / surfaced / skipped / cost_units / cache 변화) + PR draft candidates 목록 (dedupe_key prefix + title)
+  - 신규 22 unit tests (action-policy 13 + action-executor 9). daily-evolve unit tests **184/184 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36 + Phase 3 8 + Phase 4 22). 회귀 0
+  - Phase 4 PoC = L5 heuristic stub + PR candidate 까지 (실제 `gh pr create` 는 Phase 4.5+)
+- **daily-evolve-pipeline Phase 5.0 + Phase 5 — env probe + scheduled-tasks MCP morning 9 KST** — `plan §Phase 5.0/5`:
+  - `scripts/daily-evolve/lib/env-probe.mjs` (pure) — SCHEDULER_STATUS enum (UTC_AWARE / LOCAL_TZ_ONLY / MCP_UNAVAILABLE / UNKNOWN) + decideSchedulerStatus decision tree + kstNineToLocalCron 변환식 ((TARGET_UTC + offset) mod 1440, KST 540min → `0 9 * * *` / UTC 0 → `0 0 * * *` / LA -480 → `0 16 * * *`) + buildProbeResult / validateProbe + hasDstRisk (America/Europe/Pacific/Auckland DST true, Asia/Seoul false)
+  - `scripts/daily-evolve/schedule-setup.mjs` (orchestrator) — probeMcpInstalled (`claude mcp list` subprocess) + probeCronTzSupport (Phase 5 PoC heuristic) + probeMachineTz (Intl.DateTimeFormat.resolvedOptions + getTimezoneOffset) + state/daily-evolve-env-probe.json lazy create + state-migrator 통합 + buildGuidance (status 별 등록 명령 / DST 경고 / opt-out 안내)
+  - `scripts/daily-evolve/cron-fallback.sh` — install / uninstall / status 3 subcommand. CODEX_PLUGIN_DAILY_EVOLVE_DISABLED opt-out guard 자동 포함. MCP_UNAVAILABLE 또는 사용자 결정 #2 시 fallback primary
+  - `companion.mjs handleDailyEvolve` 강화:
+    - **opt-out**: `CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1` 시 exit 0 (Phase 5.5)
+    - **probe mode**: `--probe` flag 로 env probe 단독 실행 (Phase 5.0 BLOCKING) — state 기록 + guidance stderr 출력
+  - 신규 17 unit tests (env-probe). daily-evolve unit tests **201/201 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36 + Phase 3 8 + Phase 4 22 + Phase 5 17). 회귀 0
+  - Phase 5 PoC = env probe + guidance 까지. Actual MCP registration 은 사용자 manual (`claude mcp call scheduled-tasks create ...`) 또는 cron fallback 자동 설치 (`bash cron-fallback.sh install`)
+- **daily-evolve-pipeline Phase 6 — Self-Evolve Meta Loop (FP baseline + loop guard)** — `plan §Phase 6` — 마지막 phase:
+  - `scripts/daily-evolve/lib/self-evolve-policy.mjs` (pure) — REVIEW_TYPE enum (weekly_normal / monthly_self_change) + CHANGE_TARGETS 6 enum + DECISION 4 enum + isActionable (needs_claude_judgment 제외 / autonomous_safe true / needs_user + surface high|medium true) + fpRate + buildAttributionWindow (R5-M3 effective_at + decision precondition + R4-M1 14d baseline / 7d post / disjoint window) + shouldRollback (1.5× threshold + min 10 actionable) + checkLoopGuard (MAX_SELF_REVIEW_DEPTH=1 + recursive STOP — `self_evolve_*` target 차단) + shouldFireWeekly (7d trigger) + buildReviewEntry (schema 준수)
+  - `scripts/daily-evolve/self-evolve.mjs` (orchestrator) — trigger check + loop guard + telemetry 수집 (runs-YYYY.json last 2 years merge) + Phase 6 PoC stub (empty proposed_changes — actual L6 Codex pair 호출은 Phase 6.5+) + weekly report `docs/daily-evolve/_weekly/{YYYY-Www}.md` 생성 (ISO week label Thursday-based) + state/daily-evolve-self-evolve-log.json lazy create + state-migrator 통합 + corrupt JSON backup
+  - `companion.mjs handleDailyEvolve` — `--self-evolve [--type weekly_normal|monthly_self_change] [--force]` flag 추가 (Phase 6 별도 mode). phase > 5 차단 메시지 + `--self-evolve` 안내
+  - 신규 29 unit tests (self-evolve-policy 21 + self-evolve 8): isActionable / fpRate / attribution window (effective_at null/decision precondition/post 7d 미경과/eligible 정확 windows) / shouldRollback (actionable 부족/threshold/float precision) / checkLoopGuard (depth ≤ 1/recursive STOP) / shouldFireWeekly (empty log/7d 경과/wait) / buildReviewEntry / selfEvolve orchestrator / isoWeekLabel / buildWeeklyReport
+  - daily-evolve unit tests **230/230 pass** (Phase 0 95 + Phase 1 23 + Phase 2 36 + Phase 3 8 + Phase 4 22 + Phase 5 17 + Phase 6 29). 회귀 0
+  - **plan-daily-evolve-pipeline.md 의 전 Phase 0-6 implement 완료**. 후속 enhancement (Phase 1.5 actual Codex pair / Phase 2.5 active Codex 호출 / Phase 4.5 actual gh pr create / Phase 5.5 MCP 자동 등록 / Phase 6.5 actual L6 합동 review) 는 별도 PR
 - **Upstream backlog import + Tier-HIGH fixes** — a deep `/research` pass cross-checked all 118 OPEN `openai/codex-plugin-cc` issues against the fork's current code (58 already FIXED, 19 PARTIAL, 24 NOT-FIXED). The 43 unresolved items are now tracked in `docs/backlog/upstream-imported.md`, and the seven Tier-HIGH items were fixed:
   - **#338** — the SessionStart hook re-exported the generic `CLAUDE_PLUGIN_DATA` into the shared `CLAUDE_ENV_FILE`, hijacking every other plugin's per-plugin scoping. It now exports a codex-namespaced `CODEX_PLUGIN_DATA_DIR`; `resolveStateDir` / `resolveTelemetryDir` / `codex-efficiency-report` / `readTraceEvents` read `CODEX_PLUGIN_DATA_DIR ?? CLAUDE_PLUGIN_DATA`. `app-server.mjs` keeps `CLAUDE_PLUGIN_DATA` for its own children (broker + codex), which is not the shared-env leak (documented inline)
   - **#309** — the gpt-5.5 → gpt-5.4 "requires a newer version of Codex" fallback was review-only; on CLI 0.130 it also 400s `task`/`agent` runs. `runAppServerReview` keeps the shared `withModelFallback` helper; `runAppServerTurn` now retries **only `turn/start`, on the same already-created thread** — the thread is created once, so the fallback never leaves an orphan thread (a whole-function retry would re-run `thread/start`). The model-version 400 is a `turn/start`-time rejection, so the retried turn/start is the first and only real turn
