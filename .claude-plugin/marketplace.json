@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Unofficial Claude Code plugin for running the OpenAI Codex CLI. Fork of openai/codex-plugin-cc under Apache 2.0; not affiliated with or endorsed by OpenAI or Anthropic.",
-    "version": "2.1.0"
+    "version": "2.2.0"
   },
   "plugins": [
     {
       "name": "opnd-codex",
       "description": "Unofficial Claude Code plugin that delegates tasks and reviews to the OpenAI Codex CLI (requires @openai/codex installed separately).",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "author": {
         "name": "opnd-io"
       },
