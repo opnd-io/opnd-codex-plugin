@@ -6,10 +6,10 @@
 
 | upstream # | 우리 fix 위치 | 답글 내용 |
 |---|---|---|
-| **#281** app-server fails with "access token could not be refreshed" after logout/login while `codex exec` works | PR #4 (commit 3d72d6e) — `lib/codex.mjs` BROKER_BUSY_RPC_CODE + timeout regex 분기 + cross-platform recovery | "본 fork 의 PR #4 가 transient broker contention 을 actual logged-out 으로 분류 안 하도록 fix. Recovery 절차: cp + broker kill + WAL cleanup" |
+| **#281** app-server fails with "access token could not be refreshed" after logout/login while `codex exec` works | PR #4 (commit 3d72d6e) — `plugins/opnd-codex/scripts/lib/codex.mjs` BROKER_BUSY_RPC_CODE + timeout regex 분기 + cross-platform recovery | "본 fork 의 PR #4 가 transient broker contention 을 actual logged-out 으로 분류 안 하도록 fix. Recovery 절차: cp + broker kill + WAL cleanup" |
 | **#282** Companion/review jobs should not share the user's main Codex Desktop history feed by default | v2.0+ sprint — plugin home 격리 (`$HOME/.codex/claude-code/`) | "v2.0.0 BREAKING change 로 sessions 가 별도 home 격리. legacy 복원은 `CODEX_PLUGIN_USE_DEFAULT_HOME=1`" |
-| **#288** `sendBrokerShutdown` has no timeout — SessionEnd hook can hang indefinitely | v2.0+ — `broker-lifecycle.mjs` L46-48 (`BROKER_SHUTDOWN_TIMEOUT_MS = 5000`) + L65 setTimeout | "함수가 reject 안 함 — call site await 안전. 이미 5000ms timeout 처리됨" |
-| **#337** `app-server.mjs:188` spawn("codex") fails on Windows without shell:true | v2.0+ — `process.mjs` L62-82 `buildCommandInvocation()` 이 `cmd.exe /d /s /c call` 래핑 + `shell: false` + `quoteWindowsCmdArg()` | "command injection 안전한 cmd.exe 래핑으로 해결. shell:true 위험 회피" |
+| **#288** `sendBrokerShutdown` has no timeout — SessionEnd hook can hang indefinitely | v2.0+ — `plugins/opnd-codex/scripts/lib/broker-lifecycle.mjs` L46-48 (`BROKER_SHUTDOWN_TIMEOUT_MS = 5000`) + L65 setTimeout | "함수가 reject 안 함 — call site await 안전. 이미 5000ms timeout 처리됨" |
+| **#337** `app-server.mjs:188` spawn("codex") fails on Windows without shell:true | v2.0+ — `plugins/opnd-codex/scripts/lib/process.mjs` L62-82 `buildCommandInvocation()` 이 `cmd.exe /d /s /c call` 래핑 + `shell: false` + `quoteWindowsCmdArg()` | "command injection 안전한 cmd.exe 래핑으로 해결. shell:true 위험 회피" |
 | **#342** [BUG] `/codex:setup` reports `loggedIn:false` when shared broker is busy; getCodexAuthStatus missing direct-fallback | PR #4 (commit 3d72d6e) — broker busy 분기 + `loggedIn: null + transient: true` | "본 fork 의 PR #4 가 broker busy 시 별 status 반환 — false-negative 회피. caller 가 transient vs actual 구분 가능" |
 
 → 5건 upstream answer 가치. 사용자가 각 upstream issue 에 comment 등록 시 reference: PR #4 commit `3d72d6e` + commits/PRs 명시.
@@ -37,7 +37,17 @@
 
 → HIGH 5건 + MEDIUM 3건 = 8건 port 가치. 각 별 PR 또는 묶음 chore. 본 fork 의 Windows / sandbox 영역 보강 sprint 가치.
 
-## NOT-FIXED upstream-issue MEDIUM/LOW (port 가치 낮음, 19건)
+## 본 fork 가 이미 cover 추가 발견 (R1 review 반영, 3건)
+
+| upstream # | 우리 fix 위치 | verdict |
+|---|---|---|
+| **#287** spawn("codex") in app-server.mjs throws ENOENT (Node PATHEXT for .cmd shims) | `plugins/opnd-codex/scripts/lib/process.mjs` L62-82 `buildCommandInvocation()` 의 `cmd.exe /d /s /c call` 래핑 + PATHEXT 명시 처리 (#337 와 같은 fix 영역) | cover (verified — #337 과 동일) |
+| **#298** /codex:review caps findings at ~3 — add configurable max | `/opnd-codex:review` 에 `--max-findings <N>` flag 존재 (default 20, hard cap 100). README L100 명시 | cover (verified) |
+| **#285** Stop/Session hooks fail on Windows when CWD different drive | solution doc `~/.claude/docs/solutions/windows-cross-drive-hook-cd-first-pattern.md` + 본 fork hooks 의 cd-first pattern 적용 | cover (verified) |
+
+→ 본 fork 가 이미 cover 한 upstream issue 합계: **8건** (위 5건 + 본 섹션 3건). upstream gh issue 답글 가치 모두 동일.
+
+## NOT-FIXED upstream-issue MEDIUM/LOW (port 가치 낮음, 16건)
 
 - #354 feature request (codex:reviewer subagent — review-mode counterpart to codex-rescue): feature, MEDIUM
 - #329 Codex review no response all the time in VS Code plugin: VS Code 영역, scope 외
@@ -46,13 +56,10 @@
 - #320 Not working with chatGPT subscriptions: 우리 fork 정상 작동, upstream 별 issue
 - #309 [BUG] adversarial-review / review fail HTTP 400 ('gpt-5.5 requires newer Codex') on CLI 0.130.0: PARTIAL fix 후보, MEDIUM
 - #306 Reaching codex rate limit causes infinite review cycle: PR #5 의 usage limit helper 가 일부 cover, MEDIUM
-- #304 codex-companion.mjs hardcodes workspace-write sandbox for write tasks: v2.0+ sandbox 정책 변경으로 일부 cover
-- #298 /codex:review caps findings at ~3 — add configurable max: 우리 `--max-findings` flag 존재 — cover
-- #287 spawn("codex") in app-server.mjs throws ENOENT (Node PATHEXT for .cmd shims): #337 와 유사 — cover 추정
-- #285 Stop/Session hooks fail on Windows when CWD different drive: solution doc `windows-cross-drive-hook-cd-first-pattern` 있음
+- #304 codex-companion.mjs hardcodes workspace-write sandbox for write tasks: v2.0+ sandbox 정책 변경으로 일부 cover — "부분 cover" 섹션 참조
 - #284 Add --context flag to /codex command: feature request
 - #283 Delegated sessions renamed with representative identifier in Codex Desktop: Desktop 영역
-- (10건 더 — analyzed.json 의 daily-evolve raw 참조)
+- (7건 더 — analyzed.json 의 daily-evolve raw 참조)
 
 ## NOT-FIXED upstream-pr 92건 — cherry-pick 평가
 
