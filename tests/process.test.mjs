@@ -46,9 +46,10 @@ test("terminateProcessTree uses taskkill on Windows", () => {
     }
   });
 
+  // #331 — taskkill is now invoked via cmd.exe to avoid MSYS /PID path translation.
   assert.deepEqual(captured, {
-    command: "taskkill",
-    args: ["/PID", "1234", "/T", "/F"]
+    command: "cmd.exe",
+    args: ["/d", "/s", "/c", "taskkill", "/PID", "1234", "/T", "/F"]
   });
   assert.equal(outcome.delivered, true);
   assert.equal(outcome.method, "taskkill");

@@ -165,7 +165,9 @@ export function terminateProcessTree(pid, options = {}) {
   const isProcessRunningImpl = options.isProcessRunningImpl ?? ((targetPid) => isProcessRunning(targetPid, killImpl));
 
   if (platform === "win32") {
-    const result = runCommandImpl("taskkill", ["/PID", String(pid), "/T", "/F"], {
+    // #331 — wrap via cmd.exe /d /s /c so MSYS/Git-Bash does not translate
+    //         /PID to a filesystem path (e.g. C:/Program Files/Git/PID).
+    const result = runCommandImpl("cmd.exe", ["/d", "/s", "/c", "taskkill", "/PID", String(pid), "/T", "/F"], {
       cwd: options.cwd,
       env: options.env
     });
