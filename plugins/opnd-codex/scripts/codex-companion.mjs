@@ -1537,8 +1537,11 @@ async function handleReviewCommand(argv, config) {
   // #333 — use parseReviewArgv so focus-text tokens that look like flags
   //         (e.g. "--base main" inside a sentence) are not consumed as options.
   const { options, focusTokens } = parseReviewArgv(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "profile", "max-findings", "branch"],
-    booleanOptions: ["json", "background", "wait"],
+    // R1 fix (Codex Sprint 2 R1): --effort (value) + --fast (boolean) 누락 → 사용자 입력 시
+    // 첫 unknown token 으로 판정되어 이후 모두 focusTokens 로 밀려가는 회귀. valid review options
+    // 전체 wiring 으로 보정.
+    valueOptions: ["base", "scope", "model", "cwd", "profile", "max-findings", "branch", "effort"],
+    booleanOptions: ["json", "background", "wait", "fast"],
     aliasMap: {
       m: "model"
     }
