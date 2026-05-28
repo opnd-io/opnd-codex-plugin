@@ -54,7 +54,7 @@ Output rules:
 
 Advisory disclaimer (single-use refresh token rotation):
 
-- `setup --json` 의 `ready/loggedIn/verified: true` 응답은 **cached advisory** — Codex auth.json 파일의 token presence + 마지막 verification 결과 기반. 실제 rescue/agent/pair/review 호출 시 fresh app-server session 이 refresh token 을 새로 사용 — 다른 process (Codex Desktop / 이전 plugin call / `codex login` 직후 첫 호출 race) 가 이미 같은 refresh token 을 소비했으면 `Your access token could not be refreshed because your refresh token was already used` 로 fail.
+- `setup --json` 의 `ready/loggedIn/verified: true` 응답은 **cached advisory** — Codex CLI 의 setup 명령이 직전 점검 결과를 응답하는 것으로, 정확한 source (auth.json / app-server cache / 직전 probe trace) 는 codex-cli 내부 구현에 의존하며 plugin 영역 외. 실제 rescue/agent/pair/review 호출 시 fresh app-server session 이 refresh token 을 새로 사용 — 다른 process (Codex Desktop / 이전 plugin call / `codex login` 직후 첫 호출 race) 가 이미 같은 refresh token 을 소비했으면 `Your access token could not be refreshed because your refresh token was already used` 로 fail.
 - 즉 setup advisory verified:true → 다음 호출 100% 성공 보장 X. 다음 호출 fail 시 단순 재로그인 retry 가 같은 케이스 반복 가능 (cached state 만 갱신, plugin home 격리 영역은 stale 유지).
 - **plugin home 격리 (v2.0+)**: plugin 은 `$HOME/.codex/claude-code/auth.json` 사용. 사용자가 `codex logout && codex login` 한 결과는 `~/.codex/auth.json` 에만 반영 → plugin home 의 auth 는 stale. 본 케이스 root cause + 복구 절차는 본 repo root `CLAUDE.md` 의 "Plugin home 격리 — auth sync 정책" 섹션 참조 (`cp ~/.codex/auth.json ~/.codex/claude-code/auth.json` + broker `codex.exe` (소문자) kill).
 - 본 false-positive 패턴은 `plan-issue-setup-advisory-false-positive.md` (root) + `plan-issue-2-additional-repro.md` 에 상세 분석 + reproduction 보관 — upstream Codex CLI 의 setup --json 에 actual app-server round-trip probe 추가가 본질 fix.

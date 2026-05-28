@@ -11,7 +11,7 @@ view of an already-rotated refresh token).
    ready: true
    loggedIn: true
    verified: true
-   detail: ChatGPT login active for tgkim@openerd.com
+   detail: ChatGPT login active for <user-email-redacted>
    sessionRuntime.mode: direct startup
    ```
 2. **1st rescue call — foreground, tiny prompt** (`Codex 연결 헬스 체크 / OK 만 출력하라`):

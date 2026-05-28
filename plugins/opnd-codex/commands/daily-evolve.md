@@ -18,7 +18,7 @@ Daily-evolve pipeline 의 manual trigger. Phase 5 의 자동 routine (`scheduled
 | **2** | Phase 1 + active fork research (`gh api .../forks` + license filter + L7 weight adjustment + Top N=10 baseline → Top N=5 final, austerity mode N=3) + budget guard (default unlimited, env override `CODEX_PLUGIN_DAILY_EVOLVE_FORK_API_BUDGET`) | digest `Phase 2 Active Fork Research Summary` 박스 |
 | **3** | Phase 2 + 7-source 완전 통합 (upstream PR/Issue/comments + fork research + telemetry + plugin marketplace + Codex CHANGELOG/release) + PII redact (email/token/path 누적 카운트) | digest `PII redacted: {n} hits` notice |
 | **4** | Phase 3 + Action Executor + L5 협의 + dedupe + PR draft 후보 emit (autonomous-safe 만 자동 draft, needs-user 는 decision queue) | digest `Action Summary` 블록 + draft 후보 목록 |
-| **5** | Phase 4 + env probe (`scheduled-tasks` MCP 등록 상태 + CRON_TZ + DST handling) | `state/daily-evolve-env-probe.json` |
+| **5** | Phase 4 + env probe (`--probe` mode 별도). 실제 `scheduled-tasks` MCP 등록은 본 명령이 **수행하지 않음** — probe + scheduler_status enum (UTC_AWARE / LOCAL_TZ_ONLY / MCP_UNAVAILABLE / UNKNOWN) + branch 별 registration guidance 만 출력 (사용자가 manual 또는 외부 MCP API 로 등록). 자동 등록은 Phase 5.5+ 예정 — 본 PoC 의 의도된 제약 (`schedule-setup.mjs` L15 명시) | `state/daily-evolve-env-probe.json` (probe 결과만, 등록 상태 X) |
 | **6** (별도 mode: `--self-evolve`) | weekly meta-review — 누적 ledger 분석 + KPI 평가 + Phase 별 회귀 detection + 자동 rollback PR draft 후보. `--type` 으로 review 종류 명시 (`weekly_normal` default), `--force` 로 cool-down 우회 | `state/daily-evolve-self-evolve-log.json` |
 
 ## Flags
@@ -46,8 +46,8 @@ Daily-evolve pipeline 의 manual trigger. Phase 5 의 자동 routine (`scheduled
 - 부분 실패: stderr 에 `[daily-evolve] auth health: {status} — degrade={action}` + source error + exit 2
 - 실패: stderr 에 `[daily-evolve] failure: {reason}` + exit 1
 
-## 자동 routine
+## 자동 routine (Phase 5 등록 이후)
 
-`scheduled-tasks` MCP 가 매일 morning 9 KST (`0 9 * * *` local TZ, jitter ~9분) Phase 5 모드로 자동 실행. opt-out: `CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1`.
+`scheduled-tasks` MCP 가 등록되어 있고 사용자가 `--probe` 로 받은 guidance 에 따라 manual 등록을 완료한 후 (또는 Phase 5.5+ 의 자동 등록 도입 후) 매일 morning 9 KST (`0 9 * * *` local TZ, jitter ~9분) 자동 실행. Phase 5 자체는 자동 등록을 수행하지 않으므로, 본 routine 의 실제 동작 여부는 사용자 환경 (MCP 설치 + 등록 완료) 에 의존. opt-out: `CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1`.
 
 Result 는 항상 사용자에게 verbatim 표시 (요약 금지 — digest 자체가 사용자 review 대상).
