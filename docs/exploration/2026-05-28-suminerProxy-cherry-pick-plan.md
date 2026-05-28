@@ -65,8 +65,13 @@ cherry-pick 시 다음 모두 처리:
 
 - **NOTICE**: `Cherry-picked from suminerProxy/codex-plugin-cc commits c30b664, a3f4181, 9332c29, 6871973, 4baaf19, 30f3a26 (Apache 2.0)` 추가
 - **각 commit message**: `Cherry-picked from suminerProxy/codex-plugin-cc#{sha}` 명시
-- **plugin.json contributors[]**: suminerProxy 추가 (이미 OpenAI 있음)
-- suminerProxy license 확인 필요 (gh api 로 license field 미확인 — Apache 2.0 추정)
+- **`plugins/opnd-codex/.claude-plugin/plugin.json`** `contributors[]`: suminerProxy 추가 (이미 OpenAI + opnd-io 있음)
+
+**HARD PRECONDITION (cherry-pick 시작 전 BLOCKING)**:
+
+- [ ] suminerProxy fork license **실측 확인** (`gh api repos/suminerProxy/codex-plugin-cc --jq .license` 또는 LICENSE file 직접 확인). Apache 2.0 정합 시만 cherry-pick 진행. **MIT / GPL / 등 다른 license 면 cherry-pick 불가** (license 호환성 위반).
+- [ ] 각 commit 의 sign-off / DCO 확인 (있다면 보존)
+- [ ] suminerProxy 작성자 (madanapallikalyan 또는 다른 contributor) GitHub identity 명시
 
 ## Sprint 3 boundary 정합
 
