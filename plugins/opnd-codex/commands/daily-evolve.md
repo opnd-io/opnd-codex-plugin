@@ -1,33 +1,53 @@
 ---
-description: Run daily-evolve pipeline (Phase 0 PoC — upstream PR/Issue + telemetry aggregation → diff analysis → daily digest md)
-argument-hint: '[YYYY-MM-DD] [--skip-gh-api] [--phase 0]'
+description: Run daily-evolve pipeline (Phase 0–6 — upstream PR/Issue + telemetry → Codex L3 triage → active fork research → daily digest → autonomous PR draft → scheduled-tasks MCP → self-evolve meta loop)
+argument-hint: '[YYYY-MM-DD] [--skip-gh-api] [--phase 0|1|2|3|4|5] [--probe] [--self-evolve [--type weekly_normal] [--force]]'
 allowed-tools: Bash(node:*)
 ---
 
 !`"$(command -v node || command -v nodejs || ls /opt/homebrew/bin/node /usr/local/bin/node 2>/dev/null | head -n1 || echo node)" "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" daily-evolve "$ARGUMENTS"`
 
-Daily-evolve pipeline 의 manual trigger. Phase 5 자동 (`scheduled-tasks` MCP, morning 9 KST) 진입 전엔 본 명령으로 PoC 동작 검증.
+Daily-evolve pipeline 의 manual trigger. Phase 5 의 자동 routine (`scheduled-tasks` MCP, morning 9 KST + jitter) 와 동일 코드 경로 — 본 명령으로 즉시 검증 / 재실행 / debug 가능.
 
-**Phase 0 동작 (현재)**:
+## Pipeline phases
 
-1. `scripts/daily-evolve/source-aggregator.mjs` — upstream `openai/codex-plugin-cc` 의 open PR + Issue + recently closed (30d) + 우리 `events.jsonl` telemetry 수집. `docs/upstream-tracking/{YYYY-MM-DD}/raw.json` 에 저장 (FULL tracked).
-2. `scripts/daily-evolve/diff-analyzer.mjs` — (verdict, signal_type) 2-축 분류. `FIXED` 는 **CHANGELOG 매칭 (필수) + 3 추가 evidence (touched path / test assertion / linked PR merge) 중 1+** 동시 충족 룰 (R3-M2).
-3. `scripts/daily-evolve/digest-writer.mjs` — `docs/daily-evolve/{YYYY-MM-DD}.md` 생성. Cognitive load metadata header + `no_changes` / `failures` / Tier queue.
+| Phase | 동작 | 신규 산출물 |
+|---|---|---|
+| **0** (default) | source-aggregator → diff-analyzer → digest-writer. upstream `openai/codex-plugin-cc` open PR + Issue + recently closed (30d) + 우리 `events.jsonl` telemetry 수집 후 (verdict, signal_type) 분류, FIXED 3-evidence 룰 적용 | `docs/upstream-tracking/{date}/raw.json` + `docs/daily-evolve/{date}.md` |
+| **1** | Phase 0 + Codex L3 triage (decision-triage profile, heuristic stub — actual Codex 호출은 Phase 1.5+) + decision_count metric + cost cap (baseline median × 3, last 7 FIFO) | digest header `Codex L3 Triage Summary` 박스 |
+| **1.5a** (auto, Phase 1+ pre-flight) | Codex auth health check (`setup --json` parse). refresh token expired/revoked 시 routine 자체는 heuristic fallback 으로 degrade — 실패 X. 사용자가 digest `failures` 섹션 첫 줄 `⚠ Codex auth health: ...` 에서 인지 → `codex logout && codex login` 후 다음 routine 부터 자동 복구 | ledger `auth_health: {status, details}` 필드 (raw 제거 — PII 차단) |
+| **2** | Phase 1 + active fork research (`gh api .../forks` + license filter + L7 weight adjustment + Top N=10 baseline → Top N=5 final, austerity mode N=3) + budget guard (default unlimited, env override `CODEX_PLUGIN_DAILY_EVOLVE_FORK_API_BUDGET`) | digest `Phase 2 Active Fork Research Summary` 박스 |
+| **3** | Phase 2 + 7-source 완전 통합 (upstream PR/Issue/comments + fork research + telemetry + plugin marketplace + Codex CHANGELOG/release) + PII redact (email/token/path 누적 카운트) | digest `PII redacted: {n} hits` notice |
+| **4** | Phase 3 + Action Executor + L5 협의 + dedupe + PR draft 후보 emit (autonomous-safe 만 자동 draft, needs-user 는 decision queue) | digest `Action Summary` 블록 + draft 후보 목록 |
+| **5** | Phase 4 + env probe (`--probe` mode 별도). 실제 `scheduled-tasks` MCP 등록은 본 명령이 **수행하지 않음** — probe + scheduler_status enum (UTC_AWARE / LOCAL_TZ_ONLY / MCP_UNAVAILABLE / UNKNOWN) + branch 별 registration guidance 만 출력 (사용자가 manual 또는 외부 MCP API 로 등록). 자동 등록은 Phase 5.5+ 예정 — 본 PoC 의 의도된 제약 (`schedule-setup.mjs` L15 명시) | `state/daily-evolve-env-probe.json` (probe 결과만, 등록 상태 X) |
+| **6** (별도 mode: `--self-evolve`) | weekly meta-review — 누적 ledger 분석 + KPI 평가 + Phase 별 회귀 detection + 자동 rollback PR draft 후보. `--type` 으로 review 종류 명시 (`weekly_normal` default), `--force` 로 cool-down 우회 | `state/daily-evolve-self-evolve-log.json` |
 
-**Output 위치**:
-- raw: `docs/upstream-tracking/{date}/raw.json`
-- analyzed: 메모리 (Phase 0 에선 별도 파일 X)
-- digest: `docs/daily-evolve/{date}.md`
+## Flags
 
-**Flags**:
-- `--skip-gh-api`: linked PR merge check 비활성 (offline / network 차단 환경)
-- `--phase <N>`: 명시 Phase 진입 (default 0)
+- `[YYYY-MM-DD]` — 명시 일자 (default = today UTC)
+- `--skip-gh-api` — linked PR merge check 비활성 (offline / network 차단 환경)
+- `--phase <N>` — 진입 phase (0-5, default 0). Phase 6 은 `--self-evolve` 별도 mode
+- `--probe` — probe only (실제 routine 실행 안 함, env / state / lock 검사만)
+- `--self-evolve` — Phase 6 meta-review mode 진입
+  - `--type <weekly_normal|...>` — review type (default `weekly_normal`)
+  - `--force` — cool-down 우회 (강제 실행)
 
-**검증 출력**:
+## Output 위치
+
+- raw: `docs/upstream-tracking/{date}/raw.json` (FULL git tracked, 사용자 결정 #1)
+- digest: `docs/daily-evolve/{date}.md` (사용자 review 대상)
+- run ledger: `state/daily-evolve-runs-{YYYY}.json` (append-only, atomic write)
+- cost baseline: `state/daily-evolve-cost-baseline.json` (last 7 FIFO median)
+- env probe: `state/daily-evolve-env-probe.json` (Phase 5+)
+- self-evolve log: `state/daily-evolve-self-evolve-log.json` (Phase 6)
+
+## 검증 출력
+
 - 정상: `[daily-evolve] {date} done: {N} records, actionable={M}, digest=docs/daily-evolve/{date}.md`
-- 부분 실패: stderr 에 source error + exit 2
+- 부분 실패: stderr 에 `[daily-evolve] auth health: {status} — degrade={action}` + source error + exit 2
 - 실패: stderr 에 `[daily-evolve] failure: {reason}` + exit 1
 
-Phase 1+ 에서 Codex L3 triage (decision-triage profile) 통합, Phase 2 에서 active fork ranking + L7, Phase 4 에서 autonomous PR draft + L5 협의, Phase 5 자동화, Phase 6 self-evolve 추가.
+## 자동 routine (Phase 5 등록 이후)
+
+`scheduled-tasks` MCP 가 등록되어 있고 사용자가 `--probe` 로 받은 guidance 에 따라 manual 등록을 완료한 후 (또는 Phase 5.5+ 의 자동 등록 도입 후) 매일 morning 9 KST (`0 9 * * *` local TZ, jitter ~9분) 자동 실행. Phase 5 자체는 자동 등록을 수행하지 않으므로, 본 routine 의 실제 동작 여부는 사용자 환경 (MCP 설치 + 등록 완료) 에 의존. opt-out: `CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1`.
 
 Result 는 항상 사용자에게 verbatim 표시 (요약 금지 — digest 자체가 사용자 review 대상).

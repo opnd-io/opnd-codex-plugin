@@ -20,6 +20,9 @@ they already have.
 - `/opnd-codex:adversarial-review` for a steerable challenge review
 - `/opnd-codex:pair` for foreground read-only pair-programming feedback with task-key reuse and structured result digests
 - `/opnd-codex:agent`, `/opnd-codex:continue`, `/opnd-codex:approve`, `/opnd-codex:deny`, `/opnd-codex:status`, `/opnd-codex:result`, and `/opnd-codex:cancel` to delegate and control long-running Codex work
+- `/opnd-codex:rescue` for delegating a focused investigation or fix to the Codex rescue subagent (background-capable)
+- `/opnd-codex:daily-evolve` for the self-evolution pipeline (Phase 0–6: upstream/telemetry aggregation → Codex L3 triage → active fork research → daily digest → action executor → scheduled-tasks integration → self-evolve meta loop)
+- `/opnd-codex:setup` for the readiness probe (Node / npm / codex CLI / auth / runtime mode) and optional stop-review-gate toggle
 
 ## Requirements
 
@@ -309,6 +312,28 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
+
+### `/opnd-codex:daily-evolve`
+
+Runs the self-evolution pipeline (Phase 0–6) that aggregates upstream PR/Issue + telemetry signals, runs verdict classification + Codex L3 triage + active fork research, then emits a daily digest md plus autonomous-safe PR draft candidates and a needs-user decision queue.
+
+```bash
+/opnd-codex:daily-evolve                  # Phase 0 default — source aggregation + diff analysis + digest
+/opnd-codex:daily-evolve --phase 1        # adds Codex L3 triage (heuristic stub in PoC)
+/opnd-codex:daily-evolve --phase 2        # adds active fork research with L7 weight adjustment
+/opnd-codex:daily-evolve --phase 5 --probe   # env probe + registration guidance (no actual MCP register)
+/opnd-codex:daily-evolve --self-evolve --type weekly_normal   # Phase 6 weekly meta-review
+```
+
+Outputs:
+- `docs/upstream-tracking/{date}/raw.json` — collected signals
+- `docs/daily-evolve/{date}.md` — daily digest (cognitive metadata header + Tier queue)
+- `state/daily-evolve-runs-{YYYY}.json` — append-only run ledger (atomic write)
+- `state/daily-evolve-cost-baseline.json` — last 7 FIFO median for cost cap
+
+A Phase 1.5a auth health check runs as an automatic pre-flight from Phase 1+ — if the Codex CLI refresh token is expired/revoked the pipeline degrades to a heuristic fallback (never fails outright) and surfaces a `⚠ Codex auth health: ...` line in the digest's `failures` section. After `codex logout && codex login` the next routine recovers automatically. See [`commands/daily-evolve.md`](plugins/opnd-codex/commands/daily-evolve.md) for full flag reference and Phase 5 manual-registration guidance, and the fork's [`CLAUDE.md`](CLAUDE.md) for the plugin-home auth-sync policy.
+
+Once Phase 5 is wired up to `scheduled-tasks` MCP (manual registration via `--probe` guidance, or Phase 5.5+ automated), the routine fires every morning at 9 KST (`0 9 * * *` local TZ, ~9-minute jitter). Opt out with `CODEX_PLUGIN_DAILY_EVOLVE_DISABLED=1`.
 
 ## Typical Flows
 

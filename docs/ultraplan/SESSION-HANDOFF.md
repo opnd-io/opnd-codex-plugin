@@ -38,7 +38,7 @@
 ### 환경 사전 조건 (다시 확인 필요)
 
 - 본 repo는 `commit.gpgsign=true` global 설정 + GPG 비밀키 부재
-- 모든 commit 은 `-c commit.gpgsign=false -c user.email=oharapass@gmail.com -c user.name=tgkim`
+- 모든 commit 은 `-c commit.gpgsign=false -c user.email=<user-email-redacted> -c user.name=tgkim`
 - 사용자 명시 1회 승인 + 본 세션 한정 → 다음 세션에서 새로 승인 필요
 - `unset CLAUDE_PLUGIN_DATA` 가 test suite 실행 전에 필요 (codex 플러그인 활성 환경의 leak)
 
