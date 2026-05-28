@@ -94,6 +94,58 @@ test("parseSetupJson — raw 필드 제거 (PII leakage 차단)", () => {
   assert.equal(/ChatGPT login/.test(detailsSerialized), false, "auth.detail 누설 안 됨");
 });
 
+test("parseSetupJson — auth.transient true → TRANSIENT (broker busy 분기, NOT_LOGGED_IN 와 구분)", () => {
+  // lib/codex.mjs 의 BROKER_BUSY_RPC_CODE 분기와 정합 — broker busy 시 actual auth state 불명
+  const result = parseSetupJson({
+    ready: false,
+    codex: { available: true },
+    auth: {
+      available: true,
+      loggedIn: null,
+      transient: true,
+      detail: "Broker busy — actual auth state unknown. Retry setup --json after broker init completes (typically 5-30s).",
+      source: "app-server",
+    },
+  });
+  assert.equal(result.status, HEALTH_STATUS.TRANSIENT);
+  assert.match(result.details.hint, /wait broker init|retry/);
+});
+
+test("parseSetupJson — auth.loggedIn null (transient implicit) → TRANSIENT", () => {
+  // auth.transient field 없어도 auth.loggedIn === null 만으로 TRANSIENT 인식
+  const result = parseSetupJson({
+    ready: false,
+    codex: { available: true },
+    auth: { available: true, loggedIn: null },
+  });
+  assert.equal(result.status, HEALTH_STATUS.TRANSIENT);
+});
+
+test("decideDegrade — TRANSIENT → PROCEED (broker init 후 재시도 가능)", () => {
+  // TRANSIENT 는 일시적이라 FALLBACK_HEURISTIC 으로 degrade 하지 않고 정상 진행
+  // (다음 Codex 호출에서 broker init 완료 후 actual 작동 가능)
+  assert.equal(decideDegrade(HEALTH_STATUS.TRANSIENT), DEGRADE_ACTION.PROCEED);
+});
+
+test("buildFailureMessage — TRANSIENT 메시지 (broker busy + NOT_LOGGED_IN 구분 명시)", () => {
+  const msg = buildFailureMessage({
+    status: HEALTH_STATUS.TRANSIENT,
+    details: { hint: "wait broker init (5-30s) and retry" },
+  });
+  assert.match(msg, /broker busy/);
+  assert.match(msg, /transient/);
+  assert.match(msg, /NOT_LOGGED_IN.*구분/);
+});
+
+test("computeExpiryStreak — TRANSIENT 는 streak 에 포함 안 됨 (broker busy 는 actual expired 아님)", () => {
+  const runs = [
+    { auth_health: { status: HEALTH_STATUS.NOT_LOGGED_IN } },
+    { auth_health: { status: HEALTH_STATUS.TRANSIENT } }, // break — TRANSIENT 는 not expired
+    { auth_health: { status: HEALTH_STATUS.NOT_LOGGED_IN } },
+  ];
+  assert.equal(computeExpiryStreak(runs), 1);
+});
+
 test("parseSetupJson — real-shape with extra fields → 정상 처리 (R1 LOW regression)", () => {
   // R1 review LOW: 실제 setup --json shape (node/npm/sessionRuntime/nextSteps 등 추가 필드)
   // 가 들어와도 parseSetupJson 은 codex + auth + ready 만 본다. 추가 필드 무시 robust.

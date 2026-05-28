@@ -48,6 +48,7 @@ import { measureCost } from "./lib/cost-profile-registry.mjs";
 import { SIGNAL_TYPES, VERDICTS } from "./lib/verdict-schema.mjs";
 
 const UPSTREAM = "openai/codex-plugin-cc";
+const SELF_FORKS = new Set(["opnd-io/opnd-codex-plugin"]);
 // API budget: 사용자 요청으로 default unlimited (Infinity). gh API rate limit
 // (5000/h authenticated) 안 100 forks × 1 compare = 100 calls 매우 안전.
 // 단 env var 로 명시 cap 가능 — production 환경 또는 큰 fork 수 (예: 1000+) 에서 안전망.
@@ -260,8 +261,9 @@ export function research(opts = {}) {
   apiCalls += listCalls;
 
   // 2. License filter (응답에 license 포함, 추가 호출 0)
-  const licenseOk = forks.filter((f) => isLicenseCompatible(f?.license?.spdx_id));
-  const licenseSkipped = forks.length - licenseOk.length;
+  const nonSelfForks = forks.filter((f) => !SELF_FORKS.has(f?.full_name));
+  const licenseOk = nonSelfForks.filter((f) => isLicenseCompatible(f?.license?.spdx_id));
+  const licenseSkipped = nonSelfForks.length - licenseOk.length;
 
   // 3. Codex Phase 2 R2 M2 — stars desc pre-sort: budget cap 도달 시 high-value fork
   // (별점 높은 것) 우선 enrich. 동점은 pushed_at desc tie-break (최신 활동 우선).

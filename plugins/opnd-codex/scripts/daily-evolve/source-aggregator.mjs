@@ -28,6 +28,11 @@ import { spawnSync } from "node:child_process";
 const UPSTREAM_REPO = "openai/codex-plugin-cc";
 const RECENT_WINDOW_DAYS = 30;
 const SCHEMA_VERSION = 1;
+// M1 fix (Codex R1): 기존 `\.corrupt-\$\{ISO\}\.bak$` 는 literal `${ISO}` 만 매치 — 실제
+// file path `.corrupt-2026-05-28T04-11-56-668Z.bak` 매치 안 됨. ISO timestamp 가 들어가는
+// 모든 `.corrupt-*.bak` 경로 매치하도록 `.+` 사용.
+const UNRELEASED_SELF_REFERENCE_RE =
+  /^(docs\/daily-evolve\/|docs\/upstream-tracking\/|state\/|\.corrupt-.+\.bak$)/;
 
 /**
  * Resolve telemetry events.jsonl path — codex-efficiency-report.mjs 와 동일 룰.
@@ -188,6 +193,7 @@ export function readUnreleasedGap(repoRoot = process.cwd()) {
   const refs = [...new Set(refMatches.map((m) => m.replace(/`/g, "")))];
   const gaps = [];
   for (const ref of refs) {
+    if (UNRELEASED_SELF_REFERENCE_RE.test(ref)) continue;
     if (ref.length < 3) continue;
     // path-like (slash 또는 dot 포함) 만 grep — naked identifier 는 noise 많음
     if (!/[./]/.test(ref)) continue;

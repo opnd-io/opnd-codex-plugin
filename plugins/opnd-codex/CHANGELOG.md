@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: exclude self-fork (opnd-io/opnd-codex-plugin) from fork discovery results in `fork-research.mjs` [Phase 3.5]
+- fix: skip self-reference paths (docs/daily-evolve/, docs/upstream-tracking/, state/, .corrupt-*.bak) in unreleased-gap detection in `source-aggregator.mjs` [Phase 3.5]
+- fix: improve "No previous Codex task thread" error message with actionable next steps (--resume-id / omit --resume-last)
+- fix: improve "Provide a prompt" usage error messages with --prompt-file / --prompt-stdin / --resume-last hint
+
 - **daily-evolve-pipeline Phase 0 PoC** (`plan-daily-evolve-pipeline.md`) — 매일 morning 9 KST 자동 routine 의 첫 phase. Codex pair R1-R7 0-수렴 (총 50 finding 적용, 합의 25건) 후 implement 진입. Phase 0 scope:
   - `scripts/daily-evolve/lib/` — 7 pure modules (zero npm, node 내장만):
     - `verdict-schema.mjs` — (verdict, signal_type) 2-축 enum + JSON schema (R2-M6)

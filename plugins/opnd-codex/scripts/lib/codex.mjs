@@ -1075,9 +1075,36 @@ async function getCodexAuthStatusFromClient(client, cwd) {
 
     return buildAppServerAuthStatus(accountResponse, configResponse);
   } catch (error) {
+    // Broker busy is transient — actual auth state unknown, NOT a logged-out signal.
+    // Without this branch, setup --json reports `loggedIn: false` for any concurrent
+    // broker request (e.g., another plugin call in flight, broker init handshake in
+    // progress, 28MB+ SQLite WAL flush blocking new requests). That produces a
+    // false-negative mirror of the false-positive pattern documented in
+    // plan-issue-setup-advisory-false-positive.md — caller cannot distinguish
+    // "user actually logged out" vs "transient broker contention".
+    if (error?.rpcCode === BROKER_BUSY_RPC_CODE) {
+      return buildAuthStatus({
+        loggedIn: null,
+        detail: "Broker busy — actual auth state unknown. Retry setup --json after broker init completes (typically 5-30s; longer if plugin home SQLite WAL is large).",
+        source: "app-server",
+        transient: true,
+      });
+    }
+    // Broker stuck (account/read timed out) — broker process 가 init handshake 또는 SQLite WAL flush
+    // 에 막혀 응답 못함. transient 와 분리: 사용자 가 broker kill + plugin home WAL cleanup 필요.
+    // 본 case 도 actual logged-out 시그널 아님 — false-negative 회피.
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (/timed out|timeout|ECONNRESET|EPIPE/i.test(errorMessage)) {
+      return buildAuthStatus({
+        loggedIn: null,
+        detail: `Broker stuck (${errorMessage}) — actual auth state unknown. Recovery: kill plugin broker processes (Windows PowerShell: \`Get-Process | Where-Object { $_.ProcessName -ceq 'codex' } | Stop-Process -Force\` — case-sensitive lowercase only, excludes Codex Desktop GUI; macOS/Linux: \`pkill -f 'codex.*app-server'\`) + check plugin home SQLite WAL (~/.codex/claude-code/*.sqlite-wal — delete if >10MB). See plan-issue-setup-advisory-false-positive.md.`,
+        source: "app-server",
+        transient: true,
+      });
+    }
     return buildAuthStatus({
       loggedIn: false,
-      detail: error instanceof Error ? error.message : String(error),
+      detail: errorMessage,
       source: "app-server"
     });
   }
@@ -1691,5 +1718,8 @@ export const __testHooks = {
   probeAuthWithStaleRetry,
   isStaleAuthCacheError,
   withModelFallback,
-  isModelRequiresNewerCodexError
+  isModelRequiresNewerCodexError,
+  // Codex R1 M2 (본 세션 발견 false-negative pattern) — broker busy / timeout 분기 직접 test 가능하도록 export
+  getCodexAuthStatusFromClient,
+  BROKER_BUSY_RPC_CODE
 };

@@ -927,13 +927,13 @@ async function executeTaskRun(request) {
       excludeJobId: request.jobId
     });
     if (!latestThread) {
-      throw new Error("No previous Codex task thread was found for this repository.");
+      throw new Error("No previous Codex task thread was found for this repository. Start a new task, pass --resume-id <thread-id>, or omit --resume-last.");
     }
     resumeThreadId = latestThread.id;
   }
 
   if (!prompt && !resumeThreadId) {
-    throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
+    throw new Error("Provide a prompt, --prompt-file <path>, --prompt-stdin, piped stdin, or use --resume-last after a completed task.");
   }
 
   const result = await runAppServerTurn(workspaceRoot, {
@@ -1375,7 +1375,7 @@ function pickReusableTaskSession(cwd, identity, policy) {
 
 function requireTaskRequest(prompt, resumeLast) {
   if (!prompt && !resumeLast) {
-    throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
+    throw new Error("Provide a prompt, --prompt-file <path>, --prompt-stdin, piped stdin, or use --resume-last after a completed task.");
   }
 }
 

@@ -23,6 +23,7 @@ export const HEALTH_STATUS = Object.freeze({
   CLI_UNAVAILABLE: "cli_unavailable", // CLI 자체 없음 또는 setup --json fail
   NOT_LOGGED_IN: "not_logged_in",    // refresh token expired/revoked
   NOT_VERIFIED: "not_verified",      // login 됐으나 verified false (subscription 등)
+  TRANSIENT: "transient",            // broker busy 등 일시 상태 — actual auth state 불명 (lib/codex.mjs BROKER_BUSY_RPC_CODE 분기와 정합)
   UNKNOWN: "unknown",                // parse 실패 또는 schema 미일치
 });
 
@@ -77,6 +78,15 @@ export function parseSetupJson(input) {
     };
   }
 
+  // lib/codex.mjs BROKER_BUSY_RPC_CODE 분기와 정합: broker busy 시 actual auth state 불명.
+  // auth.transient: true 또는 auth.loggedIn === null 일 때 TRANSIENT 로 분류 — NOT_LOGGED_IN 으로 잘못 degrade 회피.
+  if (auth.transient === true || auth.loggedIn === null) {
+    return {
+      status: HEALTH_STATUS.TRANSIENT,
+      details: { reason: "broker busy or actual auth state unknown", hint: "wait broker init (5-30s) and retry" },
+    };
+  }
+
   if (auth.loggedIn !== true) {
     return {
       status: HEALTH_STATUS.NOT_LOGGED_IN,
@@ -111,6 +121,10 @@ export function decideDegrade(status) {
   switch (status) {
     case HEALTH_STATUS.READY:
       return DEGRADE_ACTION.PROCEED;
+    case HEALTH_STATUS.TRANSIENT:
+      // broker busy 는 일시적 — 정상 진행 (다음 호출에서 broker init 완료 가능).
+      // routine 자체는 PROCEED — broker 가 init 완료되면 Codex pair 호출 정상 작동.
+      return DEGRADE_ACTION.PROCEED;
     case HEALTH_STATUS.NOT_LOGGED_IN:
     case HEALTH_STATUS.NOT_VERIFIED:
     case HEALTH_STATUS.UNKNOWN:
@@ -139,6 +153,8 @@ export function buildFailureMessage(health) {
       return `${prefix}: 인증 만료 — \`${hint || "codex logout && codex login"}\` 후 다음 routine 부터 정상 복구`;
     case HEALTH_STATUS.NOT_VERIFIED:
       return `${prefix}: verified=false — ${hint || "Codex Desktop 에서 plan 확인"}`;
+    case HEALTH_STATUS.TRANSIENT:
+      return `${prefix}: broker busy (transient) — ${hint || "wait 5-30s and retry setup --json"} (actual auth state 불명 — NOT_LOGGED_IN 과 구분)`;
     case HEALTH_STATUS.UNKNOWN:
       return `${prefix}: health 응답 parse 실패 — ${hint || "수동 점검 필요"}`;
     default:
@@ -158,6 +174,7 @@ export function computeExpiryStreak(runs) {
   let streak = 0;
   for (const r of runs) {
     const s = r?.auth_health?.status;
+    // TRANSIENT 는 streak 에 포함 안 함 — broker busy 는 actual auth expired 와 구분.
     if (s === HEALTH_STATUS.NOT_LOGGED_IN || s === HEALTH_STATUS.NOT_VERIFIED) {
       streak += 1;
     } else {
