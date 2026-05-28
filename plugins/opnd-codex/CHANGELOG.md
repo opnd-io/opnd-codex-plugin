@@ -17,6 +17,7 @@
 - chore: verified-no-change — upstream issue #337 (Windows spawn shell:true) 이미 `process.mjs` L62-82 `buildCommandInvocation()` 의 `cmd.exe /d /s /c call` 래핑 + `shell: false` + `quoteWindowsCmdArg()` 이스케이프로 안전 해결됨 (v2.0+ sprint). upstream gh issue 답글 후보
 - docs(exploration): suminerProxy/codex-plugin-cc (ahead=22) evaluation report — 6 HIGH cherry-pick 후보 (NDJSON event stream / notification hook / token usage / raw payload strip / task-stream push) + 6 MEDIUM + 1 LOW + 9 N/A 분류. 다음 sprint plan 명시
 - docs(exploration): upstream openai/codex-plugin-cc open issue 30+건 분류 — 본 fork 가 이미 cover 한 8건 (#281, #282, #285, #287, #288, #298, #337, #342) upstream gh issue 답글 후보 + 부분 cover 3건 + HIGH port 가치 8건 + MEDIUM/LOW 16건. 모든 file path 가 `plugins/opnd-codex/scripts/lib/*.mjs` 정확 명시 (R1 LOW#3)
+- docs(exploration): suminerProxy cherry-pick plan — 본 fork 에 NDJSON event stream foundation 부재 발견 (grep `appendJobEvent` 0 matches), 6 HIGH commits 의 dependency graph + Phase 1 foundation port (3-4d) + Phase 2 application port (1-3d) + Apache 2.0 attribution 절차 명시. 다음 sprint 위임
 
 - **daily-evolve-pipeline Phase 0 PoC** (`plan-daily-evolve-pipeline.md`) — 매일 morning 9 KST 자동 routine 의 첫 phase. Codex pair R1-R7 0-수렴 (총 50 finding 적용, 합의 25건) 후 implement 진입. Phase 0 scope:
   - `scripts/daily-evolve/lib/` — 7 pure modules (zero npm, node 내장만):
