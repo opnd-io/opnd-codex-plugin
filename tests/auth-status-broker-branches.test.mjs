@@ -126,3 +126,16 @@ test("annotateUsageLimitError — string error 도 안전 처리", () => {
   assert.match(result, /Check current limits/);
   assert.match(result, /rate limit exceeded/);
 });
+
+// Codex R1 LOW#3 — isUsageLimitError 의 broad pattern false-positive 경계 (의도된 broad 확인)
+test("isUsageLimitError — broad pattern 경계 (advisory only, actual harm 작음)", () => {
+  // 의도된 broad match (advisory):
+  assert.equal(isUsageLimitError("internal rate limiter overflow"), true, "rate limit broad 매치 의도");
+  assert.equal(isUsageLimitError("user quota exceeded today"), true, "quota exceeded 매치 의도");
+  // 의도된 non-match:
+  assert.equal(isUsageLimitError("connection refused"), false);
+  assert.equal(isUsageLimitError("timeout"), false);
+  assert.equal(isUsageLimitError(""), false);
+  assert.equal(isUsageLimitError(undefined), false);
+  // broad pattern 의 actual harm 작음 — 추가 guidance 만 attach, 기존 error path 영향 없음
+});

@@ -611,7 +611,9 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   }
 
   return {
-    ready: nodeStatus.available && codexStatus.available && authStatus.loggedIn,
+    // LOW#1 fix (Codex R1): authStatus.loggedIn === null (transient) 시 `null && ...` = null
+    // 반환되어 boolean-strict schema consumer 에 risk. Boolean() 으로 강제 (transient → false).
+    ready: Boolean(nodeStatus.available && codexStatus.available && authStatus.loggedIn),
     pluginHomeAdvisory,
     node: nodeStatus,
     npm: npmStatus,

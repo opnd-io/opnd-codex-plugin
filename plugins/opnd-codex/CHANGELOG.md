@@ -13,7 +13,7 @@
 - fix(telemetry-ux): `annotateStaleAuthCacheError` 의 안내문 강화 — plugin home sync (cp + broker kill) + WAL cleanup + cross-platform recovery 6 단계 [Phase A1]
 - feat(telemetry-ux): `isUsageLimitError` + `annotateUsageLimitError` helper 신규 — telemetry cluster #4 (5건) usage limit error 의 rate-limit + fallback model + --fast 안내 [Phase A1]
 - feat(setup): `buildSetupReport` 에 `pluginHomeAdvisory` 필드 추가 — 본 세션 (2026-05-28) 발견한 plugin home staleness (root auth 대비 mtime 비교) + SQLite WAL size 합 (>10MB) detect 시 nextSteps 에 자동 anyway [Phase A4 / Phase 5.5+ 자동화 backlog 의 detect 부분]
-- chore: verified-no-change — upstream issue #288 (sendBrokerShutdown timeout) 이미 `broker-lifecycle.mjs` L46-48 `BROKER_SHUTDOWN_TIMEOUT_MS = 5000` + setTimeout 처리로 해결됨 (v2.0+ sprint). upstream gh issue 답글 후보
+- chore: verified-no-change — upstream issue #288 (sendBrokerShutdown timeout) 이미 `broker-lifecycle.mjs` L46-48 (`BROKER_SHUTDOWN_TIMEOUT_MS = 5000`) + L65 부근 `setTimeout` 처리로 해결됨 (v2.0+ sprint). 함수가 절대 reject 안 함 — call site `await` 안전. upstream gh issue 답글 후보
 - chore: verified-no-change — upstream issue #337 (Windows spawn shell:true) 이미 `process.mjs` L62-82 `buildCommandInvocation()` 의 `cmd.exe /d /s /c call` 래핑 + `shell: false` + `quoteWindowsCmdArg()` 이스케이프로 안전 해결됨 (v2.0+ sprint). upstream gh issue 답글 후보
 
 - **daily-evolve-pipeline Phase 0 PoC** (`plan-daily-evolve-pipeline.md`) — 매일 morning 9 KST 자동 routine 의 첫 phase. Codex pair R1-R7 0-수렴 (총 50 finding 적용, 합의 25건) 후 implement 진입. Phase 0 scope:
