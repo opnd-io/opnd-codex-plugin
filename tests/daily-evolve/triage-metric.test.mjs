@@ -117,13 +117,21 @@ test("formatMetricHeader — markdown table 출력", () => {
   assert.doesNotMatch(md, /exceeds_budget/);
 });
 
-test("formatMetricHeader — exceeds_budget 시 ⚠ 행 추가", () => {
+test("formatMetricHeader — exceeds_reading_budget 시 ⚠ 행 추가 (Phase 0.5 fix)", () => {
   const metric = buildMetricHeader({
     records: [],
     markdown: Array(10000).fill("word").join(" "),
   });
   const md = formatMetricHeader(metric);
-  assert.match(md, /⚠ exceeds_budget \| true/);
+  assert.match(md, /⚠ exceeds_reading_budget \| true/);
+});
+
+test("formatMetricHeader — exceeds_actions_budget (manual_actions > 60) 시 ⚠ 추가 (Phase 0.5 fix)", () => {
+  const manyRecords = Array(70).fill({ triage: "needs_user" });
+  const metric = buildMetricHeader({ records: manyRecords, markdown: "short" });
+  const md = formatMetricHeader(metric);
+  assert.match(md, /⚠ exceeds_actions_budget \| true/);
+  assert.match(md, /분당 2 결정 모델 초과/);
 });
 
 test("DECISION_KEYS — 3 enum 일치", () => {

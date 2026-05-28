@@ -2821,6 +2821,10 @@ async function handleDailyEvolve(argv) {
   let failureReason = null;
   let actionableCount = 0;
   let recordCount = 0;
+  // Phase 0.5 fix — finalize block 에서 참조하므로 try 밖으로 hoist (이전 scope 오류 fix).
+  let forkResult = null;
+  let triageResult = null;
+  let actionResult = null;
   try {
     const raw = aggregate({ date: dateStr });
     const analyzed = analyze(raw, { skipGhApi });
@@ -2830,14 +2834,12 @@ async function handleDailyEvolve(argv) {
     ).length;
     // Phase 2+ — Active Fork Research (fork-research.mjs). IMPORT-CANDIDATE record 들을
     // analyzed.records 에 append. L7 cost 는 triage cost cap 과 별도 카운트 (PoC).
-    let forkResult = null;
     let withForkAnalyzed = analyzed;
     if (phase >= 2) {
       forkResult = forkResearch();
       withForkAnalyzed = { ...analyzed, records: [...analyzed.records, ...forkResult.records] };
     }
     // Phase 1+ — Codex L3 triage 통합. analyzed.records 에 triage 필드 + triage_summary 부여.
-    let triageResult = null;
     let triagedAnalyzed = withForkAnalyzed;
     if (phase >= 1) {
       triageResult = triage(withForkAnalyzed);
@@ -2845,7 +2847,6 @@ async function handleDailyEvolve(argv) {
     }
     // Phase 4+ — Action Executor (action-executor.mjs). triage 결과 records 의
     // autonomous_safe 항목을 L5 협의 → PR candidate / needs_user / skip 분리.
-    let actionResult = null;
     if (phase >= 4) {
       actionResult = actionExecute({ records: triagedAnalyzed.records });
     }
@@ -2875,11 +2876,24 @@ async function handleDailyEvolve(argv) {
 
   // 3. finalize ledger entry (lock + atomic re-write + idx<0 fallback = re-append)
   const endedAt = new Date().toISOString();
+  // Phase 0.5 fix — ledger 의 decision_count propagation (이전 {0,0,0} hard-code 였음).
+  // triage 결과의 records 에서 triage 필드 카운트.
+  let decisionCount = { autonomous_safe: 0, needs_user: 0, needs_claude_judgment: 0 };
+  if (triageResult?.records) {
+    for (const r of triageResult.records) {
+      if (r?.triage && r.triage in decisionCount) decisionCount[r.triage] += 1;
+    }
+  }
   const finalized = finalizeEntry(inflight, {
     status,
     ended_at: endedAt,
     phase_reached: phase,
     actionable_count: actionableCount,
+    decision_count: decisionCount,
+    cost_units_consumed:
+      (triageResult?.triage_summary?.cost_units ?? 0) +
+      (forkResult?.research_summary?.l7_cost_units ?? 0) +
+      (actionResult?.action_summary?.cost_units ?? 0),
     failure_reason: failureReason,
   });
   {

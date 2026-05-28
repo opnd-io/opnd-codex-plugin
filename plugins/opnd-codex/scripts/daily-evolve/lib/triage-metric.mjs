@@ -31,6 +31,10 @@ export const DECISION_KEYS = Object.freeze([
 /** 사용자 morning triage budget — defining constraint 의 30분. */
 export const TRIAGE_BUDGET_MINUTES = 30;
 
+/** Manual actions decision budget — 30분 안 가능한 결정 수 cap. Phase 0.5 fix.
+ *  분당 2 결정 가정 (1.5x WORDS_PER_MINUTE 단순 모델보다 보수적). */
+export const MANUAL_ACTIONS_BUDGET = 60;
+
 /**
  * Decision count 집계. 각 record 의 `triage` 필드를 본다 (Codex L3 결과 후).
  * triage 부재 record 는 모두 autonomous_safe 도 needs_user 도 아닌 영역 → 계산 제외.
@@ -89,12 +93,19 @@ export function buildMetricHeader({ records, markdown } = {}) {
   const decision_count = countDecisions(records);
   const estimated_reading_minutes = estimateReadingMinutes(markdown);
   const manual_actions_required = countManualActions(records);
+  // Phase 0.5 fix — exceeds_budget 가 reading_minutes 만 보던 mismatch 해결.
+  // manual_actions_required 가 MANUAL_ACTIONS_BUDGET 초과해도 alert.
+  const exceedsReading = estimated_reading_minutes > TRIAGE_BUDGET_MINUTES;
+  const exceedsActions = manual_actions_required > MANUAL_ACTIONS_BUDGET;
   return {
     decision_count,
     estimated_reading_minutes,
     manual_actions_required,
     triage_budget_minutes: TRIAGE_BUDGET_MINUTES,
-    exceeds_budget: estimated_reading_minutes > TRIAGE_BUDGET_MINUTES,
+    manual_actions_budget: MANUAL_ACTIONS_BUDGET,
+    exceeds_budget: exceedsReading || exceedsActions,
+    exceeds_reading_budget: exceedsReading,
+    exceeds_actions_budget: exceedsActions,
   };
 }
 
@@ -116,8 +127,11 @@ export function formatMetricHeader(metric) {
     `| manual_actions_required | ${metric.manual_actions_required ?? 0} |`,
     `| estimated_reading_minutes | ${metric.estimated_reading_minutes ?? 0} / ${metric.triage_budget_minutes ?? TRIAGE_BUDGET_MINUTES} |`,
   ];
-  if (metric.exceeds_budget) {
-    lines.push(`| ⚠ exceeds_budget | true — defining constraint (≤${metric.triage_budget_minutes}m) 초과 |`);
+  if (metric.exceeds_reading_budget) {
+    lines.push(`| ⚠ exceeds_reading_budget | true — reading ${metric.estimated_reading_minutes}m > ${metric.triage_budget_minutes}m |`);
+  }
+  if (metric.exceeds_actions_budget) {
+    lines.push(`| ⚠ exceeds_actions_budget | true — manual ${metric.manual_actions_required} > ${metric.manual_actions_budget ?? MANUAL_ACTIONS_BUDGET} (분당 2 결정 모델 초과) |`);
   }
   return lines.join("\n");
 }

@@ -93,46 +93,71 @@ export function fetchUpstreamIssues() {
 }
 
 /**
- * Phase 3 sub-source: memory diff — `~/.claude/projects/.../memory/feedback_*.md` scan.
+ * Phase 3 sub-source: memory diff — `~/.claude/projects/{본 project}/memory/feedback_*.md` scan.
  * MEMORY-DRIFT signal_type 후보 추출.
+ *
+ * Phase 0.5 fix — 본 plugin 의 project dir 만 scan (이전엔 ~/.claude/projects/* 전체 scan
+ * 으로 다른 프로젝트 noise 60+건 surface). Claude Code 의 project hash 패턴:
+ *   ~/.claude/projects/<sanitized-cwd-path>/memory/feedback_*.md
+ *
+ * sanitized = cwd 의 `\` `:` `/` 등을 `-` 로 치환. 본 cwd 의 hash dir 우선,
+ * 매칭 안 되면 모든 project 의 feedback 중 본 plugin 키워드 (codex-plugin / daily-evolve /
+ * opnd-codex) 포함 것만 surface (fallback).
  *
  * Best-effort: 디렉토리 부재 시 빈 배열. ENOENT 만 swallow.
  */
-export function readMemoryFeedback() {
+export function readMemoryFeedback(repoRoot = process.cwd()) {
   const memoryRoot = path.join(os.homedir(), ".claude", "projects");
   const out = [];
   if (!fs.existsSync(memoryRoot)) return out;
+
+  // 본 cwd → Claude Code project hash 추정 (Windows: `D:\01.Work\...` → `D--01-Work-...`,
+  // POSIX: `/Users/x/...` → `-Users-x-...`)
+  const cwdHash = repoRoot.replace(/[\\/:]/g, "-").replace(/^-/, "");
+  const PLUGIN_KEYWORDS = /\b(codex-plugin|daily-evolve|opnd-codex|opnd-io)\b/i;
+
+  let projects;
   try {
-    const projects = fs.readdirSync(memoryRoot);
-    for (const proj of projects) {
-      const memDir = path.join(memoryRoot, proj, "memory");
-      if (!fs.existsSync(memDir)) continue;
-      let entries;
+    projects = fs.readdirSync(memoryRoot);
+  } catch (err) {
+    if (err.code === "ENOENT") return out;
+    throw err;
+  }
+
+  // 1순위: 본 cwd 정확 매칭 dir
+  const ownProject = projects.find((p) => p === cwdHash || cwdHash.endsWith(p) || p.endsWith(cwdHash));
+  const scanProjects = ownProject ? [ownProject] : projects;
+  const fallbackMode = !ownProject;
+
+  for (const proj of scanProjects) {
+    const memDir = path.join(memoryRoot, proj, "memory");
+    if (!fs.existsSync(memDir)) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(memDir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!/^feedback[_-].*\.md$/i.test(entry)) continue;
+      const full = path.join(memDir, entry);
       try {
-        entries = fs.readdirSync(memDir);
+        const stat = fs.statSync(full);
+        const text = fs.readFileSync(full, "utf8");
+        // fallback mode 면 plugin keyword 포함된 feedback 만 surface
+        if (fallbackMode && !PLUGIN_KEYWORDS.test(text) && !PLUGIN_KEYWORDS.test(entry)) continue;
+        out.push({
+          project: proj,
+          file: entry,
+          modified_at: stat.mtime.toISOString(),
+          size_bytes: stat.size,
+          preview: text.slice(0, 500),
+          scope: fallbackMode ? "keyword-match" : "own-project",
+        });
       } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (!/^feedback[_-].*\.md$/i.test(entry)) continue;
-        const full = path.join(memDir, entry);
-        try {
-          const stat = fs.statSync(full);
-          const text = fs.readFileSync(full, "utf8");
-          out.push({
-            project: proj,
-            file: entry,
-            modified_at: stat.mtime.toISOString(),
-            size_bytes: stat.size,
-            preview: text.slice(0, 500),
-          });
-        } catch {
-          /* skip unreadable entry */
-        }
+        /* skip unreadable entry */
       }
     }
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
   }
   return out;
 }
