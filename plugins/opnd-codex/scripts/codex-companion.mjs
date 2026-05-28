@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { parseArgs, parseReviewArgv, splitRawArgumentString } from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -1534,7 +1534,9 @@ function enqueueBackgroundTask(cwd, job, request) {
 }
 
 async function handleReviewCommand(argv, config) {
-  const { options, positionals } = parseCommandInput(argv, {
+  // #333 — use parseReviewArgv so focus-text tokens that look like flags
+  //         (e.g. "--base main" inside a sentence) are not consumed as options.
+  const { options, focusTokens } = parseReviewArgv(argv, {
     valueOptions: ["base", "scope", "model", "cwd", "profile", "max-findings", "branch"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
@@ -1544,7 +1546,7 @@ async function handleReviewCommand(argv, config) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const focusText = positionals.join(" ").trim();
+  const focusText = focusTokens.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
     scope: options.scope,
