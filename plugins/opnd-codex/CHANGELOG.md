@@ -6,6 +6,15 @@
 - fix: skip self-reference paths (docs/daily-evolve/, docs/upstream-tracking/, state/, .corrupt-*.bak) in unreleased-gap detection in `source-aggregator.mjs` [Phase 3.5]
 - fix: improve "No previous Codex task thread" error message with actionable next steps (--resume-id / omit --resume-last)
 - fix: improve "Provide a prompt" usage error messages with --prompt-file / --prompt-stdin / --resume-last hint
+- fix(auth-health): `getCodexAuthStatusFromClient` catch 에 BROKER_BUSY_RPC_CODE 분기 추가 — broker busy 시 `loggedIn: null + transient: true` 반환 (false-negative 회피)
+- fix(auth-health): timeout / ECONNRESET / EPIPE error 도 transient 분류 — broker stuck case 도 actual logged-out 시그널로 잘못 분류 안 함 (cross-platform recovery hint 포함: Windows PowerShell + macOS/Linux pkill + plugin home SQLite WAL cleanup)
+- feat(auth-health): `daily-evolve/lib/auth-health-check.mjs` 에 `HEALTH_STATUS.TRANSIENT` enum 추가 — `parseSetupJson` / `decideDegrade(TRANSIENT→PROCEED)` / `buildFailureMessage` / `computeExpiryStreak` 분기
+- fix(telemetry-ux): `isStaleAuthCacheError` 에 "authentication expired" pattern 추가 (telemetry cluster #2 — 12건 매치) [Phase A1]
+- fix(telemetry-ux): `annotateStaleAuthCacheError` 의 안내문 강화 — plugin home sync (cp + broker kill) + WAL cleanup + cross-platform recovery 6 단계 [Phase A1]
+- feat(telemetry-ux): `isUsageLimitError` + `annotateUsageLimitError` helper 신규 — telemetry cluster #4 (5건) usage limit error 의 rate-limit + fallback model + --fast 안내 [Phase A1]
+- feat(setup): `buildSetupReport` 에 `pluginHomeAdvisory` 필드 추가 — 본 세션 (2026-05-28) 발견한 plugin home staleness (root auth 대비 mtime 비교) + SQLite WAL size 합 (>10MB) detect 시 nextSteps 에 자동 anyway [Phase A4 / Phase 5.5+ 자동화 backlog 의 detect 부분]
+- chore: verified-no-change — upstream issue #288 (sendBrokerShutdown timeout) 이미 `broker-lifecycle.mjs` L46-48 (`BROKER_SHUTDOWN_TIMEOUT_MS = 5000`) + L65 부근 `setTimeout` 처리로 해결됨 (v2.0+ sprint). 함수가 절대 reject 안 함 — call site `await` 안전. upstream gh issue 답글 후보
+- chore: verified-no-change — upstream issue #337 (Windows spawn shell:true) 이미 `process.mjs` L62-82 `buildCommandInvocation()` 의 `cmd.exe /d /s /c call` 래핑 + `shell: false` + `quoteWindowsCmdArg()` 이스케이프로 안전 해결됨 (v2.0+ sprint). upstream gh issue 답글 후보
 
 - **daily-evolve-pipeline Phase 0 PoC** (`plan-daily-evolve-pipeline.md`) — 매일 morning 9 KST 자동 routine 의 첫 phase. Codex pair R1-R7 0-수렴 (총 50 finding 적용, 합의 25건) 후 implement 진입. Phase 0 scope:
   - `scripts/daily-evolve/lib/` — 7 pure modules (zero npm, node 내장만):

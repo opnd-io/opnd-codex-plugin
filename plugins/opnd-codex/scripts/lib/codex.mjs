@@ -1331,7 +1331,9 @@ function isStaleAuthCacheError(error) {
     return false;
   }
   const text = typeof error === "string" ? error : error.message ?? "";
-  return /access token could not be refreshed|Please sign in again/i.test(String(text));
+  // A1 (Phase A): telemetry cluster #2 "authentication expired" 12건 매치 추가 — daily-evolve
+  // digest 의 가장 빈도 높은 auth failure 패턴.
+  return /access token could not be refreshed|Please sign in again|authentication expired/i.test(String(text));
 }
 
 function annotateStaleAuthCacheError(error) {
@@ -1339,11 +1341,45 @@ function annotateStaleAuthCacheError(error) {
     return error;
   }
   const original = typeof error === "string" ? error : error.message ?? "";
+  // A1 fix: plugin home 격리 (v2.0+) + broker stuck case 추가 안내. 본 세션 (2026-05-28) PR #4
+  // 에서 발견 + 복구 검증된 패턴.
   const guidance =
-    "\n\nThe Codex app-server has cached an invalidated session. Run /opnd-codex:cancel to drain " +
-    "any in-flight jobs, then restart Claude Code (or run `pkill -f \"codex app-server\"`) so " +
-    "the next invocation re-reads ~/.codex/auth.json. If the problem persists after a fresh " +
-    "login, file an upstream codex-cli bug.";
+    "\n\nThe Codex app-server has cached an invalidated session. Recovery steps:\n" +
+    "  1. /opnd-codex:cancel — drain any in-flight jobs\n" +
+    "  2. Sync plugin home auth (v2.0+ isolation): `cp ~/.codex/auth.json ~/.codex/claude-code/auth.json`\n" +
+    "  3. Kill stale brokers (Windows PowerShell: `Get-Process | Where-Object { $_.ProcessName -ceq 'codex' } | Stop-Process -Force`; macOS/Linux: `pkill -f 'codex.*app-server'`)\n" +
+    "  4. If broker stuck (large SQLite WAL): `rm ~/.codex/claude-code/*.sqlite-wal ~/.codex/claude-code/*.sqlite-shm` (audit log only — safe)\n" +
+    "  5. Restart Claude Code so the next invocation re-reads auth.\n" +
+    "  6. If problem persists after fresh `codex logout && codex login`, file an upstream codex-cli bug (see plan-issue-setup-advisory-false-positive.md).";
+  if (typeof error === "string") {
+    return original + guidance;
+  }
+  return Object.assign(new Error(original + guidance), { cause: error, code: error.code ?? null });
+}
+
+// A1 (Phase A): telemetry cluster #4 "You've hit your usage limit" 5건 — usage limit error 의
+// rate-limit 안내 + retry guidance + fallback model 권고. plugin advisory 가 단순 throw 가 아니라
+// actionable nextSteps 제공.
+function isUsageLimitError(error) {
+  if (!error) {
+    return false;
+  }
+  const text = typeof error === "string" ? error : error.message ?? "";
+  return /usage limit|rate limit|too many requests|quota exceeded/i.test(String(text));
+}
+
+function annotateUsageLimitError(error) {
+  if (!error || !isUsageLimitError(error)) {
+    return error;
+  }
+  const original = typeof error === "string" ? error : error.message ?? "";
+  const guidance =
+    "\n\nCodex usage limit reached. Recovery options:\n" +
+    "  1. Check current limits: https://chatgpt.com/c (ChatGPT subscription) or https://platform.openai.com/usage (API key)\n" +
+    "  2. Wait for limit reset (typically hourly window) and retry\n" +
+    "  3. Fallback to a smaller model: `--model gpt-5.4` (cheaper, lower per-call quota)\n" +
+    "  4. Switch auth method if available (ChatGPT subscription ↔ API key) — different quota pools\n" +
+    "  5. For long-running review, use `--fast` flag (lower per-call cost)";
   if (typeof error === "string") {
     return original + guidance;
   }
@@ -1721,5 +1757,8 @@ export const __testHooks = {
   isModelRequiresNewerCodexError,
   // Codex R1 M2 (본 세션 발견 false-negative pattern) — broker busy / timeout 분기 직접 test 가능하도록 export
   getCodexAuthStatusFromClient,
-  BROKER_BUSY_RPC_CODE
+  BROKER_BUSY_RPC_CODE,
+  // Phase A1 — telemetry cluster #2 (auth expired) + #4 (usage limit) helper 직접 test 가능하도록 export
+  isUsageLimitError,
+  annotateUsageLimitError
 };
