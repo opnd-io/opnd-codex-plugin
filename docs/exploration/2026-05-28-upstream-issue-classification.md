@@ -78,4 +78,4 @@
 | MEDIUM | suminerProxy raw payload strip + token usage cherry-pick | 3-4일 |
 | LOW | upstream-pr 92건 분류 sprint | 1주+ |
 
-본 fork 가 이미 cover 한 5건 upstream answer 가 가장 quick win.
+본 fork 가 이미 cover 한 8건 upstream answer 가 가장 quick win.
