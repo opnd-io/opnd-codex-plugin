@@ -20,6 +20,9 @@ they already have.
 - `/opnd-codex:adversarial-review` for a steerable challenge review
 - `/opnd-codex:pair` for foreground read-only pair-programming feedback with task-key reuse and structured result digests
 - `/opnd-codex:agent`, `/opnd-codex:continue`, `/opnd-codex:approve`, `/opnd-codex:deny`, `/opnd-codex:status`, `/opnd-codex:result`, and `/opnd-codex:cancel` to delegate and control long-running Codex work
+- `/opnd-codex:rescue` for delegating a focused investigation or fix to the Codex rescue subagent (background-capable)
+- `/opnd-codex:daily-evolve` for the self-evolution pipeline (Phase 0–6: upstream/telemetry aggregation → Codex L3 triage → active fork research → daily digest → action executor → scheduled-tasks integration → self-evolve meta loop)
+- `/opnd-codex:setup` for the readiness probe (Node / npm / codex CLI / auth / runtime mode) and optional stop-review-gate toggle
 
 ## Requirements
 
