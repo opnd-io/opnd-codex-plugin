@@ -2,7 +2,7 @@
 
 > Daily-evolve digest (2026-05-28) 의 NOT-FIXED upstream-issue 29건 + PARTIAL upstream-issue 1건 분류. 본 fork (opnd-io) 의 main 기준 cover 상태 + upstream gh issue 답글 후보 + 다음 sprint port 후보 식별.
 
-## 본 fork 가 이미 cover 한 upstream issue (5건) — gh issue 답글 후보
+## 본 fork 가 이미 cover 한 upstream issue (총 8건 = 본 섹션 5건 + § "추가 발견" 3건) — gh issue 답글 후보
 
 | upstream # | 우리 fix 위치 | 답글 내용 |
 |---|---|---|
@@ -12,7 +12,7 @@
 | **#337** `app-server.mjs:188` spawn("codex") fails on Windows without shell:true | v2.0+ — `plugins/opnd-codex/scripts/lib/process.mjs` L62-82 `buildCommandInvocation()` 이 `cmd.exe /d /s /c call` 래핑 + `shell: false` + `quoteWindowsCmdArg()` | "command injection 안전한 cmd.exe 래핑으로 해결. shell:true 위험 회피" |
 | **#342** [BUG] `/codex:setup` reports `loggedIn:false` when shared broker is busy; getCodexAuthStatus missing direct-fallback | PR #4 (commit 3d72d6e) — broker busy 분기 + `loggedIn: null + transient: true` | "본 fork 의 PR #4 가 broker busy 시 별 status 반환 — false-negative 회피. caller 가 transient vs actual 구분 가능" |
 
-→ 5건 upstream answer 가치. 사용자가 각 upstream issue 에 comment 등록 시 reference: PR #4 commit `3d72d6e` + commits/PRs 명시.
+→ 본 섹션 5건 upstream answer 가치 (R1 review 후 추가 3건 § "추가 발견" 섹션 참조 — 총 8건). 사용자가 각 upstream issue 에 comment 등록 시 reference: PR #4 commit `3d72d6e` + commits/PRs 명시.
 
 ## 본 fork 가 부분 cover (improve 여지) — 3건
 
