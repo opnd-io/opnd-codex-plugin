@@ -72,7 +72,7 @@
 
 | 우선 | 작업 | 추정 scope |
 |---|---|---|
-| HIGH | 본 fork cover 5건 upstream gh issue 답글 등록 | 0.5d |
+| HIGH | 본 fork cover 8건 upstream gh issue 답글 등록 | 0.5d |
 | HIGH | upstream HIGH 8건 port 평가 + 가장 trivial 2건 fix (예: #333 argv parsing, #331 MSYS path) | 1주 |
 | MEDIUM | suminerProxy NDJSON event stream 묶음 cherry-pick | 1주+ |
 | MEDIUM | suminerProxy raw payload strip + token usage cherry-pick | 3-4일 |

@@ -6,7 +6,7 @@
 
 - `gh api repos/openai/codex-plugin-cc/compare/main...suminerProxy:codex-plugin-cc:main` 으로 22 commits 비교
 - 본 fork (opnd-io) 의 main commits 와 overlap / cherry-pick 가치 분석
-- HIGH 가치 (~6건) / MEDIUM 가치 (~4건) / LOW (~1건) / N/A (~11건 release + merge) 분류
+- HIGH 가치 (6건) / MEDIUM 가치 (6건) / LOW (1건) / N/A (9건 release 3 + merge 6) 분류
 
 ## suminerProxy 22 commits 분석표
 
