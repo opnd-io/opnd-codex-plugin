@@ -2772,12 +2772,44 @@ async function handleDailyEvolve(argv) {
   const cryptoMod = await import("node:crypto");
   const fsMod = await import("node:fs");
   const pathMod = await import("node:path");
+  const childProcMod = await import("node:child_process");
   const { aggregate } = await import("./daily-evolve/source-aggregator.mjs");
   const { analyze } = await import("./daily-evolve/diff-analyzer.mjs");
   const { triage } = await import("./daily-evolve/codex-triage.mjs");
   const { research: forkResearch } = await import("./daily-evolve/fork-research.mjs");
   const { execute: actionExecute } = await import("./daily-evolve/action-executor.mjs");
   const { write: writeDigest } = await import("./daily-evolve/digest-writer.mjs");
+  const {
+    parseSetupJson,
+    decideDegrade,
+    buildFailureMessage,
+    DEGRADE_ACTION,
+  } = await import("./daily-evolve/lib/auth-health-check.mjs");
+
+  // Phase 1.5a — Codex auth health check pre-flight. routine 자체는 heuristic
+  // fallback 으로 degrade — 실패 X. 사용자가 digest failures 섹션 에서 인지.
+  let authHealth = { status: "unknown", details: { reason: "not_probed" } };
+  try {
+    const setupResult = childProcMod.spawnSync(
+      process.execPath,
+      [pathMod.join(import.meta.url.replace(/^file:\/\/\//, "").replace(/\\/g, "/").replace(/codex-companion\.mjs$/, "codex-companion.mjs")), "setup", "--json"],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    if (setupResult.status === 0 && typeof setupResult.stdout === "string") {
+      authHealth = parseSetupJson(setupResult.stdout);
+    } else {
+      authHealth = parseSetupJson(null);
+    }
+  } catch (err) {
+    authHealth = { status: "unknown", details: { reason: "health_check_exception", error: String(err?.message ?? err) } };
+  }
+  const degradeAction = decideDegrade(authHealth.status);
+  const healthFailureMsg = buildFailureMessage(authHealth);
+  if (degradeAction !== DEGRADE_ACTION.PROCEED) {
+    process.stderr.write(
+      `[daily-evolve] auth health: ${authHealth.status} — degrade=${degradeAction} (${healthFailureMsg})\n`,
+    );
+  }
   const {
     buildEntry,
     finalizeEntry,
@@ -2858,6 +2890,7 @@ async function handleDailyEvolve(argv) {
       forkSummary: forkResult?.research_summary ?? null,
       actionSummary: actionResult?.action_summary ?? null,
       actionCandidates: actionResult?.candidates ?? null,
+      authHealthFailureMessage: healthFailureMsg, // Phase 1.5a
     });
     process.stdout.write(
       `[daily-evolve] ${dateStr} done: ${recordCount} records, actionable=${actionableCount}, digest=${writeResult.outFile}\n`,
@@ -2896,6 +2929,8 @@ async function handleDailyEvolve(argv) {
       (actionResult?.action_summary?.cost_units ?? 0),
     failure_reason: failureReason,
   });
+  // Phase 1.5a — ledger entry 에 auth_health 추가 (Phase 6 expiry streak 분석 input).
+  finalized.auth_health = authHealth;
   {
     const lockToken2 = await _acquireDailyEvolveLock(lockPath, fsMod, cryptoMod);
     try {

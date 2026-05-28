@@ -131,6 +131,7 @@ export function write({
   forkSummary = null,
   actionSummary = null,
   actionCandidates = null,
+  authHealthFailureMessage = null,
 } = {}) {
   const dateStr = date ?? new Date().toISOString().slice(0, 10);
   const outDir = path.join(repoRoot, DIGEST_DIR);
@@ -210,7 +211,9 @@ export function write({
   // === failures 섹션 (R5-L10 분리) ===
   const errors = raw?.errors ?? [];
   const piiHitsTotal = totalPiiHits.email + totalPiiHits.token + totalPiiHits.path;
-  const hasFailures = errors.length > 0 || !citationResult.passed;
+  // Phase 1.5a — auth health 실패 메시지 surface
+  const hasAuthFailure = typeof authHealthFailureMessage === "string" && authHealthFailureMessage.length > 0;
+  const hasFailures = errors.length > 0 || !citationResult.passed || hasAuthFailure;
   if (piiHitsTotal > 0) {
     // PII redact 발생 — failures 가 아니라 별도 notice
   }
@@ -218,6 +221,9 @@ export function write({
   if (!hasFailures) {
     lines.push("_(no failures)_");
   } else {
+    if (hasAuthFailure) {
+      lines.push(`- ⚠ ${authHealthFailureMessage}`);
+    }
     for (const e of errors) {
       lines.push(`- source \`${e.source}\`: ${e.message}`);
     }
