@@ -2788,11 +2788,13 @@ async function handleDailyEvolve(argv) {
 
   // Phase 1.5a — Codex auth health check pre-flight. routine 자체는 heuristic
   // fallback 으로 degrade — 실패 X. 사용자가 digest failures 섹션 에서 인지.
+  // R1 review: argv path 구성에 fileURLToPath() 사용 (UNC / 공백 path portability).
   let authHealth = { status: "unknown", details: { reason: "not_probed" } };
   try {
+    const selfPath = fileURLToPath(import.meta.url);
     const setupResult = childProcMod.spawnSync(
       process.execPath,
-      [pathMod.join(import.meta.url.replace(/^file:\/\/\//, "").replace(/\\/g, "/").replace(/codex-companion\.mjs$/, "codex-companion.mjs")), "setup", "--json"],
+      [selfPath, "setup", "--json"],
       { encoding: "utf8", timeout: 10000 },
     );
     if (setupResult.status === 0 && typeof setupResult.stdout === "string") {

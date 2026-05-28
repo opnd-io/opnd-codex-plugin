@@ -39,19 +39,20 @@ export const EXPIRY_STREAK_ALERT_DAYS = 3;
 /**
  * Parse `setup --json` output → health status. Pure.
  *
- * Codex CLI 의 setup --json 응답 schema 예시:
+ * Codex CLI 의 setup --json 응답 schema (실측, plugins/opnd-codex/scripts/codex-companion.mjs buildSetupReport):
  * {
  *   "ready": true|false,
- *   "codex": {
- *     "available": true|false,
- *     "loggedIn": true|false,
- *     "verified": true|false
- *   },
+ *   "codex": { "available": true|false, "detail": "..." },
+ *   "auth":  { "available": true|false, "loggedIn": true|false, "verified": true|false,
+ *              "detail": "...", "authMethod": "...", "source": "..." },
  *   "errors": [...]
  * }
  *
+ * Returns no `raw` echo — `details.detail` 같은 PII (email / authMethod) 가 ledger 에 영구
+ * 저장되는 것을 차단. 디버깅이 필요하면 호출처에서 setup stdout 을 별도 처리.
+ *
  * @param {object | string | null} input - setup --json 결과 (parsed object 또는 raw JSON string)
- * @returns {{ status: string, details: object, raw?: object }}
+ * @returns {{ status: string, details: object }}
  */
 export function parseSetupJson(input) {
   let parsed = input;
@@ -67,40 +68,37 @@ export function parseSetupJson(input) {
   }
 
   const codex = parsed.codex && typeof parsed.codex === "object" ? parsed.codex : {};
+  const auth = parsed.auth && typeof parsed.auth === "object" ? parsed.auth : {};
 
   if (codex.available !== true) {
     return {
       status: HEALTH_STATUS.CLI_UNAVAILABLE,
-      details: { reason: "codex.available != true", available: codex.available },
-      raw: parsed,
+      details: { reason: "codex.available != true" },
     };
   }
 
-  if (codex.loggedIn !== true) {
+  if (auth.loggedIn !== true) {
     return {
       status: HEALTH_STATUS.NOT_LOGGED_IN,
-      details: { reason: "codex.loggedIn != true", hint: "codex logout && codex login" },
-      raw: parsed,
+      details: { reason: "auth.loggedIn != true", hint: "codex logout && codex login" },
     };
   }
 
-  if (codex.verified !== true) {
+  if (auth.verified !== true) {
     return {
       status: HEALTH_STATUS.NOT_VERIFIED,
-      details: { reason: "codex.verified != true", hint: "ChatGPT subscription 또는 plan 확인" },
-      raw: parsed,
+      details: { reason: "auth.verified != true", hint: "ChatGPT subscription 또는 plan 확인" },
     };
   }
 
   if (parsed.ready !== true) {
     return {
       status: HEALTH_STATUS.UNKNOWN,
-      details: { reason: "ready != true 단 codex.* 정상", hint: "setup advisory false positive 가능" },
-      raw: parsed,
+      details: { reason: "ready != true 단 auth.* 정상", hint: "setup advisory false positive 가능" },
     };
   }
 
-  return { status: HEALTH_STATUS.READY, details: { reason: "ok" }, raw: parsed };
+  return { status: HEALTH_STATUS.READY, details: { reason: "ok" } };
 }
 
 /**
