@@ -59,6 +59,19 @@ test("parseSetupJson — auth.loggedIn true + verified false → NOT_VERIFIED", 
   assert.equal(result.status, HEALTH_STATUS.NOT_VERIFIED);
 });
 
+test("parseSetupJson — issue #2: staleHomeAuth → NOT_VERIFIED with auth.json sync hint (not subscription)", () => {
+  const result = parseSetupJson({
+    ready: false,
+    codex: { available: true },
+    auth: { available: true, loggedIn: true, verified: false, staleHomeAuth: true },
+  });
+  assert.equal(result.status, HEALTH_STATUS.NOT_VERIFIED);
+  // remedy must point at the dual-home sync, NOT "subscription/plan 확인".
+  assert.match(result.details.hint, /cp ~\/\.codex\/auth\.json|CODEX_PLUGIN_USE_DEFAULT_HOME/);
+  assert.doesNotMatch(result.details.hint, /subscription/i);
+  assert.match(result.details.reason, /dual-home|stale/i);
+});
+
 test("parseSetupJson — auth.* 모두 true 단 ready=false → UNKNOWN (advisory)", () => {
   const result = parseSetupJson({
     ready: false,

@@ -45,6 +45,7 @@ export const EXPIRY_STREAK_ALERT_DAYS = 3;
  *   "ready": true|false,
  *   "codex": { "available": true|false, "detail": "..." },
  *   "auth":  { "available": true|false, "loggedIn": true|false, "verified": true|false,
+ *              "staleHomeAuth": true|false, "verificationNote": "...",  // issue #2 fix #1 — verified:false + loggedIn:true 시 dual-home drift 의미
  *              "detail": "...", "authMethod": "...", "source": "..." },
  *   "errors": [...]
  * }
@@ -91,6 +92,19 @@ export function parseSetupJson(input) {
     return {
       status: HEALTH_STATUS.NOT_LOGGED_IN,
       details: { reason: "auth.loggedIn != true", hint: "codex logout && codex login" },
+    };
+  }
+
+  // issue #2 fix #1 — setup 이 plugin-home dual-home drift 로 verified 를 강등한 경우
+  // (loggedIn:true + staleHomeAuth:true). NOT_VERIFIED (→ FALLBACK_HEURISTIC) 는 동일하나
+  // remedy 가 subscription 이 아니라 auth.json sync 이므로 정확한 hint 로 분기.
+  if (auth.staleHomeAuth === true) {
+    return {
+      status: HEALTH_STATUS.NOT_VERIFIED,
+      details: {
+        reason: "plugin-home auth stale vs root (dual-home drift)",
+        hint: "sync `cp ~/.codex/auth.json ~/.codex/claude-code/auth.json` 또는 CODEX_PLUGIN_USE_DEFAULT_HOME=1 설정 후 Claude Code 재시작",
+      },
     };
   }
 
