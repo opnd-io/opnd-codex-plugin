@@ -1336,6 +1336,24 @@ function isStaleAuthCacheError(error) {
   return /access token could not be refreshed|Please sign in again|authentication expired/i.test(String(text));
 }
 
+// issue #2 fix #1 — pure decision for folding the plugin-home staleness advisory
+// into the setup `verified` verdict. The dual-home split (buildPluginCodexEnv adds
+// CODEX_HOME=$HOME/.codex/claude-code/) means `codex login` rotates only the ROOT
+// ~/.codex/auth.json while plugin-spawned rescue sessions read the stale plugin-home
+// copy → `refresh token already used`. inspectPluginHomeFreshness() already detects
+// this (mtime skew → advisory.staleAuth), but it was never wired into `verified`.
+// When the home is PINNED (USE_DEFAULT_HOME=1 or an explicit CODEX_HOME) there is no
+// dual-home, so the same token is used by setup and rescue → never downgrade.
+// Pure (no fs / no side effects) so it unit-tests directly via __testHooks.
+export function computeStaleHomeAuth(advisory, env = process.env) {
+  // env?. guards an explicit null caller (the `= process.env` default only
+  // covers undefined); ?? "" then yields a non-pinned read rather than throwing.
+  const pinned =
+    String(env?.CODEX_PLUGIN_USE_DEFAULT_HOME ?? "").trim() === "1" ||
+    Boolean(String(env?.CODEX_HOME ?? "").trim());
+  return Boolean(advisory?.staleAuth) && !pinned;
+}
+
 function annotateStaleAuthCacheError(error) {
   if (!error || !isStaleAuthCacheError(error)) {
     return error;
@@ -1753,6 +1771,8 @@ export const __testHooks = {
   // retry without a real broker/app-server.
   probeAuthWithStaleRetry,
   isStaleAuthCacheError,
+  // issue #2 fix #1 — pure verdict-downgrade decision (plugin-home stale + not pinned)
+  computeStaleHomeAuth,
   withModelFallback,
   isModelRequiresNewerCodexError,
   // Codex R1 M2 (본 세션 발견 false-negative pattern) — broker busy / timeout 분기 직접 test 가능하도록 export

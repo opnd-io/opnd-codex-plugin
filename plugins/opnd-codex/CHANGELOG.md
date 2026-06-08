@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.1 (2026-06-08)
+
+Bug fix — Codex auth false-positive advisory (issue #2 fix #1):
+
+- **fix(auth): plugin-home `staleAuth` → `verified`/`ready` 배선** (issue #2 fix #1). `inspectPluginHomeFreshness()` 가 이미 계산하던 mtime `staleAuth` advisory 를 `buildSetupReport` 의 verdict 에 반영. dual-home drift (root `~/.codex/auth.json` 만 `codex login` 으로 rotate, plugin `~/.codex/claude-code/auth.json` 은 stale → 다음 rescue 가 `refresh token already used`) 상태에서 `setup --json` 이 더 이상 `verified:true` green 을 띄우지 않음 (false-positive advisory 차단).
+- 신규 순수 helper `computeStaleHomeAuth(advisory, env)` (`lib/codex.mjs`, named export + `__testHooks`) — home pin (`CODEX_PLUGIN_USE_DEFAULT_HOME=1` / explicit `CODEX_HOME`) 시엔 dual-home 자체가 없어 무강등. `auth` report 에 `staleHomeAuth` + `verificationNote` 필드 **추가만** (기존 `loggedIn`/`verified` shape 보존 — fixture parity 유지).
+- daily-evolve `parseSetupJson` 도 `staleHomeAuth` 신호로 `NOT_VERIFIED → FALLBACK_HEURISTIC` 보호 degrade (doomed Codex 호출 사전 차단) + remedy hint 를 subscription 이 아닌 `cp ~/.codex/auth.json ~/.codex/claude-code/auth.json` sync 로 분기.
+- 신규 `tests/plugin-home-verified-wiring.test.mjs` (10) + `auth-health-check.test.mjs` staleHomeAuth case. real-backend e2e 로 pinned/unpinned 양 분기 검증. 4-agent code-review R1(6 finding) → R2(0 수렴).
+- 비범위 (follow-up): fix #2 (broker self-heal copy root→plugin) + real app-server probe round-trip.
+
 ## 2.2.0 (2026-05-28)
 
 Highlights — daily-evolve self-evolution pipeline + plugin auth false-positive/negative discipline + telemetry UX + Windows fixes:

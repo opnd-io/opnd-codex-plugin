@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, parseReviewArgv, splitRawArgumentString } from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
+    computeStaleHomeAuth,
     DEFAULT_CONTINUE_PROMPT,
     findLatestTaskThread,
     getCodexAuthStatus,
@@ -584,6 +585,24 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   // SQLite WAL size 검사. 본 세션 직접 발견 + 복구 검증된 패턴의 사용자 advisory.
   const pluginHomeAdvisory = inspectPluginHomeFreshness();
 
+  // issue #2 fix #1 — fold the plugin-home staleness advisory into the auth
+  // verdict. When the plugin-home auth.json is stale vs root AND the home is not
+  // pinned, the next rescue spawns codex with the stale token and fails with
+  // `refresh token already used`, even though the raw probe still reports
+  // verified:true (it rode a still-valid access token without forcing a
+  // refresh). Downgrade verified + ready so the host harness does not treat the
+  // green light as "safe to start Codex work". Additive fields only — the
+  // existing loggedIn / verified shape is preserved to keep fixture parity.
+  const staleHomeAuth = computeStaleHomeAuth(pluginHomeAdvisory, process.env);
+  const authReport = staleHomeAuth
+    ? {
+        ...authStatus,
+        verified: false,
+        staleHomeAuth: true,
+        verificationNote: `plugin-home auth ${pluginHomeAdvisory.staleAuthDeltaSec || "<1"}s stale vs root — the next rescue will use the stale token (sync auth.json or set CODEX_PLUGIN_USE_DEFAULT_HOME=1)`
+      }
+    : { ...authStatus, staleHomeAuth: false };
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -613,12 +632,12 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   return {
     // LOW#1 fix (Codex R1): authStatus.loggedIn === null (transient) 시 `null && ...` = null
     // 반환되어 boolean-strict schema consumer 에 risk. Boolean() 으로 강제 (transient → false).
-    ready: Boolean(nodeStatus.available && codexStatus.available && authStatus.loggedIn),
+    ready: Boolean(nodeStatus.available && codexStatus.available && authStatus.loggedIn && !staleHomeAuth),
     pluginHomeAdvisory,
     node: nodeStatus,
     npm: npmStatus,
     codex: codexStatus,
-    auth: authStatus,
+    auth: authReport,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
     actionsTaken,
