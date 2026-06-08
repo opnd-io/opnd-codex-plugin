@@ -12,6 +12,8 @@ v2.0+ 부터 plugin sessions 는 `$HOME/.codex/claude-code/` 격리 (Codex Deskt
 2. broker daemon kill — PowerShell: `Get-Process | Where-Object { $_.ProcessName -ceq 'codex' } | Stop-Process -Force` (소문자 `codex.exe` 만, 대문자 `Codex.exe` Desktop 앱은 제외)
 3. `node plugins/opnd-codex/scripts/codex-companion.mjs setup --json` 으로 `ready/loggedIn/verified: true` 확인
 
+**자가검출 (v2.2.1+, issue #2 fix #1)**: `setup --json` 이 plugin-home auth.json 의 staleness(root 대비 mtime skew)를 감지하면 advisory 에 그치지 않고 `auth.verified: false` + `auth.staleHomeAuth: true` + `verificationNote` 로 **verdict 를 자동 강등**한다 (`ready` 도 false). 즉 stale 상태에서 더 이상 `verified: true` green 을 띄우지 않아 host harness 가 doomed rescue 를 시도하지 않는다. home pin(`CODEX_PLUGIN_USE_DEFAULT_HOME=1` / explicit `CODEX_HOME`) 시엔 dual-home 자체가 없어 무강등. 위 수동 복구(`cp auth.json`)는 여전히 유효하며, daily-evolve `parseSetupJson` 도 같은 신호로 `NOT_VERIFIED → FALLBACK_HEURISTIC` degrade + sync hint 를 안내. 구현: `lib/codex.mjs computeStaleHomeAuth` + `codex-companion.mjs buildSetupReport`.
+
 **legacy shared home**: `CODEX_PLUGIN_USE_DEFAULT_HOME=1` 환경변수 설정 시 plugin 이 `~/.codex/` 공유 사용 (단점: sessions 가 Desktop history 와 섞임).
 
 **관련 자산**: `plan-issue-setup-advisory-false-positive.md`, `plan-issue-2-additional-repro.md` — single-use refresh token rotation hypothesis 분석.
