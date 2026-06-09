@@ -981,9 +981,16 @@ async function executeReviewRun(request) {
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureCodexAvailable(request.cwd);
-  const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
+  // #12 (Windows: codex-cli "windows sandbox: spawn setup refresh") — do NOT
+  // pin read-only when the caller omitted a sandbox. handleTask / handleContinue
+  // already resolve --sandbox / --write / CODEX_PLUGIN_SANDBOX_DEFAULT into
+  // request.sandbox (null = intentionally omitted); preserve that so codex.mjs
+  // omits the field and the app-server inherits ~/.codex/config.toml sandbox_mode.
+  // The legacy `?? "read-only"` re-pinned the broken mode and bypassed the v2.0
+  // omit contract that the review path (executeReviewWithModel) already honors.
+  const sandbox = request.sandbox ?? (request.write ? "workspace-write" : null);
   const approvalPolicy = request.approvalPolicy ?? "never";
-  const writeCapable = sandbox !== "read-only";
+  const writeCapable = Boolean(request.write) || (sandbox != null && sandbox !== "read-only");
   let prompt = request.prompt ?? "";
   if (!prompt && request.promptSource === "capsule" && request.capsulePath) {
     const capsule = readCapsule(request.cwd, request.capsulePath);
@@ -2044,7 +2051,10 @@ function resolveTaskJobForContinue(workspaceRoot, reference, taskKey = null) {
       threadId: session.threadId,
       turnId: session.turnId ?? stored?.turnId ?? null,
       write: stored?.write ?? false,
-      sandbox: stored?.sandbox ?? "read-only",
+      // #12 — omit (inherit ~/.codex/config.toml sandbox_mode), not pinned
+      // read-only. handleContinue forwards this via `selected.sandbox ?? null`,
+      // so a stored omit must stay null through the continue/resume path.
+      sandbox: stored?.sandbox ?? null,
       approvalPolicy: stored?.approvalPolicy ?? "never",
       taskKey: normalizedTaskKey,
       taskFingerprint: session.taskFingerprint ?? stored?.taskFingerprint ?? null,
