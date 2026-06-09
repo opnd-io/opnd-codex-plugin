@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.2 (2026-06-09)
+
+Bug fix — Windows `task`/`rescue` read-only 샌드박스 고정 해제 (issue #12):
+
+- **fix(sandbox): `executeTaskRun` + resume 경로의 read-only 재고정 제거** (issue #12, PR #14). Windows codex-cli 0.134.0 의 read-only/workspace-write 샌드박스가 `windows sandbox: spawn setup refresh` 로 spawn 실패 → Codex 가 단 한 줄도 실행 못하던 문제. `handleTask`/review 경로는 이미 v2.0 `#240` omit 계약대로 `effectiveSandbox = null` 로 해결돼 있었으나, downstream 2곳(`executeTaskRun` task/rescue executor + `resolveTaskJobForContinue` continue/resume)이 `?? "read-only"` 로 재고정해 omit 을 무효화하고 있었음.
+- `executeTaskRun`: `request.sandbox ?? (request.write ? "workspace-write" : "read-only")` → `… : null)` (omit → `~/.codex/config.toml` `sandbox_mode` 상속). `writeCapable` 를 `handleTask` 와 동일 패턴(`write || 명시적 non-read-only`)으로 통일 — null sandbox 가 write-capable 로 오인되지 않도록.
+- `resolveTaskJobForContinue`: 저장된 omit 이 continue/resume 경로 끝까지 `null` 유지 (`handleContinue` 가 이미 `selected.sandbox ?? null` forward).
+- review 경로(`executeReviewWithModel`)·`handleTask`·명시적 `--sandbox`/`--write`/`CODEX_PLUGIN_SANDBOX_DEFAULT` semantic 은 불변 (이미 정상).
+- 신규 회귀 가드 `tests/sandbox-default-omit.test.mjs` +2 (executeTaskRun + resolveTaskJobForContinue read-only 재고정 금지). 전체 553 pass / 0 fail (baseline flake `runtime.test.mjs` 제외 — 회귀 0).
+- **비범위 (상류 잔존)**: Layer 1 — codex-cli Windows read-only/workspace-write 샌드박스 spawn 자체 버그는 openai/codex 영역. 본 fix 는 플러그인이 깨진 모드를 강제하지 않도록 우회 (config.toml `sandbox_mode = "danger-full-access"` 상속 시 동작).
+- docs(claude-md): v2.2.1 staleAuth 자가검출 내용을 plugin-home 격리 섹션에 반영 (`8532925`).
+
 ## 2.2.1 (2026-06-08)
 
 Bug fix — Codex auth false-positive advisory (issue #2 fix #1):
