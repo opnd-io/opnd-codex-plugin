@@ -146,3 +146,45 @@ test("codex-companion.mjs: handleTask sandbox-default logic respects CODEX_PLUGI
   assert.match(source, /effectiveSandbox = sandbox \?\? null/, "default is null, not read-only");
   assert.match(source, /legacyDefault = String\(process\.env\.CODEX_PLUGIN_SANDBOX_DEFAULT/, "legacy env var read");
 });
+
+// #12 — Windows codex-cli "windows sandbox: spawn setup refresh". handleTask
+// correctly resolves effectiveSandbox=null (omit), but two downstream spots
+// re-pinned "read-only", undoing the omit and reaching codex.mjs with an
+// explicit broken value. executeTaskRun (task/rescue executor) and
+// resolveTaskJobForContinue (continue/resume) must preserve the omit (null).
+
+test("#12: executeTaskRun does not re-pin read-only (omit inherits config.toml)", async () => {
+  const fs = await import("node:fs");
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
+  const source = fs.readFileSync(url, "utf8");
+
+  const block = source.match(/async function executeTaskRun\([\s\S]+?const writeCapable =[^\n]*/);
+  assert.ok(block, "executeTaskRun sandbox block found");
+  assert.doesNotMatch(
+    block[0],
+    /request\.sandbox \?\? \(request\.write \? "workspace-write" : "read-only"\)/,
+    'executeTaskRun must NOT default to "read-only" (#12) — omit so config.toml is inherited'
+  );
+  assert.match(
+    block[0],
+    /request\.sandbox \?\? \(request\.write \? "workspace-write" : null\)/,
+    "executeTaskRun omits (null) when no explicit sandbox + no --write"
+  );
+});
+
+test("#12: resolveTaskJobForContinue does not re-pin read-only on resume", async () => {
+  const fs = await import("node:fs");
+  const url = new URL("../plugins/opnd-codex/scripts/codex-companion.mjs", import.meta.url);
+  const source = fs.readFileSync(url, "utf8");
+
+  assert.doesNotMatch(
+    source,
+    /sandbox:\s*stored\?\.sandbox \?\? "read-only"/,
+    'resolveTaskJobForContinue must NOT default to "read-only" (#12)'
+  );
+  assert.match(
+    source,
+    /sandbox:\s*stored\?\.sandbox \?\? null/,
+    "stored omit stays null through the continue/resume path"
+  );
+});
