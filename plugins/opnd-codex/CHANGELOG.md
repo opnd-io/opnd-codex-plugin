@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.3 (2026-06-11)
+
+Bug fix — `--output-profile` structured-output schema 가 strict 거부(400)로 한 턴도 완료 못 하던 문제 (PR #16):
+
+- **fix(schema): `task-output.schema.json` 의 `required` 에 `changed_files`/`impacted_files` 추가** (7키 → 9키). `additionalProperties: false` + strict structured-output 에서 `required` 는 `properties` 의 *모든* 키를 포함해야 하는데 2개가 누락 → 모델 호출이 `400 invalid_json_schema` ("'required' ... including every key in properties. Missing 'changed_files'") 로 실패. `--output-profile pair`(및 output-profile 사용 task) 경로가 thread ready → turn started 까지 진행하다 첫 모델 응답에서 실패.
+- `properties`/타입 불변 — 모델이 해당 필드를 빈 배열로 항상 emit. `review-output.schema.json` 은 이미 준수 (sibling audit CLEAN).
+- 이 버그는 2.2.2 의 **비범위 "Layer 1"**(codex-cli Windows read-only sandbox spawn 실패, `windows sandbox: spawn setup refresh`)에 가려져 있었음 — sandbox 가 모델 호출 *전에* 실패해 schema 검증에 도달 못 함. **Layer 1 은 codex-cli 0.139.0 에서 해소**(0.136~0.138 의 Windows `sandbox setup refresh` 수정)되어 turn 이 모델까지 도달하자 본 schema 버그가 노출됨. 즉 플러그인 fix(본 release) + codex CLI `>= 0.139` 두 가지가 함께 Windows `/pair` 를 read-only 안전 유지한 채 복구.
+- 검증: `pair --wait` e2e → `Verdict: PAIR_READONLY_OK` (read-only, codex 0.139, exit 0). `tests/ultraplan-runtime.test.mjs` (task-output schema 소비 유일 테스트) PASS. 전체 suite 회귀 0 (baseline flake 3 제외).
+- 상세 분석(root cause Claude+Codex Agreed 5/5, 3-path 벤치마킹, Path A probe 실측): `plan-windows-sandbox-pair-recovery.md`.
+
 ## 2.2.2 (2026-06-09)
 
 Bug fix — Windows `task`/`rescue` read-only 샌드박스 고정 해제 (issue #12):

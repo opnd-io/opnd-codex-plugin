@@ -1,6 +1,6 @@
 {
   "name": "@opnd-io/opnd-codex-plugin",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "private": true,
   "type": "module",
   "description": "Use Codex from Claude Code to review code or delegate tasks.",
