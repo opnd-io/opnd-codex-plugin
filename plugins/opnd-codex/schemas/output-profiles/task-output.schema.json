@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "summary", "evidence", "confidence", "unresolved", "next_command", "verification"],
+  "required": ["verdict", "summary", "evidence", "confidence", "changed_files", "impacted_files", "unresolved", "next_command", "verification"],
   "properties": {
     "verdict": {
       "type": "string",
