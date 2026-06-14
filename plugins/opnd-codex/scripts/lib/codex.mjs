@@ -39,11 +39,18 @@
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { clearBrokerSession, loadBrokerSession, teardownBrokerSession } from "./broker-lifecycle.mjs";
+import {
+  SKIP_REASON_RETRY_BUDGET_EXCEEDED,
+  SKIP_REASON_TIMEOUT,
+  classifyCodexSkipReason,
+  withCodexSkipMetadata
+} from "./codex-skip-taxonomy.js";
 import { binaryAvailable } from "./process.mjs";
 import { withBrokerLockAsync } from "./state.mjs";
 
@@ -72,6 +79,8 @@ const FINALIZING_PHASE_TIMEOUT_MS = (() => {
 // bounds a fully-stuck broker. Override via CODEX_TURN_WATCHDOG_MS (ms);
 // set 0 to disable. An explicit `watchdogMs` option still wins over both.
 const DEFAULT_TURN_WATCHDOG_MS = 10 * 60 * 1000;
+const TIMEOUT_RESUME_PROMPT = "도구 사용 금지, 즉시 최종 출력";
+const DEFAULT_TIMEOUT_RESUME_TIMEOUT_MS = 90_000;
 function resolveDefaultTurnWatchdogMs() {
   const override = Number(process.env.CODEX_TURN_WATCHDOG_MS);
   if (Number.isFinite(override) && override >= 0) {
@@ -399,6 +408,14 @@ export class TurnWatchdogError extends Error {
     this.watchdogMs = watchdogMs ?? null;
     this.threadId = threadId ?? null;
     this.turnId = turnId ?? null;
+    this.skipReason = SKIP_REASON_TIMEOUT;
+    this.retryInfo = {
+      skipReason: SKIP_REASON_TIMEOUT,
+      threadId: this.threadId,
+      turnId: this.turnId,
+      watchdogMs: this.watchdogMs,
+      resumeAttempts: 0
+    };
   }
 }
 
@@ -953,6 +970,160 @@ async function resumeThread(client, threadId, cwd, options = {}) {
 
 function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
+}
+
+export function resolveTimeoutResumeRetryBudget(env = process.env) {
+  const raw = env?.CODEX_PLUGIN_TIMEOUT_RESUME_RETRY_BUDGET;
+  if (raw == null || raw === "") {
+    return 1;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(2, Math.trunc(parsed)));
+}
+
+function resolveTimeoutResumeTimeoutMs(options = {}) {
+  const timeoutMs = Number(options.timeoutMs);
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    return timeoutMs;
+  }
+  return DEFAULT_TIMEOUT_RESUME_TIMEOUT_MS;
+}
+
+export function buildTimeoutResumeCommand(threadId, prompt = TIMEOUT_RESUME_PROMPT) {
+  const normalizedThreadId = String(threadId ?? "").trim();
+  if (!normalizedThreadId) {
+    throw new Error("threadId is required to resume a timed-out Codex thread.");
+  }
+  return {
+    command: "codex",
+    args: ["exec", "resume", normalizedThreadId, prompt]
+  };
+}
+
+export async function resumeTimedOutThread(threadId, options = {}) {
+  const { command, args } = buildTimeoutResumeCommand(threadId, options.prompt ?? TIMEOUT_RESUME_PROMPT);
+  const timeoutMs = resolveTimeoutResumeTimeoutMs(options);
+  const spawnImpl = options.spawnImpl ?? spawn;
+  const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
+  const startedAt = Date.now();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    let timer = null;
+    let child = null;
+
+    const settle = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      resolve({
+        threadId,
+        command,
+        args,
+        stdout,
+        stderr,
+        elapsedMs: Date.now() - startedAt,
+        ...result
+      });
+    };
+
+    try {
+      child = spawnImpl(command, args, {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (error) {
+      settle({
+        status: 1,
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        error
+      });
+      return;
+    }
+
+    child.stdout?.setEncoding?.("utf8");
+    child.stderr?.setEncoding?.("utf8");
+    child.stdout?.on?.("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on?.("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    timer = setTimeout(() => {
+      const error = withCodexSkipMetadata(
+        new Error(`Codex timeout resume command timed out after ${timeoutMs}ms for thread ${threadId}.`),
+        SKIP_REASON_TIMEOUT,
+        {
+          threadId,
+          retryInfo: {
+            resumeTimeoutMs: timeoutMs
+          }
+        }
+      );
+      error.code = "CODEX_TIMEOUT_RESUME_TIMEOUT";
+      error.exitCode = 124;
+      try {
+        child?.kill?.("SIGTERM");
+      } catch {
+        // Best effort only; the timeout result below is the contract.
+      }
+      settle({
+        status: 124,
+        exitCode: 124,
+        signal: "SIGTERM",
+        timedOut: true,
+        error
+      });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.on?.("error", (error) => {
+      settle({
+        status: 1,
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        error
+      });
+    });
+    child.on?.("close", (code, signal) => {
+      const exitCode = typeof code === "number" ? code : null;
+      const status = exitCode ?? (signal ? 1 : 0);
+      const timedOut = status === 124;
+      let error = null;
+      if (status !== 0) {
+        error = new Error(`Codex timeout resume command exited with status ${status}.`);
+        error.code = "CODEX_TIMEOUT_RESUME_FAILED";
+        error.exitCode = status;
+        if (timedOut) {
+          withCodexSkipMetadata(error, SKIP_REASON_TIMEOUT, { threadId });
+        }
+      }
+      settle({
+        status,
+        exitCode,
+        signal: signal ?? null,
+        timedOut,
+        error
+      });
+    });
+  });
 }
 
 const BUILTIN_PROVIDER_LABELS = new Map([
@@ -1660,6 +1831,207 @@ export async function runAppServerTurn(cwd, options = {}) {
       commandExecutions: turnState.commandExecutions
     };
   }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile, fast: options.fast });
+}
+
+function getTimeoutThreadId(error, fallback = null) {
+  return error?.threadId ?? error?.retryInfo?.threadId ?? fallback ?? null;
+}
+
+function buildRetryInfo({ threadId, budget, attempts, recovered = false, resumeTimeoutMs = null }) {
+  return {
+    skipReason: SKIP_REASON_TIMEOUT,
+    threadId,
+    resumeRetryBudget: budget,
+    resumeAttempts: attempts,
+    recovered,
+    resumeTimeoutMs
+  };
+}
+
+function emptyTimeoutResumeResult({ status, threadId, finalMessage = "", stderr = "", error, retryInfo }) {
+  return {
+    status,
+    threadId,
+    turnId: null,
+    finalMessage,
+    reasoningSummary: [],
+    turn: null,
+    error,
+    stderr: cleanCodexStderr(stderr),
+    fileChanges: [],
+    touchedFiles: [],
+    commandExecutions: [],
+    retryInfo
+  };
+}
+
+function buildRetryBudgetExceededResult({ threadId, originalError, lastResumeResult = null, budget, attempts }) {
+  const retryInfo = buildRetryInfo({
+    threadId,
+    budget,
+    attempts,
+    recovered: false,
+    resumeTimeoutMs: lastResumeResult?.error?.retryInfo?.resumeTimeoutMs ?? null
+  });
+  const error = withCodexSkipMetadata(
+    new Error(`Codex timeout recovery retry budget exceeded after ${attempts} resume attempt(s) for thread ${threadId}.`),
+    SKIP_REASON_RETRY_BUDGET_EXCEEDED,
+    {
+      threadId,
+      retryInfo: {
+        ...retryInfo,
+        originalMessage: originalError?.message ?? null
+      }
+    }
+  );
+  error.code = "CODEX_TIMEOUT_RESUME_RETRY_BUDGET_EXCEEDED";
+  error.exitCode = 124;
+
+  return emptyTimeoutResumeResult({
+    status: 124,
+    threadId,
+    finalMessage: String(lastResumeResult?.stdout ?? "").trimEnd(),
+    stderr: lastResumeResult?.stderr ?? "",
+    error,
+    retryInfo
+  });
+}
+
+function buildResumeCommandFailureResult({ threadId, resumeResult, budget, attempts }) {
+  const retryInfo = buildRetryInfo({
+    threadId,
+    budget,
+    attempts,
+    recovered: false,
+    resumeTimeoutMs: resumeResult?.error?.retryInfo?.resumeTimeoutMs ?? null
+  });
+  const error = withCodexSkipMetadata(
+    resumeResult?.error ?? new Error(`Codex timeout resume command failed for thread ${threadId}.`),
+    classifyCodexSkipReason(resumeResult?.error) ?? SKIP_REASON_TIMEOUT,
+    {
+      threadId,
+      retryInfo
+    }
+  );
+
+  return emptyTimeoutResumeResult({
+    status: resumeResult?.status ?? 1,
+    threadId,
+    finalMessage: String(resumeResult?.stdout ?? "").trimEnd(),
+    stderr: resumeResult?.stderr ?? "",
+    error,
+    retryInfo
+  });
+}
+
+function buildResumeSuccessResult({ threadId, resumeResult, budget, attempts }) {
+  const retryInfo = buildRetryInfo({
+    threadId,
+    budget,
+    attempts,
+    recovered: true,
+    resumeTimeoutMs: null
+  });
+
+  return emptyTimeoutResumeResult({
+    status: 0,
+    threadId,
+    finalMessage: String(resumeResult?.stdout ?? "").trimEnd(),
+    stderr: resumeResult?.stderr ?? "",
+    error: null,
+    retryInfo
+  });
+}
+
+async function recoverTimedOutAppServerTurn(cwd, error, options = {}) {
+  const threadId = getTimeoutThreadId(error, options.resumeThreadId ?? null);
+  const budget = resolveTimeoutResumeRetryBudget(options.env ?? process.env);
+  const timeoutError = withCodexSkipMetadata(error, SKIP_REASON_TIMEOUT, {
+    threadId,
+    retryInfo: buildRetryInfo({
+      threadId,
+      budget,
+      attempts: 0,
+      recovered: false
+    })
+  });
+
+  if (!threadId || budget <= 0) {
+    return buildRetryBudgetExceededResult({
+      threadId: threadId ?? "unknown",
+      originalError: timeoutError,
+      budget,
+      attempts: 0
+    });
+  }
+
+  const resumeImpl = options.resumeTimedOutThreadImpl ?? resumeTimedOutThread;
+  let lastResumeResult = null;
+
+  for (let attempt = 1; attempt <= budget; attempt += 1) {
+    emitProgress(
+      options.onProgress,
+      `Codex turn timed out on thread ${threadId}; trying non-interactive resume (${attempt}/${budget}).`,
+      "warn",
+      { threadId }
+    );
+    lastResumeResult = await resumeImpl(threadId, {
+      cwd,
+      env: options.env ?? process.env,
+      timeoutMs: options.timeoutResumeMs,
+      spawnImpl: options.timeoutResumeSpawnImpl
+    });
+
+    if (!lastResumeResult?.timedOut && lastResumeResult?.status === 0) {
+      return buildResumeSuccessResult({
+        threadId,
+        resumeResult: lastResumeResult,
+        budget,
+        attempts: attempt
+      });
+    }
+
+    if (!lastResumeResult?.timedOut) {
+      return buildResumeCommandFailureResult({
+        threadId,
+        resumeResult: lastResumeResult,
+        budget,
+        attempts: attempt
+      });
+    }
+  }
+
+  return buildRetryBudgetExceededResult({
+    threadId,
+    originalError: timeoutError,
+    lastResumeResult,
+    budget,
+    attempts: budget
+  });
+}
+
+export async function runAppServerTurnWithTimeoutResume(cwd, options = {}) {
+  const runTurnImpl = options.runTurnImpl ?? runAppServerTurn;
+
+  try {
+    const result = await runTurnImpl(cwd, options);
+    if (classifyCodexSkipReason(result?.error) === SKIP_REASON_TIMEOUT) {
+      return recoverTimedOutAppServerTurn(cwd, result.error, {
+        ...options,
+        resumeThreadId: result.threadId ?? options.resumeThreadId ?? null
+      });
+    }
+    return result;
+  } catch (error) {
+    const skipReason = classifyCodexSkipReason(error);
+    if (skipReason !== SKIP_REASON_TIMEOUT) {
+      if (skipReason) {
+        throw withCodexSkipMetadata(error, skipReason);
+      }
+      throw error;
+    }
+    return recoverTimedOutAppServerTurn(cwd, error, options);
+  }
 }
 
 export async function steerAppServerTurn(cwd, options = {}) {

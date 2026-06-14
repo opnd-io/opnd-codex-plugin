@@ -20,6 +20,7 @@ import {
     readOutputSchema,
     runAppServerReview,
     runAppServerTurn,
+    runAppServerTurnWithTimeoutResume,
     steerAppServerTurn,
     TurnWatchdogError
   } from "./lib/codex.mjs";
@@ -927,7 +928,7 @@ async function executeReviewRun(request) {
   // working on Linux hosts where the codex CLI's bundled sandbox cannot
   // initialize. Callers can still force read-only via `--sandbox read-only`
   // or `CODEX_PLUGIN_SANDBOX_DEFAULT=read-only`.
-  const result = await runAppServerTurn(context.repoRoot, {
+  const result = await runAppServerTurnWithTimeoutResume(context.repoRoot, {
     prompt,
     model: request.model,
     profile: request.profile,
@@ -1023,7 +1024,7 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, --prompt-file <path>, --prompt-stdin, piped stdin, or use --resume-last after a completed task.");
   }
 
-  const result = await runAppServerTurn(workspaceRoot, {
+  const result = await runAppServerTurnWithTimeoutResume(workspaceRoot, {
     resumeThreadId,
     prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
