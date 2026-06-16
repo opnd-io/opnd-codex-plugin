@@ -83,6 +83,99 @@ export async function sendBrokerShutdown(endpoint, timeoutMs = BROKER_SHUTDOWN_T
   });
 }
 
+// #18 — ask the long-lived broker (which lives in the main-session job that
+// permits silent breakaway) to spawn the detached task-worker on our behalf.
+// A worker spawned by the broker escapes the nested subagent Job Object
+// (KILL_ON_JOB_CLOSE, no breakaway) that would otherwise terminate it the
+// moment the dispatching Agent subagent's turn ends.
+//
+// Return contract (the caller MUST distinguish these to avoid a double-spawn):
+//   { pid }            — broker confirmed a worker; the caller validates the pid.
+//   <result object>    — a non-error reply is passed through verbatim, so a
+//                        pid-less reply (e.g. `{}`) resolves to that object. The
+//                        caller's pid check (Number(result.pid) → NaN) then
+//                        treats it as "no worker" and local-spawns. (i.e. any
+//                        definite reply without a usable pid behaves like null.)
+//   null               — DEFINITELY no worker was spawned (never connected, or
+//                        the broker replied with an explicit error). Safe to
+//                        local-spawn.
+//   { ambiguous: true } — we connected but got no clear reply (timeout / socket
+//                        closed mid-RPC). The broker MAY have spawned a worker,
+//                        so the caller must NOT local-spawn (would duplicate it).
+// Timeout is short: the broker's spawn+reply is effectively synchronous, so a
+// silent connected socket means trouble, not slow work. A stale broker.json
+// fails fast on connect (no listener) and lands in the `null` path.
+const BROKER_SPAWN_WORKER_TIMEOUT_MS = 2000;
+
+export async function sendBrokerSpawnWorker(endpoint, params, timeoutMs = BROKER_SPAWN_WORKER_TIMEOUT_MS) {
+  return await new Promise((resolve) => {
+    let settled = false;
+    let connected = false;
+    let buffer = "";
+    let timer = null;
+    const socket = connectToEndpoint(endpoint);
+    socket.setEncoding("utf8");
+    // Single settle point clears the timer exactly once (guarded by `settled`),
+    // so the error→close handler pair cannot double-clear or double-resolve.
+    const settle = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      try {
+        socket.destroy();
+      } catch {
+        // ignore — best effort
+      }
+      resolve(value);
+    };
+    // Connected-but-silent is ambiguous (worker may exist); never-connected is null.
+    const settleNoReply = () => settle(connected ? { ambiguous: true } : null);
+    timer = setTimeout(settleNoReply, timeoutMs);
+    timer.unref?.();
+    socket.on("connect", () => {
+      connected = true;
+      try {
+        socket.write(`${JSON.stringify({ id: 1, method: "broker/spawnWorker", params: params ?? {} })}\n`);
+      } catch {
+        // A synchronous write failure (socket destroyed mid-connect) would
+        // otherwise leave the Promise pending forever — settle it now.
+        settleNoReply();
+      }
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          newlineIndex = buffer.indexOf("\n");
+          continue;
+        }
+        if (message && message.id === 1) {
+          // An explicit error reply resolves to null (definitely no worker →
+          // safe to local-spawn). A non-error reply is passed through verbatim:
+          // the result object carries the pid for the caller to validate, and a
+          // pid-less result (e.g. `{}`) likewise drives the caller to local-spawn.
+          settle(message.error ? null : message.result ?? null);
+          return;
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+    socket.on("error", settleNoReply);
+    socket.on("close", settleNoReply);
+  });
+}
+
 export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process.env }) {
   const logFd = fs.openSync(logFile, "a");
   try {

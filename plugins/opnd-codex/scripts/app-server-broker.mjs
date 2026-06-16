@@ -4,10 +4,13 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { resolveWorkerStdioFile } from "./lib/state.mjs";
 import { cleanProtocolLine } from "./lib/jsonl.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
@@ -44,6 +47,118 @@ function send(socket, message) {
     return;
   }
   socket.write(`${JSON.stringify(message)}\n`);
+}
+
+// #18 — spawn the detached task-worker FROM the broker process. The broker is
+// started at SessionStart from the main-session context, whose Job Object
+// permits (silent) breakaway, so a worker it spawns escapes the nested subagent
+// Job Object (KILL_ON_JOB_CLOSE, no breakaway) that kills workers spawned
+// directly by a `codex-rescue` subagent when its turn ends.
+//
+// `cwd`, `jobId`, and `env` are supplied by the client so the worker resolves
+// the SAME state dir / job record / broker endpoint it would under a local
+// spawn (CODEX_PLUGIN_DATA_DIR etc. live in `env`) — only the *parent process*
+// changes. The companion script path is resolved from THIS file's location and
+// is NEVER taken from the client payload (no arbitrary-exec over the socket).
+//
+// Trust boundary: the broker socket is a per-user local pipe/unix socket, so a
+// crafted payload could only come from a process already running as this user
+// (which can spawn node directly anyway — no privilege gain). Even so, as
+// defense-in-depth we (a) validate jobId, (b) derive the stdio capture path
+// broker-side from cwd+jobId rather than trusting a client path, and (c) strip
+// Node loader-hijack env vars so a crafted env cannot inject code into the
+// (now job-survivable) worker.
+const JOB_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+// Vars that would let a crafted RPC load arbitrary code into the spawned node
+// worker. Stripped from the forwarded env; the worker never legitimately needs
+// them. (Full env is otherwise forwarded for state-dir/home correctness — see
+// the client comment — which mirrors the pre-existing local-spawn behavior and
+// is bounded by the same-user trust boundary above.)
+const STRIPPED_WORKER_ENV_VARS = ["NODE_OPTIONS", "NODE_PATH", "ELECTRON_RUN_AS_NODE"];
+
+async function spawnTaskWorkerForClient(params = {}) {
+  const cwd = typeof params.cwd === "string" && params.cwd.length > 0 ? params.cwd : "";
+  const jobId = typeof params.jobId === "string" ? params.jobId : "";
+  if (!cwd) {
+    throw new Error("broker/spawnWorker requires a non-empty cwd.");
+  }
+  if (!JOB_ID_PATTERN.test(jobId)) {
+    throw new Error("broker/spawnWorker requires a jobId matching [A-Za-z0-9._-]+.");
+  }
+  const companionScript = fileURLToPath(new URL("./codex-companion.mjs", import.meta.url));
+  const baseEnv =
+    params.env && typeof params.env === "object" && !Array.isArray(params.env) ? params.env : process.env;
+  const workerEnv = { ...baseEnv };
+  for (const key of STRIPPED_WORKER_ENV_VARS) {
+    delete workerEnv[key];
+  }
+
+  // Derive the stdio capture path broker-side from (validated) cwd+jobId — never
+  // from a client-supplied path — so the append target stays inside the job dir.
+  // Resolves to the same `${jobId}.worker.log` the worker itself uses (the
+  // session-scoped CODEX_PLUGIN_DATA_DIR is identical broker- and caller-side).
+  let stdio = "ignore";
+  let logFd = null;
+  try {
+    const stdioFile = resolveWorkerStdioFile(cwd, jobId);
+    logFd = fs.openSync(stdioFile, "a");
+    stdio = ["ignore", logFd, logFd];
+  } catch {
+    stdio = "ignore";
+    logFd = null;
+  }
+
+  let child;
+  try {
+    child = spawn(process.execPath, [companionScript, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+      cwd,
+      env: workerEnv,
+      detached: true,
+      stdio,
+      windowsHide: true
+    });
+  } catch (error) {
+    if (logFd !== null) {
+      fs.closeSync(logFd);
+    }
+    throw error;
+  }
+
+  // Wait for the OS to confirm the spawn (or fail it) before replying, so a
+  // failed CreateProcess surfaces as a JSON-RPC error (→ caller local-spawns)
+  // instead of a false `{pid}` success. The detached child inherits its own dup
+  // of logFd during spawn, so the parent fd is closed once spawn settles.
+  return await new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, arg) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      if (logFd !== null) {
+        try {
+          fs.closeSync(logFd);
+        } catch {
+          // already closed / inherited — ignore
+        }
+      }
+      fn(arg);
+    };
+    const timer = setTimeout(() => finish(reject, new Error("broker/spawnWorker timed out waiting for the worker to start.")), 4000);
+    timer.unref?.();
+    child.once("spawn", () => {
+      if (!Number.isInteger(child.pid) || child.pid <= 0) {
+        finish(reject, new Error("broker/spawnWorker produced no valid pid."));
+        return;
+      }
+      child.unref();
+      finish(resolve, { pid: child.pid });
+    });
+    child.once("error", (error) => {
+      finish(reject, error instanceof Error ? error : new Error(String(error)));
+    });
+  });
 }
 
 function isActiveTurnControlRequest(message) {
@@ -305,6 +420,23 @@ async function main() {
           send(socket, { id: message.id, result: {} });
           await shutdown(server);
           process.exit(0);
+        }
+
+        // #18 — control RPC: spawn the detached task-worker from the broker
+        // (survivable job) instead of the caller's subagent job. Handled here,
+        // before the turn-ownership/BROKER_BUSY gating below, because it is a
+        // broker control method, not an app-server turn.
+        if (message.id !== undefined && message.method === "broker/spawnWorker") {
+          try {
+            const result = await spawnTaskWorkerForClient(message.params ?? {});
+            send(socket, { id: message.id, result });
+          } catch (error) {
+            send(socket, {
+              id: message.id,
+              error: buildJsonRpcError(-32000, error?.message ?? "broker/spawnWorker failed")
+            });
+          }
+          continue;
         }
 
         if (message.id === undefined) {
