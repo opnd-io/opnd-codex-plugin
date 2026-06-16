@@ -20,6 +20,7 @@ import {
     readOutputSchema,
     runAppServerReview,
     runAppServerTurn,
+    runAppServerTurnWithTimeoutResume,
     steerAppServerTurn,
     TurnWatchdogError
   } from "./lib/codex.mjs";
@@ -39,11 +40,13 @@ import {
   getConfig,
   listJobs,
   readTaskSession,
+  resolveWorkerStdioFile,
   setConfig,
   updateJobFile,
   upsertJob,
   writeJobFile
 } from "./lib/state.mjs";
+import { loadBrokerSession, sendBrokerSpawnWorker } from "./lib/broker-lifecycle.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -927,7 +930,7 @@ async function executeReviewRun(request) {
   // working on Linux hosts where the codex CLI's bundled sandbox cannot
   // initialize. Callers can still force read-only via `--sandbox read-only`
   // or `CODEX_PLUGIN_SANDBOX_DEFAULT=read-only`.
-  const result = await runAppServerTurn(context.repoRoot, {
+  const result = await runAppServerTurnWithTimeoutResume(context.repoRoot, {
     prompt,
     model: request.model,
     profile: request.profile,
@@ -1023,7 +1026,7 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, --prompt-file <path>, --prompt-stdin, piped stdin, or use --resume-last after a completed task.");
   }
 
-  const result = await runAppServerTurn(workspaceRoot, {
+  const result = await runAppServerTurnWithTimeoutResume(workspaceRoot, {
     resumeThreadId,
     prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
@@ -1479,20 +1482,91 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-function spawnDetachedTaskWorker(cwd, jobId) {
+// Local (in-process) detached spawn — the fallback when no broker is available.
+// This path is correct for main-session dispatch (the main-session Job Object
+// permits silent breakaway, so the worker survives). It is NOT survivable when
+// reached from a nested `codex-rescue` subagent (#18); the broker-routed path in
+// `enqueueBackgroundTask` is preferred there. `stdioFile`, when given, captures
+// the worker's own stdout/stderr instead of discarding them to a null sink.
+function spawnDetachedTaskWorker(cwd, jobId, stdioFile = null) {
   const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
-    cwd,
-    env: process.env,
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true
-  });
-  child.unref();
-  return child;
+  let stdio = "ignore";
+  let logFd = null;
+  if (stdioFile) {
+    try {
+      logFd = fs.openSync(stdioFile, "a");
+      stdio = ["ignore", logFd, logFd];
+    } catch {
+      stdio = "ignore";
+      logFd = null;
+    }
+  }
+  try {
+    const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+      cwd,
+      env: process.env,
+      detached: true,
+      stdio,
+      windowsHide: true
+    });
+    child.unref();
+    return child;
+  } finally {
+    if (logFd !== null) {
+      fs.closeSync(logFd);
+    }
+  }
 }
 
-function enqueueBackgroundTask(cwd, job, request) {
+// #18 — prefer spawning the worker through the long-lived broker so it escapes a
+// nested subagent's kill-on-close Job Object. Returns an outcome the caller uses
+// to decide on the local fallback WITHOUT risking a double-spawn:
+//   { spawned: true, pid }       — broker confirmed a worker; use this pid.
+//   { spawned: false, ambiguous: false } — definitely no worker; local-spawn.
+//   { spawned: false, ambiguous: true }  — broker reached but no clear reply; it
+//                                          MAY have spawned a worker, so do NOT
+//                                          local-spawn (would duplicate it).
+async function spawnTaskWorkerViaBroker(cwd, jobId) {
+  let endpoint = null;
+  try {
+    endpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+  } catch {
+    endpoint = null;
+  }
+  if (!endpoint) {
+    return { spawned: false, ambiguous: false };
+  }
+  let result = null;
+  try {
+    result = await sendBrokerSpawnWorker(endpoint, {
+      cwd,
+      jobId,
+      // Forward our env so the worker resolves the identical state dir / home
+      // mode it would under a local spawn (resolveStateDir keys off
+      // CODEX_PLUGIN_DATA_DIR). The broker strips Node loader-hijack vars and
+      // derives the stdio path itself; only the parent process differs.
+      env: { ...process.env }
+    });
+  } catch (error) {
+    // sendBrokerSpawnWorker is contracted to resolve (never reject); a throw
+    // here means an internal/programming error, not "no broker". Surface it for
+    // diagnosability, then fall back to a local spawn.
+    process.stderr.write(`[codex-companion] broker spawn RPC threw: ${error?.message ?? error}\n`);
+    return { spawned: false, ambiguous: false };
+  }
+  // result === null (never-connected OR explicit broker error reply OR a result
+  // with no usable pid) → definitely no worker spawned → safe to local-spawn.
+  if (result && result.ambiguous) {
+    return { spawned: false, ambiguous: true };
+  }
+  const pid = result ? Number(result.pid) : NaN;
+  if (Number.isInteger(pid) && pid > 0) {
+    return { spawned: true, pid };
+  }
+  return { spawned: false, ambiguous: false };
+}
+
+async function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
@@ -1521,8 +1595,31 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { request: _request, ...indexRecord } = queuedRecord;
   upsertJob(job.workspaceRoot, indexRecord);
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
-  const spawnedPid = child.pid ?? null;
+  // #18 — capture the worker's own stdout/stderr to a per-job file so an abnormal
+  // death is diagnosable instead of discarded. Used by the LOCAL spawn path; the
+  // broker path derives the same path itself from cwd+jobId.
+  const stdioFile = resolveWorkerStdioFile(cwd, job.id);
+
+  // Prefer broker-routed spawn (survives a nested subagent's job teardown); fall
+  // back to a local detached spawn only when the broker definitely did NOT spawn.
+  const brokerOutcome = await spawnTaskWorkerViaBroker(cwd, job.id);
+  let spawnedPid = null;
+  let spawnedVia;
+  if (brokerOutcome.spawned) {
+    spawnedPid = brokerOutcome.pid;
+    spawnedVia = "broker";
+  } else if (brokerOutcome.ambiguous) {
+    // The broker was reached but gave no clear reply — it may already have
+    // spawned a worker. Local-spawning now would create a duplicate that writes
+    // the same job files, so we don't. The job stays `queued`; re-dispatch (or a
+    // resume path) recovers it if the broker did not actually start one.
+    spawnedVia = "broker-ambiguous";
+  } else {
+    spawnedVia = "local";
+    const child = spawnDetachedTaskWorker(cwd, job.id, stdioFile);
+    spawnedPid = child.pid ?? null;
+  }
+  appendLogLine(logFile, `worker.spawn via=${spawnedVia} pid=${spawnedPid ?? "?"}`);
   updateJobFile(job.workspaceRoot, job.id, (storedJob) => ({
     ...(storedJob ?? queuedRecord),
     pid: spawnedPid
@@ -1620,7 +1717,7 @@ async function handleReviewCommand(argv, config) {
       approvalPolicy: "never",
       request: reviewRequest
     };
-    const { payload } = enqueueBackgroundTask(cwd, queued, reviewRequest);
+    const { payload } = await enqueueBackgroundTask(cwd, queued, reviewRequest);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
@@ -1847,7 +1944,7 @@ async function handleTask(argv) {
       appendInstruction: options["append-instruction"] ?? null,
       ...taskJobMetadata
     });
-    const { payload } = enqueueBackgroundTask(cwd, job, request);
+    const { payload } = await enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
@@ -2185,7 +2282,7 @@ async function handleContinue(argv) {
   });
 
   if (options.background) {
-    const { payload } = enqueueBackgroundTask(cwd, job, request);
+    const { payload } = await enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }

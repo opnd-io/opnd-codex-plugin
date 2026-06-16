@@ -628,6 +628,16 @@ export function resolveJobLogFile(cwd, jobId) {
   return path.join(resolveJobsDir(cwd), `${jobId}.log`);
 }
 
+// #18 (capture-first) — the detached task-worker's own stdout/stderr (Node crash
+// traces, `main().catch` writes) go here instead of being discarded to a null
+// sink, so a silent worker death (e.g. a Windows Job Object kill-on-close) leaves
+// a diagnosable artifact. Distinct from `${jobId}.log`, which only carries the
+// JSON-RPC progress notifications routed through the broker.
+export function resolveWorkerStdioFile(cwd, jobId) {
+  ensureStateDir(cwd);
+  return path.join(resolveJobsDir(cwd), `${jobId}.worker.log`);
+}
+
 export function resolveJobFile(cwd, jobId) {
   ensureStateDir(cwd);
   return path.join(resolveJobsDir(cwd), `${jobId}.json`);
