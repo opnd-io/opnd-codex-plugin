@@ -127,7 +127,16 @@ export function __resetAppServerNoticeCache() {
 // out via `CODEX_PLUGIN_PRESERVE_ENV=NODE_OPTIONS,LD_PRELOAD,...` (comma
 // list). The opt-out is intentionally explicit so the safe default
 // stays safe.
-const ENV_INJECTION_VECTORS = new Set([
+// Exported as the single SoT for env-injection hardening so any caller that
+// spawns a plugin child (codex child via sanitizePluginCodexEnv; the detached
+// task-worker via the broker, #18) strips the identical vector set — no parallel
+// hand-rolled lists that drift below this standard.
+//
+// NOTE: do NOT add `ELECTRON_RUN_AS_NODE` / `NODE_PATH` here — they alter how
+// the codex *child* itself is launched (the test fake-codex shim and any
+// electron-hosted `process.execPath` rely on `ELECTRON_RUN_AS_NODE`), so
+// stripping them on the codex path breaks the spawn (#18 R2 regression).
+export const ENV_INJECTION_VECTORS = new Set([
   "BASH_ENV",
   "ENV",
   "PROMPT_COMMAND",
