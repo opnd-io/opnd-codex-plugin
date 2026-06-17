@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs } from "./lib/args.mjs";
-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, ENV_INJECTION_VECTORS } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 import { resolveWorkerStdioFile } from "./lib/state.mjs";
 import { cleanProtocolLine } from "./lib/jsonl.mjs";
@@ -69,12 +69,6 @@ function send(socket, message) {
 // Node loader-hijack env vars so a crafted env cannot inject code into the
 // (now job-survivable) worker.
 const JOB_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
-// Vars that would let a crafted RPC load arbitrary code into the spawned node
-// worker. Stripped from the forwarded env; the worker never legitimately needs
-// them. (Full env is otherwise forwarded for state-dir/home correctness — see
-// the client comment — which mirrors the pre-existing local-spawn behavior and
-// is bounded by the same-user trust boundary above.)
-const STRIPPED_WORKER_ENV_VARS = ["NODE_OPTIONS", "NODE_PATH", "ELECTRON_RUN_AS_NODE"];
 
 async function spawnTaskWorkerForClient(params = {}) {
   const cwd = typeof params.cwd === "string" && params.cwd.length > 0 ? params.cwd : "";
@@ -88,8 +82,15 @@ async function spawnTaskWorkerForClient(params = {}) {
   const companionScript = fileURLToPath(new URL("./codex-companion.mjs", import.meta.url));
   const baseEnv =
     params.env && typeof params.env === "object" && !Array.isArray(params.env) ? params.env : process.env;
+  // Strip the project-wide env-injection vector SoT (LD_PRELOAD / DYLD_* /
+  // GIT_SSH_COMMAND / NODE_OPTIONS / NODE_PATH / ELECTRON_RUN_AS_NODE / …) so a
+  // crafted RPC env cannot load code into the spawned worker's `node` exec (or a
+  // git subprocess it later runs). Reuses the same set as the codex-child
+  // sanitizer — no parallel list that drifts below the standard (#18 R2 SEC).
+  // Full env is otherwise forwarded for state-dir/home correctness (= local-spawn
+  // behavior), bounded by the same-user local-pipe trust boundary above.
   const workerEnv = { ...baseEnv };
-  for (const key of STRIPPED_WORKER_ENV_VARS) {
+  for (const key of ENV_INJECTION_VECTORS) {
     delete workerEnv[key];
   }
 
