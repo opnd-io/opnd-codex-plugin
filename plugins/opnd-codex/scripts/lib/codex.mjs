@@ -938,6 +938,20 @@ async function withAppServer(cwd, fn, options = {}) {
     }
 
     if (!shouldRetryDirect) {
+      // #21 — under requireBroker a BUSY shared broker is suppressed from the
+      // direct-retry path above, but a raw throw would surface in the
+      // codex-rescue foreground path as a non-zero exit that the agent hides as
+      // "Codex was not invoked", losing the actionable retry hint. Re-tag it so
+      // handleTask surfaces the diagnostic on stdout (like the no-broker case).
+      if (requireBroker && error?.rpcCode === BROKER_BUSY_RPC_CODE) {
+        const busy = new Error(
+          "The shared Codex broker is busy with another task, and this codex-rescue subagent cannot fall back to a " +
+            "direct spawn (it would not survive the subagent's Job Object teardown — #21). Retry shortly (the broker " +
+            "serves one task at a time), or re-run from the main Claude thread."
+        );
+        busy.code = "SUBAGENT_BROKER_BUSY";
+        throw busy;
+      }
       throw error;
     }
 

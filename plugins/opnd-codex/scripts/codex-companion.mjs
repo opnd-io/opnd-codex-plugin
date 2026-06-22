@@ -1219,7 +1219,8 @@ function buildTaskRequest({
   parentClaudeSessionId,
   executionContractHash,
   codexHomeMode,
-  codexHomeHash
+  codexHomeHash,
+  requireBroker
 }) {
   return {
     cwd,
@@ -1248,7 +1249,11 @@ function buildTaskRequest({
     parentClaudeSessionId,
     executionContractHash,
     codexHomeMode,
-    codexHomeHash
+    codexHomeHash,
+    // #21 — persist so a broker-spawned worker (which re-enters executeTaskRun
+    // with the subagent's PATH) keeps the broker-only routing and skips the
+    // local codex availability / direct-spawn paths.
+    requireBroker: requireBroker === true
   };
 }
 
@@ -2020,7 +2025,8 @@ async function handleTask(argv) {
       capsuleHash: promptSource.capsule?.hash ?? null,
       context: options.context ?? null,
       appendInstruction: options["append-instruction"] ?? null,
-      ...taskJobMetadata
+      ...taskJobMetadata,
+      requireBroker
     });
     const { payload } = await enqueueBackgroundTask(cwd, job, request, { allowLocalFallback: !requireBroker });
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
@@ -2071,12 +2077,13 @@ async function handleTask(argv) {
       { json: options.json }
     );
   } catch (error) {
-    // #21 — when a --require-broker (subagent) task has no survivable broker,
-    // surface the actionable diagnostic on STDOUT with exit 0. Otherwise it
-    // becomes a stderr+exit1 that the codex-rescue subagent hides behind its
-    // generic "Codex was not invoked" failure line. runTrackedJob has already
-    // recorded the job as failed. (code SoT: app-server.mjs NO_SURVIVABLE_BROKER_CODE)
-    if (error?.code === "NO_SURVIVABLE_BROKER") {
+    // #21 — when a --require-broker (subagent) task cannot reach a survivable
+    // broker (none live, or the shared broker is busy), surface the actionable
+    // diagnostic on STDOUT with exit 0. Otherwise it becomes a stderr+exit1
+    // that the codex-rescue subagent hides behind its generic "Codex was not
+    // invoked" failure line. runTrackedJob has already recorded the job failed.
+    // (codes: app-server.mjs NO_SURVIVABLE_BROKER_CODE; codex.mjs SUBAGENT_BROKER_BUSY)
+    if (error?.code === "NO_SURVIVABLE_BROKER" || error?.code === "SUBAGENT_BROKER_BUSY") {
       outputCommandResult(
         { jobId: job.id, status: "failed", errorMessage: error.message },
         `${error.message}\n`,

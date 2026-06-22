@@ -152,3 +152,46 @@ test("codex-rescue agent always forwards --require-broker on the task invocation
   assert.match(md, /codex-companion\.mjs" task --require-broker/);
   assert.match(md, /always (append|pass) `--require-broker`/i);
 });
+
+// --- Codex PR re-review P2 follow-ups ---
+
+const COMPANION_SRC = path.join(ROOT, "plugins", "opnd-codex", "scripts", "codex-companion.mjs");
+const CODEX_SRC = path.join(ROOT, "plugins", "opnd-codex", "scripts", "lib", "codex.mjs");
+const HOOK_SRC = path.join(ROOT, "plugins", "opnd-codex", "scripts", "session-lifecycle-hook.mjs");
+
+test("background --require-broker persists requireBroker into the stored request (P2)", () => {
+  // A broker-spawned worker re-enters executeTaskRun with the subagent env; the
+  // stored request must carry requireBroker so it keeps the broker-only routing
+  // and skips the local codex availability / direct-spawn paths.
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  const env = subagentEnv(binDir); // no broker -> launch fails fast, but the request is stored first
+  const launch = run("node", [SCRIPT, "task", "--background", "--require-broker", "--json", "do it"], {
+    cwd: repo,
+    env
+  });
+  const payload = JSON.parse(launch.stdout);
+  assert.equal(payload.status, "failed");
+  const res = run("node", [SCRIPT, "result", "--json", payload.jobId], { cwd: repo, env });
+  const stored = JSON.parse(res.stdout).storedJob;
+  assert.equal(stored.request?.requireBroker, true, "stored request must persist requireBroker");
+});
+
+test("broker-busy under requireBroker is surfaced to the subagent, not hidden (P2)", () => {
+  const codexSrc = fs.readFileSync(CODEX_SRC, "utf8");
+  assert.match(codexSrc, /requireBroker && error\?\.rpcCode === BROKER_BUSY_RPC_CODE/);
+  assert.match(codexSrc, /code = "SUBAGENT_BROKER_BUSY"/);
+  const companionSrc = fs.readFileSync(COMPANION_SRC, "utf8");
+  assert.match(
+    companionSrc,
+    /error\?\.code === "NO_SURVIVABLE_BROKER" \|\| error\?\.code === "SUBAGENT_BROKER_BUSY"/
+  );
+});
+
+test("SessionStart only warms the broker with a real workspace cwd (P2)", () => {
+  const src = fs.readFileSync(HOOK_SRC, "utf8");
+  assert.match(src, /if \(input\.cwd\) \{[\s\S]*?await warmBrokerBestEffort\(input\.cwd\);/);
+  assert.doesNotMatch(src, /warmBrokerBestEffort\(input\.cwd \|\| process\.cwd\(\)\)/);
+});

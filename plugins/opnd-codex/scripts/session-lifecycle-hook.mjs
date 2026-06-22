@@ -155,8 +155,16 @@ async function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
   // #338 — codex-namespaced so other plugins' CLAUDE_PLUGIN_DATA is untouched.
   appendEnvVar(CODEX_PLUGIN_DATA_DIR_ENV, process.env[PLUGIN_DATA_ENV]);
-  // #21 — pre-warm the session broker from this (main-session) context.
-  await warmBrokerBestEffort(input.cwd || process.cwd());
+  // #21 — pre-warm the session broker from this (main-session) context, but
+  // ONLY when the hook supplied a real workspace cwd. hooks.json `cd`s into
+  // CLAUDE_PLUGIN_ROOT before running this script, so process.cwd() is the
+  // plugin directory — warming for it would key the broker to the wrong
+  // workspace (real /opnd-codex:* commands resolve broker state from the user's
+  // workspace and would still see no broker, while the plugin-root broker
+  // lingers until idle cleanup).
+  if (input.cwd) {
+    await warmBrokerBestEffort(input.cwd);
+  }
 }
 
 async function handleSessionEnd(input) {
