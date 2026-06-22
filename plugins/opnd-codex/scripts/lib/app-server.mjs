@@ -730,8 +730,8 @@ export const NO_SURVIVABLE_BROKER_MESSAGE =
   "No live Codex broker is available for this workspace, and this task is running in a context that cannot " +
   "spawn one that survives — a codex-rescue subagent runs inside a kill-on-close Job Object (no breakaway on " +
   "Windows), so any broker or app-server it spawns is terminated when the subagent's turn ends (#21). " +
-  "Re-run the request from the main Claude thread first (any /opnd-codex:* command warms a session broker), " +
-  "or use `--background` so the worker is broker-routed.";
+  "Re-run the request from the main Claude thread first — any /opnd-codex:* command there (or the SessionStart " +
+  "hook) warms a session broker that this subagent can then reuse.";
 
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
@@ -752,9 +752,9 @@ export class CodexAppServerClient {
         // Tagged so the foreground task path can surface the diagnostic on
         // stdout (exit 0) rather than letting it become a generic stderr+exit1
         // that the codex-rescue subagent would hide as "Codex was not invoked".
-        const error = new Error(NO_SURVIVABLE_BROKER_MESSAGE);
-        error.code = NO_SURVIVABLE_BROKER_CODE;
-        throw error;
+        // Object.assign keeps the custom `code` typed (checkJs) without a bare
+        // Error-property assignment.
+        throw Object.assign(new Error(NO_SURVIVABLE_BROKER_MESSAGE), { code: NO_SURVIVABLE_BROKER_CODE });
       }
       const brokerClient = new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint: endpoint });
       await brokerClient.initialize();

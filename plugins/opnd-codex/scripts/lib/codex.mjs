@@ -944,13 +944,14 @@ async function withAppServer(cwd, fn, options = {}) {
       // "Codex was not invoked", losing the actionable retry hint. Re-tag it so
       // handleTask surfaces the diagnostic on stdout (like the no-broker case).
       if (requireBroker && error?.rpcCode === BROKER_BUSY_RPC_CODE) {
-        const busy = new Error(
-          "The shared Codex broker is busy with another task, and this codex-rescue subagent cannot fall back to a " +
-            "direct spawn (it would not survive the subagent's Job Object teardown — #21). Retry shortly (the broker " +
-            "serves one task at a time), or re-run from the main Claude thread."
+        throw Object.assign(
+          new Error(
+            "The shared Codex broker is busy with another task, and this codex-rescue subagent cannot fall back to a " +
+              "direct spawn (it would not survive the subagent's Job Object teardown — #21). Retry shortly (the broker " +
+              "serves one task at a time), or re-run from the main Claude thread."
+          ),
+          { code: "SUBAGENT_BROKER_BUSY" }
         );
-        busy.code = "SUBAGENT_BROKER_BUSY";
-        throw busy;
       }
       throw error;
     }
@@ -1992,16 +1993,18 @@ async function recoverTimedOutAppServerTurn(cwd, error, options = {}) {
   // guard forbids. Skip recovery and surface the timeout with an actionable
   // diagnostic instead of dooming a resume subprocess that dies at turn end.
   if (options.requireBroker === true) {
-    const subagentError = withCodexSkipMetadata(
-      new Error(
-        `Codex turn timed out on thread ${threadId ?? "unknown"} and non-interactive resume is unavailable in a ` +
-          "codex-rescue subagent (it would spawn a process that cannot survive the subagent's Job Object teardown — #21). " +
-          "Re-run from the main Claude thread, or inspect /opnd-codex:status / /opnd-codex:result."
+    const subagentError = Object.assign(
+      withCodexSkipMetadata(
+        new Error(
+          `Codex turn timed out on thread ${threadId ?? "unknown"} and non-interactive resume is unavailable in a ` +
+            "codex-rescue subagent (it would spawn a process that cannot survive the subagent's Job Object teardown — #21). " +
+            "Re-run from the main Claude thread, or inspect /opnd-codex:status / /opnd-codex:result."
+        ),
+        SKIP_REASON_TIMEOUT,
+        { threadId, retryInfo: buildRetryInfo({ threadId, budget, attempts: 0, recovered: false }) }
       ),
-      SKIP_REASON_TIMEOUT,
-      { threadId, retryInfo: buildRetryInfo({ threadId, budget, attempts: 0, recovered: false }) }
+      { exitCode: 124 }
     );
-    subagentError.exitCode = 124;
     return emptyTimeoutResumeResult({
       status: 124,
       threadId,

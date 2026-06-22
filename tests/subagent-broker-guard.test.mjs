@@ -182,7 +182,7 @@ test("background --require-broker persists requireBroker into the stored request
 test("broker-busy under requireBroker is surfaced to the subagent, not hidden (P2)", () => {
   const codexSrc = fs.readFileSync(CODEX_SRC, "utf8");
   assert.match(codexSrc, /requireBroker && error\?\.rpcCode === BROKER_BUSY_RPC_CODE/);
-  assert.match(codexSrc, /code = "SUBAGENT_BROKER_BUSY"/);
+  assert.match(codexSrc, /code: "SUBAGENT_BROKER_BUSY"/);
   const companionSrc = fs.readFileSync(COMPANION_SRC, "utf8");
   assert.match(
     companionSrc,
@@ -194,4 +194,17 @@ test("SessionStart only warms the broker with a real workspace cwd (P2)", () => 
   const src = fs.readFileSync(HOOK_SRC, "utf8");
   assert.match(src, /if \(input\.cwd\) \{[\s\S]*?await warmBrokerBestEffort\(input\.cwd\);/);
   assert.doesNotMatch(src, /warmBrokerBestEffort\(input\.cwd \|\| process\.cwd\(\)\)/);
+});
+
+test("hook main() is guarded by an entrypoint check so importing helpers has no side effects (P3)", () => {
+  const src = fs.readFileSync(HOOK_SRC, "utf8");
+  assert.match(
+    src,
+    /if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) \{[\s\S]*?main\(\)/
+  );
+});
+
+test("no-survivable-broker message does not suggest the (also-failing) --background path (P3)", () => {
+  assert.doesNotMatch(NO_SURVIVABLE_BROKER_MESSAGE, /--background/);
+  assert.match(NO_SURVIVABLE_BROKER_MESSAGE, /main Claude thread/);
 });

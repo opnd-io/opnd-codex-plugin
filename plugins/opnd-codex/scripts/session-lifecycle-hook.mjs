@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { readHookStdinJsonAsync } from "./lib/fs.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
@@ -214,7 +215,13 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+// Only run the hook when executed as the entry point — importing this module
+// for its exported helpers (codexOnPath / warmBrokerBestEffort / …, e.g. in
+// tests) must NOT trigger the stdin drain or, worse, a SessionEnd broker
+// teardown if argv happened to match.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}
