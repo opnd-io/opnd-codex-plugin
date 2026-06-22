@@ -27,6 +27,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import {
   heuristicL5,
@@ -209,7 +210,7 @@ export function execute(input = {}) {
 }
 
 // CLI entry
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const file = process.argv[2];
   if (!file) {
     process.stderr.write("usage: action-executor.mjs <triaged.json>\n");

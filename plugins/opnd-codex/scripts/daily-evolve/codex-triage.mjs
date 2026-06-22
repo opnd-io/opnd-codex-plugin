@@ -28,6 +28,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { VERDICTS } from "./lib/verdict-schema.mjs";
 import {
@@ -226,7 +227,7 @@ export function triage(analyzed, opts = {}) {
 export { TRIAGE_DECISIONS, FAN_OUT_THRESHOLD };
 
 // CLI entry — `node codex-triage.mjs <analyzed.json>`
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const inFile = process.argv[2];
   if (!inFile) {
     process.stderr.write("usage: codex-triage.mjs <analyzed.json>\n");

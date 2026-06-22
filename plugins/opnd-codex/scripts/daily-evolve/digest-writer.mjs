@@ -21,6 +21,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { VERDICTS } from "./lib/verdict-schema.mjs";
 import { queryLastN } from "./lib/run-ledger.mjs";
@@ -337,7 +338,7 @@ export function write({
 }
 
 // CLI entry — `node digest-writer.mjs <analyzed.json> [raw.json]`
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const analyzedFile = process.argv[2];
   const rawFile = process.argv[3];
   if (!analyzedFile) {

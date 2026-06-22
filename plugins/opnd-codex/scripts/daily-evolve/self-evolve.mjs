@@ -28,6 +28,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import {
   REVIEW_TYPE,
@@ -261,7 +262,7 @@ export function selfEvolve(opts = {}) {
 }
 
 // CLI entry
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const typeIdx = process.argv.indexOf("--type");
   const reviewType = typeIdx >= 0 ? process.argv[typeIdx + 1] : REVIEW_TYPE.WEEKLY_NORMAL;
   const force = process.argv.includes("--force");
