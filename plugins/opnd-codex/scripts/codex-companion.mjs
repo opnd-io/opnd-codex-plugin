@@ -983,7 +983,13 @@ async function executeReviewRun(request) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
-  ensureCodexAvailable(request.cwd);
+  // #21 — a --require-broker (subagent) task runs entirely through a live
+  // pre-existing broker, which carries its own codex. The subagent's PATH may
+  // not resolve `codex` (GUI-launched shell, #105), so skip the LOCAL
+  // availability check and rely on the broker liveness check in connect().
+  if (!request.requireBroker) {
+    ensureCodexAvailable(request.cwd);
+  }
   // #12 (Windows: codex-cli "windows sandbox: spawn setup refresh") — do NOT
   // pin read-only when the caller omitted a sandbox. handleTask / handleContinue
   // already resolve --sandbox / --write / CODEX_PLUGIN_SANDBOX_DEFAULT into
@@ -1979,7 +1985,13 @@ async function handleTask(argv) {
   };
 
   if (options.background) {
-    ensureCodexAvailable(cwd);
+    // #21 — under --require-broker the broker-spawned worker carries its own
+    // codex; the subagent's PATH may not resolve `codex`. Skip the local check
+    // and rely on broker availability (enqueueBackgroundTask fails fast with a
+    // diagnostic when no live broker exists).
+    if (!requireBroker) {
+      ensureCodexAvailable(cwd);
+    }
     requireTaskRequest(prompt, resumeLast);
 
     const job = {

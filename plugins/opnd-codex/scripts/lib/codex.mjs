@@ -1739,9 +1739,16 @@ export async function runAppServerReview(cwd, options = {}) {
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
+  // #21 — under requireBroker (codex-rescue subagent) the turn runs entirely
+  // through a LIVE pre-existing broker, which carries its own codex. The
+  // subagent's PATH may not resolve `codex` (GUI-launched shell did not inherit
+  // PATH, #105), so skip the LOCAL availability check and rely on the broker
+  // liveness check in connect() — otherwise the broker-only route is unusable.
+  if (!options.requireBroker) {
+    const availability = getCodexAvailability(cwd);
+    if (!availability.available) {
+      throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
+    }
   }
 
   return withAppServer(

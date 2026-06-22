@@ -5,7 +5,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, writeExecutable } from "./helpers.mjs";
+
+// A codex launcher that fails `--version` so getCodexAvailability reports the
+// LOCAL codex as unavailable — simulates a subagent whose PATH cannot resolve a
+// working codex while the (main-session) broker is what actually runs it.
+function installBrokenCodex(binDir) {
+  writeExecutable(path.join(binDir, "codex"), "#!/bin/sh\nexit 1\n");
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(binDir, "codex.cmd"), "@echo off\r\nexit /b 1\r\n", "utf8");
+  }
+}
 import {
   CodexAppServerClient,
   NO_SURVIVABLE_BROKER_CODE,
@@ -115,6 +125,26 @@ test("background task --require-broker with no live broker fails fast (no doomed
   assert.match(result.stdout, /could not be started|No live Codex broker/);
   assert.doesNotMatch(result.stdout, /started in the background/);
   assert.notEqual(result.status, 0, "a failed background launch exits non-zero for scripted callers");
+});
+
+// Codex review P2 — `--require-broker` must bypass the LOCAL codex availability
+// check (the broker carries its own codex). Otherwise a subagent whose PATH
+// cannot resolve codex fails before reaching the live broker, making the
+// broker-only route unusable.
+test("foreground task --require-broker bypasses the local codex availability check", () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const binDir = makeTempDir();
+  installBrokenCodex(binDir); // local `codex --version` fails -> getCodexAvailability unavailable
+  const env = {
+    ...buildEnv(binDir), // prepends the broken codex to PATH, deletes broker endpoint env
+    CODEX_PLUGIN_DATA_DIR: makeTempDir("codex-data-"), // no broker
+    CODEX_PLUGIN_EAGER_BROKER: "0"
+  };
+  const result = run("node", [SCRIPT, "task", "--require-broker", "do it"], { cwd: repo, env });
+  // Reaches connect and reports the broker diagnostic — NOT a local "codex not installed" error.
+  assert.match(result.stdout, /#21/);
+  assert.doesNotMatch(result.stdout + result.stderr, /Codex CLI is not installed/);
 });
 
 test("codex-rescue agent always forwards --require-broker on the task invocation", () => {
