@@ -590,7 +590,10 @@ test("session start hook exports the Claude session id and plugin data dir for l
     env: {
       ...process.env,
       CLAUDE_ENV_FILE: envFile,
-      CLAUDE_PLUGIN_DATA: pluginDataDir
+      CLAUDE_PLUGIN_DATA: pluginDataDir,
+      // #21 — this test asserts env exports only; opt out of the eager broker
+      // warm-up so it does not spawn a real broker (the dev PATH has codex).
+      CODEX_PLUGIN_EAGER_BROKER: "0"
     },
     input: JSON.stringify({
       hook_event_name: "SessionStart",

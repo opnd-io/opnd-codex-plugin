@@ -514,6 +514,25 @@ export function listJobs(cwd, options = {}) {
 // Idempotent. Safe to call from any read entrypoint. Best-effort: if the
 // state lock is contested we skip rather than block, since the next read
 // will reap on its own.
+// #21 (F3 defense-in-depth) — `process_died` means the recorded pid is
+// genuinely gone (not recycled, not "no pid"), yet the job never reached a
+// terminal state on its own. On Windows the dominant cause is an EXTERNAL kill:
+// a foreground codex task hosted inside a `codex-rescue` subagent gets
+// terminated when that subagent's kill-on-close Job Object closes at turn end.
+// Surfacing that likely cause + remedy keeps it from being misread as a
+// watchdog/timeout. `failureReason` stays the machine-readable `reaper:*`.
+export function reapErrorMessage(reason) {
+  if (reason === "process_died") {
+    return (
+      "Job reaped by liveness check (process_died): the worker process is gone but never reported completion. " +
+      "On Windows this usually means it was terminated externally when its spawning context ended — e.g. a " +
+      "codex-rescue subagent's Job Object closing at turn end (issue #21). Prefer a broker-routed/background " +
+      "launch (`--background`, then `/opnd-codex:result --wait <jobId>`) so the worker survives subagent teardown."
+    );
+  }
+  return `Job reaped by liveness check (${reason}).`;
+}
+
 export function reapDeadJobs(cwd, options = {}) {
   const aliveCheck = options.aliveCheck ?? isJobProcessAlive;
   let reaped = [];
@@ -536,7 +555,7 @@ export function reapDeadJobs(cwd, options = {}) {
         job.phase = "terminated";
         job.pid = null;
         job.completedAt = completedAt;
-        job.errorMessage = job.errorMessage ?? `Job reaped by liveness check (${reason}).`;
+        job.errorMessage = job.errorMessage ?? reapErrorMessage(reason);
         job.failureReason = job.failureReason ?? `reaper:${reason}`;
         reaped.push({ id: job.id, reason });
       }
@@ -565,7 +584,7 @@ export function reapDeadJobs(cwd, options = {}) {
           phase: "terminated",
           pid: null,
           completedAt: nowIso(),
-          errorMessage: storedJob.errorMessage ?? `Job reaped by liveness check (${reason}).`,
+          errorMessage: storedJob.errorMessage ?? reapErrorMessage(reason),
           failureReason: storedJob.failureReason ?? `reaper:${reason}`
         };
       });

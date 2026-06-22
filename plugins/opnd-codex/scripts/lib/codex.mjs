@@ -904,13 +904,21 @@ async function withAppServer(cwd, fn, options = {}) {
   // codex spawn (broker bypass) when requested. Sharing a broker between
   // a fast and non-fast caller would silently apply the first tier choice
   // to both.
+  // #21 — when the caller is a subagent (requireBroker), it cannot host a
+  // survivable app-server. We must route through a pre-existing broker and
+  // NEVER fall back to a direct/in-process spawn: that direct spawn would live
+  // in the subagent's kill-on-close Job Object and die at turn end. So the
+  // profile/fast broker-bypass is disabled and the busy/connection retry-direct
+  // path is suppressed (handleTask rejects profile/fast for subagents upstream).
+  const requireBroker = options.requireBroker === true;
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd, {
       serverRequestHandler: options.serverRequestHandler,
       profile: options.profile,
       fast: options.fast,
-      disableBroker: wantsProfile || wantsFast || options.disableBroker === true
+      requireExistingBroker: requireBroker,
+      disableBroker: !requireBroker && (wantsProfile || wantsFast || options.disableBroker === true)
     });
     const result = await fn(client);
     await client.close();
@@ -918,8 +926,9 @@ async function withAppServer(cwd, fn, options = {}) {
   } catch (error) {
     const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
     const shouldRetryDirect =
-      (options.retryDirectOnBusy !== false && client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
-      (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED"));
+      !requireBroker &&
+      ((options.retryDirectOnBusy !== false && client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
+        (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED")));
 
     if (client) {
       // Teardown best-effort: a failed close has no recovery path and must
@@ -1830,7 +1839,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile, fast: options.fast });
+  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile, fast: options.fast, requireBroker: options.requireBroker });
 }
 
 function getTimeoutThreadId(error, fallback = null) {
@@ -1955,6 +1964,30 @@ async function recoverTimedOutAppServerTurn(cwd, error, options = {}) {
       recovered: false
     })
   });
+
+  // #21 — in a codex-rescue subagent (requireBroker), the non-interactive
+  // `codex exec resume` recovery spawns a child DIRECTLY from this
+  // (kill-on-close) subagent process — exactly the doomed direct spawn the
+  // guard forbids. Skip recovery and surface the timeout with an actionable
+  // diagnostic instead of dooming a resume subprocess that dies at turn end.
+  if (options.requireBroker === true) {
+    const subagentError = withCodexSkipMetadata(
+      new Error(
+        `Codex turn timed out on thread ${threadId ?? "unknown"} and non-interactive resume is unavailable in a ` +
+          "codex-rescue subagent (it would spawn a process that cannot survive the subagent's Job Object teardown — #21). " +
+          "Re-run from the main Claude thread, or inspect /opnd-codex:status / /opnd-codex:result."
+      ),
+      SKIP_REASON_TIMEOUT,
+      { threadId, retryInfo: buildRetryInfo({ threadId, budget, attempts: 0, recovered: false }) }
+    );
+    subagentError.exitCode = 124;
+    return emptyTimeoutResumeResult({
+      status: 124,
+      threadId,
+      error: subagentError,
+      retryInfo: buildRetryInfo({ threadId, budget, attempts: 0, recovered: false })
+    });
+  }
 
   if (!threadId || budget <= 0) {
     return buildRetryBudgetExceededResult({
