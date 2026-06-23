@@ -41,6 +41,14 @@ drift 시 사용자 onboarding 막힘 — README `## What You Get` 의 command l
 
 `tests/daily-evolve/lib-dependency-rule.test.mjs` 가 source-level 가드 — 위반 시 CI fail.
 
+## Subagent broker survival 정책 (#21, v2.2.4)
+
+codex-rescue subagent 의 foreground `task` 는 subagent 의 kill-on-close Windows Job Object 안에서 실행되므로, app-server / broker 를 **그 컨텍스트에서 직접 spawn 하면 turn 종료 시 죽는다** (`reaper:process_died`, 결과 유실). 따라서:
+
+- `agents/codex-rescue.md` 는 **항상 `task --require-broker`** 를 부여한다 (제거 금지). 이 플래그가 게이트: `connect` 가 live 선존 broker 만 사용하고 broker/직접 app-server 를 local-spawn 하지 않으며, 없으면 stdout(exit 0)에 진단을 surface (subagent pass-through). `--profile`/`--fast` 거부, busy/ENOENT retry-direct 억제, timeout-recovery 의 `codex exec resume` 게이트, background no-local-fallback, local codex 가용성 체크 우회.
+- 살아남는 broker 의 전제는 **main-session(SILENT_BREAKAWAY_OK) 에서 spawn** 된 것. `session-lifecycle-hook.mjs` 가 SessionStart 에서 (workspace cwd 가 있을 때만, codex-on-PATH 게이트) 사전 warm-up — opt-out `CODEX_PLUGIN_EAGER_BROKER=0`. 가드는 warm 실패해도 fail-fast 라 warm 에 *의존* 하지 않음.
+- 신규 코드는 plain `Error` 에 `error.code = …` 직접 대입 대신 `Object.assign(new Error(…), { code })` — checkJs(`npm run build`) 에러 추가 금지 (기존 13건은 선존 debt). 가드 회귀 테스트: `tests/subagent-broker-guard.test.mjs`.
+
 ## Codex pair iteration 정책
 
 high-risk PR (>20 files, security/auth/PII 영역, ledger schema 변경) 만 R1-R3 0 수렴 권장. 작은 fix (typo, single function, comment) 는 single-pass 로 충분.

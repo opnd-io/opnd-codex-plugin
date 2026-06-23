@@ -416,6 +416,14 @@ Diagnostic walkthrough and edge cases: [`docs/TROUBLESHOOTING.md`](docs/TROUBLES
 export CODEX_PLUGIN_SUPPRESS_V2_NOTICE=1
 ```
 
+### Eager session broker (v2.2.4)
+
+So a long-running `codex-rescue` subagent task survives its turn ending on Windows, v2.2.4 pre-warms a session broker from the main-session context at `SessionStart`. The subagent then reuses that broker instead of lazily spawning one inside its own kill-on-close Job Object (which would be terminated mid-work — issue #21). It only warms when `codex` is resolvable on `PATH`, so non-codex sessions pay nothing. Opt out with:
+
+```bash
+export CODEX_PLUGIN_EAGER_BROKER=0
+```
+
 ## Codex Integration
 
 The Codex plugin wraps the [Codex app server](https://developers.openai.com/codex/app-server). It uses the global `codex` binary installed in your environment and [applies the same configuration](https://developers.openai.com/codex/config-basic).
