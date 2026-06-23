@@ -10,6 +10,7 @@ import {
   isPidRunning,
   listJobs,
   reapDeadJobs,
+  reapErrorMessage,
   upsertJob,
   writeJobFile
 } from "../plugins/opnd-codex/scripts/lib/state.mjs";
@@ -183,6 +184,57 @@ test("listJobs without reap option preserves legacy behavior (no reap)", () => {
   const jobs = listJobs(workspaceRoot);
   const stored = jobs.find((entry) => entry.id === jobId);
   assert.equal(stored.status, "running", "no reap when option is omitted");
+});
+
+// #21 (F3) — a genuinely-gone pid (process_died) gets a diagnostic hint that it
+// was likely killed externally by a subagent Job Object teardown, so it is not
+// misread as a watchdog/timeout. Other reap reasons keep the plain message.
+test("reapErrorMessage: #21 subagent-teardown hint only for process_died", () => {
+  const died = reapErrorMessage("process_died");
+  assert.match(died, /process_died/);
+  assert.match(died, /issue #21/);
+  assert.match(died, /subagent/i);
+  assert.match(died, /--background/);
+  assert.equal(reapErrorMessage("pid_reused"), "Job reaped by liveness check (pid_reused).");
+  assert.equal(reapErrorMessage("no_pid_recorded"), "Job reaped by liveness check (no_pid_recorded).");
+});
+
+test("reapDeadJobs writes the #21 hint into errorMessage for a process_died reap", () => {
+  const workspaceRoot = makeTempDir();
+  ensureStateDir(workspaceRoot);
+
+  const jobId = "task-test-process-died-hint";
+  writeJobFile(workspaceRoot, jobId, {
+    id: jobId,
+    workspaceRoot,
+    kind: "task",
+    status: "running",
+    phase: "running",
+    pid: 999_999_996, // finite + (almost certainly) not running -> process_died
+    processStartedAt: "fake",
+    startedAt: new Date().toISOString(),
+    logFile: null
+  });
+  upsertJob(workspaceRoot, {
+    id: jobId,
+    workspaceRoot,
+    kind: "task",
+    status: "running",
+    phase: "running",
+    pid: 999_999_996
+  });
+
+  const reaped = reapDeadJobs(workspaceRoot);
+  const entry = reaped.find((r) => r.id === jobId);
+  // If the OS happens to have recycled this exact pid (pid_reused), the hint is
+  // intentionally absent — the unit test above covers the message itself.
+  if (!entry || entry.reason !== "process_died") {
+    return;
+  }
+  const stored = listJobs(workspaceRoot).find((e) => e.id === jobId);
+  assert.equal(stored.failureReason, "reaper:process_died");
+  assert.match(stored.errorMessage, /issue #21/);
+  assert.match(stored.errorMessage, /--background/);
 });
 
 test("getProcessStartTimeRaw uses injected spawnSync for unit tests (PID reuse simulation)", () => {

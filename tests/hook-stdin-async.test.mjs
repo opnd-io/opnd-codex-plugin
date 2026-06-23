@@ -28,7 +28,10 @@ const STOP_HOOK = path.join(ROOT_DIR, "plugins", "opnd-codex", "scripts", "stop-
 function spawnHook(scriptPath, args, { stdin = null, timeoutMs = 8000 } = {}) {
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, [scriptPath, ...args], {
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: "" },
+      // #21 — these tests exercise stdin handling only; opt out of the eager
+      // broker warm-up so SessionStart does not spawn a real broker (the dev
+      // PATH has codex) or inflate the drain-fallback timing assertion.
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: "", CODEX_PLUGIN_EAGER_BROKER: "0" },
       stdio: ["pipe", "pipe", "pipe"]
     });
 

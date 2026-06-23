@@ -167,3 +167,73 @@ test("resumeTimedOutThread classifies its own timeout", async () => {
   assert.equal(result.error.skipReason, SKIP_REASON_TIMEOUT);
   assert.equal(result.error.threadId, "thread-timeout");
 });
+
+// #21 — a `--require-broker` (codex-rescue subagent) turn that times out must
+// NOT recover via a direct `codex exec resume` spawn: that child is spawned
+// from the subagent's kill-on-close Job Object and dies at turn end. Recovery
+// is skipped and the timeout is surfaced with an actionable diagnostic.
+test("runAppServerTurnWithTimeoutResume does NOT direct-resume in a subagent (requireBroker)", async () => {
+  const timeout = new TurnWatchdogError("watchdog timeout", {
+    threadId: "thread-subagent",
+    watchdogMs: 10
+  });
+  let resumeCalls = 0;
+
+  const result = await runAppServerTurnWithTimeoutResume(process.cwd(), {
+    env: {},
+    requireBroker: true,
+    runTurnImpl: async () => {
+      throw timeout;
+    },
+    resumeTimedOutThreadImpl: async () => {
+      resumeCalls += 1;
+      return { status: 0, stdout: "should not be reached", stderr: "", timedOut: false };
+    }
+  });
+
+  assert.equal(resumeCalls, 0, "must NOT spawn a direct codex exec resume from a subagent");
+  assert.equal(result.status, 124);
+  assert.equal(result.threadId, "thread-subagent");
+  assert.equal(result.error?.skipReason, SKIP_REASON_TIMEOUT);
+  assert.match(result.error.message, /#21/);
+  assert.match(result.error.message, /subagent/i);
+});
+
+// Same guard, but via the result-classified timeout path (runTurnImpl RETURNS a
+// timeout-classified result instead of throwing) — both paths must skip resume.
+test("requireBroker skips resume on the result-classified timeout path too (#21)", async () => {
+  const timeout = new TurnWatchdogError("watchdog timeout", { threadId: "thread-rc", watchdogMs: 10 });
+  let resumeCalls = 0;
+  const result = await runAppServerTurnWithTimeoutResume(process.cwd(), {
+    env: {},
+    requireBroker: true,
+    runTurnImpl: async () => ({ status: 124, threadId: "thread-rc", error: timeout }),
+    resumeTimedOutThreadImpl: async () => {
+      resumeCalls += 1;
+      return { status: 0, stdout: "should not be reached", stderr: "", timedOut: false };
+    }
+  });
+  assert.equal(resumeCalls, 0, "result-classified timeout must also skip direct resume in a subagent");
+  assert.equal(result.status, 124);
+  assert.equal(result.error?.skipReason, SKIP_REASON_TIMEOUT);
+  assert.match(result.error.message, /#21/);
+});
+
+// Regression guard: the non-subagent path still resumes (existing behavior).
+test("runAppServerTurnWithTimeoutResume still resumes when requireBroker is absent", async () => {
+  const timeout = new TurnWatchdogError("watchdog timeout", { threadId: "thread-main", watchdogMs: 10 });
+  let resumeCalls = 0;
+  const result = await runAppServerTurnWithTimeoutResume(process.cwd(), {
+    env: {},
+    runTurnImpl: async () => {
+      throw timeout;
+    },
+    resumeTimedOutThreadImpl: async () => {
+      resumeCalls += 1;
+      return { status: 0, stdout: "recovered\n", stderr: "", timedOut: false };
+    }
+  });
+  assert.equal(resumeCalls, 1);
+  assert.equal(result.status, 0);
+  assert.equal(result.finalMessage, "recovered");
+});

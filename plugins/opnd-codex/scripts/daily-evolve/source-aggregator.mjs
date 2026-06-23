@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const UPSTREAM_REPO = "openai/codex-plugin-cc";
@@ -348,7 +349,7 @@ function safeCall(fn, label) {
 }
 
 // CLI entry — `node source-aggregator.mjs [YYYY-MM-DD]`
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dateArg = process.argv[2];
   const result = aggregate({ date: dateArg });
   const counts = {

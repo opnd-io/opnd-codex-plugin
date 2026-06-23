@@ -983,7 +983,13 @@ async function executeReviewRun(request) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
-  ensureCodexAvailable(request.cwd);
+  // #21 — a --require-broker (subagent) task runs entirely through a live
+  // pre-existing broker, which carries its own codex. The subagent's PATH may
+  // not resolve `codex` (GUI-launched shell, #105), so skip the LOCAL
+  // availability check and rely on the broker liveness check in connect().
+  if (!request.requireBroker) {
+    ensureCodexAvailable(request.cwd);
+  }
   // #12 (Windows: codex-cli "windows sandbox: spawn setup refresh") — do NOT
   // pin read-only when the caller omitted a sandbox. handleTask / handleContinue
   // already resolve --sandbox / --write / CODEX_PLUGIN_SANDBOX_DEFAULT into
@@ -1045,6 +1051,9 @@ async function executeTaskRun(request) {
           onProgress: request.onProgress
         })
       : null,
+    // #21 — propagate the subagent-safe broker requirement into the turn so
+    // withAppServer routes through a pre-existing broker and never direct-spawns.
+    requireBroker: request.requireBroker === true,
     persistThread: true,
     // PR-5.7 (#283) — when no user prompt is supplied we used to fall back to
     // DEFAULT_CONTINUE_PROMPT, which made every "continue/resume" session
@@ -1130,6 +1139,12 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
+  // #21 — enqueueBackgroundTask can return a terminal `failed` payload when a
+  // subagent-context (--require-broker) task has no survivable broker to run
+  // under. Render the diagnostic instead of a misleading "started" line.
+  if (payload.status === "failed") {
+    return `${payload.title} could not be started: ${payload.errorMessage ?? "no survivable broker."}\n`;
+  }
   return `${payload.title} started in the background as ${payload.jobId}. Check /opnd-codex:status ${payload.jobId} for progress.\n`;
 }
 
@@ -1204,7 +1219,8 @@ function buildTaskRequest({
   parentClaudeSessionId,
   executionContractHash,
   codexHomeMode,
-  codexHomeHash
+  codexHomeHash,
+  requireBroker
 }) {
   return {
     cwd,
@@ -1233,7 +1249,11 @@ function buildTaskRequest({
     parentClaudeSessionId,
     executionContractHash,
     codexHomeMode,
-    codexHomeHash
+    codexHomeHash,
+    // #21 — persist so a broker-spawned worker (which re-enters executeTaskRun
+    // with the subagent's PATH) keeps the broker-only routing and skips the
+    // local codex availability / direct-spawn paths.
+    requireBroker: requireBroker === true
   };
 }
 
@@ -1566,7 +1586,7 @@ async function spawnTaskWorkerViaBroker(cwd, jobId) {
   return { spawned: false, ambiguous: false };
 }
 
-async function enqueueBackgroundTask(cwd, job, request) {
+async function enqueueBackgroundTask(cwd, job, request, { allowLocalFallback = true } = {}) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
@@ -1614,6 +1634,46 @@ async function enqueueBackgroundTask(cwd, job, request) {
     // the same job files, so we don't. The job stays `queued`; re-dispatch (or a
     // resume path) recovers it if the broker did not actually start one.
     spawnedVia = "broker-ambiguous";
+  } else if (!allowLocalFallback) {
+    // #21 — subagent context (--require-broker): no live broker was reachable,
+    // and a locally-spawned detached worker would live in the subagent's
+    // kill-on-close Job Object and die at turn end. Refuse to local-spawn; fail
+    // the job with an actionable diagnostic instead of silently dooming it.
+    const failedAt = nowIso();
+    const errorMessage =
+      "No live Codex broker was available to run this background task survivably (--require-broker, subagent " +
+      "context). Re-run from the main Claude thread first (any /opnd-codex:* command warms a session broker). (#21)";
+    appendLogLine(logFile, "worker.spawn via=none (no live broker; local fallback disabled for subagent context)");
+    const terminalPatch = {
+      status: "failed",
+      phase: "terminated",
+      pid: null,
+      completedAt: failedAt,
+      errorMessage,
+      failureReason: "no_survivable_broker"
+    };
+    updateJobFile(job.workspaceRoot, job.id, (storedJob) => ({ ...(storedJob ?? queuedRecord), ...terminalPatch }));
+    upsertJob(job.workspaceRoot, { id: job.id, ...terminalPatch });
+    emitEvent("failed", {
+      traceId,
+      jobId: job.id,
+      jobClass: job.jobClass ?? job.kind ?? "task",
+      phase: "terminated",
+      cwd
+    });
+    return {
+      payload: {
+        jobId: job.id,
+        status: "failed",
+        title: job.title,
+        summary: job.summary,
+        logFile,
+        traceId,
+        errorMessage
+      },
+      logFile,
+      traceId
+    };
   } else {
     spawnedVia = "local";
     const child = spawnDetachedTaskWorker(cwd, job.id, stdioFile);
@@ -1787,7 +1847,12 @@ async function handleTask(argv) {
       // PR-7.6 (#210) — request the Codex fast service tier for this
       // single invocation, equivalent to `-c service_tier=fast` in the
       // upstream codex CLI. Trade ~2x credits for ~1.5x speed.
-      "fast"
+      "fast",
+      // #21 — set by the codex-rescue subagent. The task runs inside a
+      // kill-on-close Job Object, so it must NOT host the app-server itself
+      // (in-process) nor lazily spawn a broker from its own doomed job. Route
+      // through a pre-existing main-session broker or fail with a diagnostic.
+      "require-broker"
     ],
     aliasMap: {
       m: "model"
@@ -1796,6 +1861,18 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  // #21 — `--require-broker` (set by the codex-rescue subagent) forbids any
+  // direct/in-process codex spawn. `--profile` / `--fast` REQUIRE a direct
+  // spawn to take effect, so the two are mutually exclusive: silently routing
+  // them through a shared broker would drop the user's profile/tier choice.
+  const requireBroker = Boolean(options["require-broker"]);
+  if (requireBroker && (options.profile || options.fast)) {
+    throw new Error(
+      "`--profile` / `--fast` cannot be combined with `--require-broker` (codex-rescue subagent context): " +
+        "both force a direct in-process codex spawn that would not survive the subagent's Job Object teardown (#21). " +
+        "Re-run the request from the main Claude thread, or drop --profile/--fast."
+    );
+  }
   // PR-7.7 (#213) — resolveModel/Effort/Sandbox respect the user-level
   // config defaults from ~/.config/codex-plugin-cc/config.json when the
   // CLI option is not supplied. CLI always wins.
@@ -1913,7 +1990,13 @@ async function handleTask(argv) {
   };
 
   if (options.background) {
-    ensureCodexAvailable(cwd);
+    // #21 — under --require-broker the broker-spawned worker carries its own
+    // codex; the subagent's PATH may not resolve `codex`. Skip the local check
+    // and rely on broker availability (enqueueBackgroundTask fails fast with a
+    // diagnostic when no live broker exists).
+    if (!requireBroker) {
+      ensureCodexAvailable(cwd);
+    }
     requireTaskRequest(prompt, resumeLast);
 
     const job = {
@@ -1942,10 +2025,18 @@ async function handleTask(argv) {
       capsuleHash: promptSource.capsule?.hash ?? null,
       context: options.context ?? null,
       appendInstruction: options["append-instruction"] ?? null,
-      ...taskJobMetadata
+      ...taskJobMetadata,
+      requireBroker
     });
-    const { payload } = await enqueueBackgroundTask(cwd, job, request);
+    const { payload } = await enqueueBackgroundTask(cwd, job, request, { allowLocalFallback: !requireBroker });
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    // #21 — a background launch that could not secure a survivable broker is a
+    // real launch failure (no job is running). Signal it with a non-zero exit
+    // for scripted callers. (codex-rescue never uses --background, so this does
+    // not affect the subagent stdout-diagnostic pass-through path.)
+    if (payload.status === "failed") {
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -1955,34 +2046,53 @@ async function handleTask(argv) {
     approvalPolicy,
     ...taskJobMetadata
   };
-  await runForegroundCommand(
-    job,
-    (progress) =>
-      executeTaskRun({
-        cwd,
-        model,
-        effort,
-        profile: options.profile,
-        fast: Boolean(options.fast),
-        prompt,
-        write,
-        sandbox: effectiveSandbox,
-        approvalPolicy,
-        resumeLast: resumeLast || Boolean(explicitResumeId),
-        threadId: explicitResumeId,
-        jobId: job.id,
-        outputProfile: outputProfile.name,
-        outputProfileSchema: outputProfile.schema,
-        promptSource: promptSource.promptSource,
-        capsulePath: promptSource.capsule?.path ?? null,
-        capsuleHash: promptSource.capsule?.hash ?? null,
-        context: options.context ?? null,
-        appendInstruction: options["append-instruction"] ?? null,
-        ...taskJobMetadata,
-        onProgress: progress
-      }),
-    { json: options.json }
-  );
+  try {
+    await runForegroundCommand(
+      job,
+      (progress) =>
+        executeTaskRun({
+          cwd,
+          model,
+          effort,
+          profile: options.profile,
+          fast: Boolean(options.fast),
+          prompt,
+          write,
+          sandbox: effectiveSandbox,
+          approvalPolicy,
+          resumeLast: resumeLast || Boolean(explicitResumeId),
+          threadId: explicitResumeId,
+          jobId: job.id,
+          outputProfile: outputProfile.name,
+          outputProfileSchema: outputProfile.schema,
+          promptSource: promptSource.promptSource,
+          capsulePath: promptSource.capsule?.path ?? null,
+          capsuleHash: promptSource.capsule?.hash ?? null,
+          context: options.context ?? null,
+          appendInstruction: options["append-instruction"] ?? null,
+          ...taskJobMetadata,
+          requireBroker,
+          onProgress: progress
+        }),
+      { json: options.json }
+    );
+  } catch (error) {
+    // #21 — when a --require-broker (subagent) task cannot reach a survivable
+    // broker (none live, or the shared broker is busy), surface the actionable
+    // diagnostic on STDOUT with exit 0. Otherwise it becomes a stderr+exit1
+    // that the codex-rescue subagent hides behind its generic "Codex was not
+    // invoked" failure line. runTrackedJob has already recorded the job failed.
+    // (codes: app-server.mjs NO_SURVIVABLE_BROKER_CODE; codex.mjs SUBAGENT_BROKER_BUSY)
+    if (error?.code === "NO_SURVIVABLE_BROKER" || error?.code === "SUBAGENT_BROKER_BUSY") {
+      outputCommandResult(
+        { jobId: job.id, status: "failed", errorMessage: error.message },
+        `${error.message}\n`,
+        options.json
+      );
+      return;
+    }
+    throw error;
+  }
 }
 
 async function handleTaskWorker(argv) {

@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { readHookStdinJsonAsync } from "./lib/fs.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
 import {
   clearBrokerSession,
+  ensureBrokerSession,
   LOG_FILE_ENV,
   loadBrokerSession,
   PID_FILE_ENV,
@@ -81,10 +84,88 @@ function cleanupSessionJobs(cwd, sessionId) {
   });
 }
 
-function handleSessionStart(input) {
+// #21 — eager broker warm-up. The broker survives the whole Claude session
+// because it is spawned from the main-session Job Object (which carries
+// SILENT_BREAKAWAY_OK on Windows, so the broker auto-escapes). When a later
+// `codex-rescue` subagent runs a foreground `task`, it then REUSES this warm
+// broker (the codex app-server is hosted by the surviving broker) instead of
+// lazily spawning a fresh broker inside the subagent's own kill-on-close Job
+// Object — that lazy spawn is what dies on subagent turn-end, losing the
+// result (#21). SessionStart is the only plugin touchpoint guaranteed to run
+// in the main session before any subagent, so it is where the warm belongs.
+// Default-on; opt out with CODEX_PLUGIN_EAGER_BROKER=0 (also off when value is
+// false/off/no). Best-effort + time-boxed: a warm failure must NEVER break
+// session start, and the lazy path still works for main-thread commands.
+export function eagerBrokerEnabled(env = process.env) {
+  const raw = String(env.CODEX_PLUGIN_EAGER_BROKER ?? "").trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+}
+
+// Cheap (no subprocess) codex-on-PATH probe so non-codex sessions never pay for
+// a broker spawn. Scans PATH dirs for a codex launcher; on Windows it also
+// checks the PATHEXT-style launcher suffixes Node would resolve.
+export function codexOnPath(env = process.env) {
+  const rawPath = env.PATH ?? env.Path ?? "";
+  if (!rawPath) {
+    return false;
+  }
+  const names =
+    process.platform === "win32"
+      ? ["codex.exe", "codex.cmd", "codex.bat", "codex.ps1", "codex"]
+      : ["codex"];
+  for (const dir of rawPath.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+    for (const name of names) {
+      try {
+        if (fs.existsSync(path.join(dir, name))) {
+          return true;
+        }
+      } catch {
+        // Unreadable PATH entry — skip it.
+      }
+    }
+  }
+  return false;
+}
+
+// Exposed (with injectable deps) for unit tests so they can assert the gating
+// without spawning a real broker.
+export async function warmBrokerBestEffort(cwd, options = {}) {
+  const env = options.env ?? process.env;
+  const ensure = options.ensureBroker ?? ensureBrokerSession;
+  const pathProbe = options.codexOnPath ?? codexOnPath;
+  if (!eagerBrokerEnabled(env)) {
+    return { warmed: false, reason: "opted-out" };
+  }
+  if (!pathProbe(env)) {
+    return { warmed: false, reason: "codex-not-on-path" };
+  }
+  try {
+    const session = await ensure(cwd, { timeoutMs: options.timeoutMs ?? 2000, env });
+    return session?.endpoint ? { warmed: true, reason: "ok" } : { warmed: false, reason: "not-ready" };
+  } catch (error) {
+    // The lazy connect path still works for the main thread; a warm failure
+    // only forgoes the subagent-cold-start protection.
+    return { warmed: false, reason: "error", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
   // #338 — codex-namespaced so other plugins' CLAUDE_PLUGIN_DATA is untouched.
   appendEnvVar(CODEX_PLUGIN_DATA_DIR_ENV, process.env[PLUGIN_DATA_ENV]);
+  // #21 — pre-warm the session broker from this (main-session) context, but
+  // ONLY when the hook supplied a real workspace cwd. hooks.json `cd`s into
+  // CLAUDE_PLUGIN_ROOT before running this script, so process.cwd() is the
+  // plugin directory — warming for it would key the broker to the wrong
+  // workspace (real /opnd-codex:* commands resolve broker state from the user's
+  // workspace and would still see no broker, while the plugin-root broker
+  // lingers until idle cleanup).
+  if (input.cwd) {
+    await warmBrokerBestEffort(input.cwd);
+  }
 }
 
 async function handleSessionEnd(input) {
@@ -125,7 +206,7 @@ async function main() {
   const eventName = process.argv[2] ?? input.hook_event_name ?? "";
 
   if (eventName === "SessionStart") {
-    handleSessionStart(input);
+    await handleSessionStart(input);
     return;
   }
 
@@ -134,7 +215,13 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+// Only run the hook when executed as the entry point — importing this module
+// for its exported helpers (codexOnPath / warmBrokerBestEffort / …, e.g. in
+// tests) must NOT trigger the stdin drain or, worse, a SessionEnd broker
+// teardown if argv happened to match.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}

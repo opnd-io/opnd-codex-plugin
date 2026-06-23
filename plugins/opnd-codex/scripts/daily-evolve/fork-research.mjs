@@ -32,6 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import {
@@ -373,7 +374,7 @@ export function research(opts = {}) {
 }
 
 // CLI entry
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const result = research();
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 }

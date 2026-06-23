@@ -904,13 +904,21 @@ async function withAppServer(cwd, fn, options = {}) {
   // codex spawn (broker bypass) when requested. Sharing a broker between
   // a fast and non-fast caller would silently apply the first tier choice
   // to both.
+  // #21 — when the caller is a subagent (requireBroker), it cannot host a
+  // survivable app-server. We must route through a pre-existing broker and
+  // NEVER fall back to a direct/in-process spawn: that direct spawn would live
+  // in the subagent's kill-on-close Job Object and die at turn end. So the
+  // profile/fast broker-bypass is disabled and the busy/connection retry-direct
+  // path is suppressed (handleTask rejects profile/fast for subagents upstream).
+  const requireBroker = options.requireBroker === true;
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd, {
       serverRequestHandler: options.serverRequestHandler,
       profile: options.profile,
       fast: options.fast,
-      disableBroker: wantsProfile || wantsFast || options.disableBroker === true
+      requireExistingBroker: requireBroker,
+      disableBroker: !requireBroker && (wantsProfile || wantsFast || options.disableBroker === true)
     });
     const result = await fn(client);
     await client.close();
@@ -918,8 +926,9 @@ async function withAppServer(cwd, fn, options = {}) {
   } catch (error) {
     const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
     const shouldRetryDirect =
-      (options.retryDirectOnBusy !== false && client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
-      (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED"));
+      !requireBroker &&
+      ((options.retryDirectOnBusy !== false && client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
+        (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED")));
 
     if (client) {
       // Teardown best-effort: a failed close has no recovery path and must
@@ -929,6 +938,21 @@ async function withAppServer(cwd, fn, options = {}) {
     }
 
     if (!shouldRetryDirect) {
+      // #21 — under requireBroker a BUSY shared broker is suppressed from the
+      // direct-retry path above, but a raw throw would surface in the
+      // codex-rescue foreground path as a non-zero exit that the agent hides as
+      // "Codex was not invoked", losing the actionable retry hint. Re-tag it so
+      // handleTask surfaces the diagnostic on stdout (like the no-broker case).
+      if (requireBroker && error?.rpcCode === BROKER_BUSY_RPC_CODE) {
+        throw Object.assign(
+          new Error(
+            "The shared Codex broker is busy with another task, and this codex-rescue subagent cannot fall back to a " +
+              "direct spawn (it would not survive the subagent's Job Object teardown — #21). Retry shortly (the broker " +
+              "serves one task at a time), or re-run from the main Claude thread."
+          ),
+          { code: "SUBAGENT_BROKER_BUSY" }
+        );
+      }
       throw error;
     }
 
@@ -1730,9 +1754,16 @@ export async function runAppServerReview(cwd, options = {}) {
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
+  // #21 — under requireBroker (codex-rescue subagent) the turn runs entirely
+  // through a LIVE pre-existing broker, which carries its own codex. The
+  // subagent's PATH may not resolve `codex` (GUI-launched shell did not inherit
+  // PATH, #105), so skip the LOCAL availability check and rely on the broker
+  // liveness check in connect() — otherwise the broker-only route is unusable.
+  if (!options.requireBroker) {
+    const availability = getCodexAvailability(cwd);
+    if (!availability.available) {
+      throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`.");
+    }
   }
 
   return withAppServer(
@@ -1830,7 +1861,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
-  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile, fast: options.fast });
+  }, { serverRequestHandler: options.serverRequestHandler, profile: options.profile, fast: options.fast, requireBroker: options.requireBroker });
 }
 
 function getTimeoutThreadId(error, fallback = null) {
@@ -1955,6 +1986,32 @@ async function recoverTimedOutAppServerTurn(cwd, error, options = {}) {
       recovered: false
     })
   });
+
+  // #21 — in a codex-rescue subagent (requireBroker), the non-interactive
+  // `codex exec resume` recovery spawns a child DIRECTLY from this
+  // (kill-on-close) subagent process — exactly the doomed direct spawn the
+  // guard forbids. Skip recovery and surface the timeout with an actionable
+  // diagnostic instead of dooming a resume subprocess that dies at turn end.
+  if (options.requireBroker === true) {
+    const subagentError = Object.assign(
+      withCodexSkipMetadata(
+        new Error(
+          `Codex turn timed out on thread ${threadId ?? "unknown"} and non-interactive resume is unavailable in a ` +
+            "codex-rescue subagent (it would spawn a process that cannot survive the subagent's Job Object teardown — #21). " +
+            "Re-run from the main Claude thread, or inspect /opnd-codex:status / /opnd-codex:result."
+        ),
+        SKIP_REASON_TIMEOUT,
+        { threadId, retryInfo: buildRetryInfo({ threadId, budget, attempts: 0, recovered: false }) }
+      ),
+      { exitCode: 124 }
+    );
+    return emptyTimeoutResumeResult({
+      status: 124,
+      threadId,
+      error: subagentError,
+      retryInfo: buildRetryInfo({ threadId, budget, attempts: 0, recovered: false })
+    });
+  }
 
   if (!threadId || budget <= 0) {
     return buildRetryBudgetExceededResult({

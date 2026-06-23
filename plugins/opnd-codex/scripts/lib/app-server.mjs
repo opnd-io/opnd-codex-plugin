@@ -14,7 +14,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
-import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
+import { ensureBrokerSession, loadBrokerSession, waitForBrokerEndpoint } from "./broker-lifecycle.mjs";
 import { cleanProtocolLine } from "./jsonl.mjs";
 import { buildCommandInvocation, terminateProcessTree } from "./process.mjs";
 
@@ -724,8 +724,42 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
   }
 }
 
+// #21 — surfaced when a subagent-context task has no surviving broker to use.
+export const NO_SURVIVABLE_BROKER_CODE = "NO_SURVIVABLE_BROKER";
+export const NO_SURVIVABLE_BROKER_MESSAGE =
+  "No live Codex broker is available for this workspace, and this task is running in a context that cannot " +
+  "spawn one that survives — a codex-rescue subagent runs inside a kill-on-close Job Object (no breakaway on " +
+  "Windows), so any broker or app-server it spawns is terminated when the subagent's turn ends (#21). " +
+  "Re-run the request from the main Claude thread first — any /opnd-codex:* command there (or the SessionStart " +
+  "hook) warms a session broker that this subagent can then reuse.";
+
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
+    // #21 — subagent-safe path. When the caller cannot host a survivable
+    // app-server itself (a codex-rescue subagent's Job Object closes at turn
+    // end), require a pre-existing LIVE broker and NEVER spawn a broker or a
+    // direct app-server locally. Fail fast with an actionable diagnostic
+    // instead of silently dooming the work.
+    if (options.requireExistingBroker) {
+      const endpoint =
+        options.brokerEndpoint ??
+        options.env?.[BROKER_ENDPOINT_ENV] ??
+        process.env[BROKER_ENDPOINT_ENV] ??
+        loadBrokerSession(cwd)?.endpoint ??
+        null;
+      const live = endpoint ? await waitForBrokerEndpoint(endpoint, options.brokerLivenessTimeoutMs ?? 800) : false;
+      if (!live) {
+        // Tagged so the foreground task path can surface the diagnostic on
+        // stdout (exit 0) rather than letting it become a generic stderr+exit1
+        // that the codex-rescue subagent would hide as "Codex was not invoked".
+        // Object.assign keeps the custom `code` typed (checkJs) without a bare
+        // Error-property assignment.
+        throw Object.assign(new Error(NO_SURVIVABLE_BROKER_MESSAGE), { code: NO_SURVIVABLE_BROKER_CODE });
+      }
+      const brokerClient = new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint: endpoint });
+      await brokerClient.initialize();
+      return brokerClient;
+    }
     let brokerEndpoint = null;
     if (!options.disableBroker) {
       brokerEndpoint = options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV] ?? null;
