@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.4 (2026-06-23)
+
+Bug fix — codex-rescue subagent foreground task 가 Windows Job Object teardown 으로 죽던 문제 (issue #21, PR #22):
+
+- **fix(broker): subagent-safe broker 정책** — codex-rescue subagent 가 foreground `task` 를 실행하면 app-server 가 subagent 의 kill-on-close Job Object 안에서 in-process 로 떠 turn 종료 시 외부 종료(`reaper:process_died`, 결과 유실)되던 문제. #18/#19 broker fix 는 background 경로만 보호했음. codex-rescue 가 항상 부여하는 `--require-broker` 로 게이트(메인 스레드 task 는 동작 불변): `connect` 가 live 선존 broker 를 요구하고 broker/app-server 를 절대 local-spawn 하지 않음. broker 없으면 stdout(exit 0)에 actionable diagnostic surface(subagent 가 그대로 전달, "Codex was not invoked" 로 가려지지 않게). `--profile`/`--fast` 거부(direct spawn 필요), busy/ENOENT retry-direct 억제, timeout recovery 의 direct `codex exec resume` 도 게이트, background 는 no-local-fallback. `--require-broker` 하에선 local codex 가용성 체크도 우회(broker 가 자체 codex 보유 — GUI shell PATH 미상속 #105 케이스).
+- **방어 심층화**: SessionStart 에서 main-session(SILENT_BREAKAWAY_OK) broker 사전 warm-up → subagent 가 doomed broker 를 lazy-spawn 하지 않고 reuse. opt-out `CODEX_PLUGIN_EAGER_BROKER=0`, codex-on-PATH 게이트, hook input 의 workspace cwd 있을 때만 warm. `process_died` reap 에 subagent Job Object teardown 가능성 진단 hint.
+- **fix(daily-evolve): CLI entry guard** — orchestrator 8개의 `import.meta.url === \`file://${process.argv[1].replace(...)}\`` main-entry 가드가 (a) eval/import 컨텍스트에서 `argv[1]` undefined 시 `TypeError`, (b) Windows 에서 `file://` vs `file:///` 불일치로 미발동. 전부 `process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href` 로 교체.
+- 검증: Codex pair 4 라운드(설계→적대적 리뷰→검증) + PR 리뷰 3 라운드(모든 P2/P3 해소). 신규 테스트 다수(subagent guard / broker warm-up / timeout gate / cli-entry guard), 전체 suite 회귀 0 (baseline flake 3 제외).
+- **비범위 (선존)**: `npm run build`(checkJs)는 main 에서 이미 red — 코드베이스의 기존 `error.code = …` 패턴 13건 + 무관한 `InitializeCapabilities` 불일치. 본 release 의 신규 코드는 빌드 에러를 추가하지 않음(Object.assign 사용). 완전 green 화는 별도 cleanup 대상.
+
 ## 2.2.3 (2026-06-11)
 
 Bug fix — `--output-profile` structured-output schema 가 strict 거부(400)로 한 턴도 완료 못 하던 문제 (PR #16):
