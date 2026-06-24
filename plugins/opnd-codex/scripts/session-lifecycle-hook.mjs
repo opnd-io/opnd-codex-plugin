@@ -168,6 +168,25 @@ async function handleSessionStart(input) {
   }
 }
 
+// #21 follow-up — 매 사용자 턴마다 session broker 를 재워밍한다. broker 에는 idle
+// self-exit watchdog(기본 10분 무소켓)이 있는데, crash-orphan broker 회수가 목적
+// 이지만 "세션 종료"와 "세션 alive-but-idle"을 구분 못 해 정상 think-time 공백에도
+// 세션 도중 broker 를 죽인다. 그러면 이후 codex-rescue subagent 가 live broker 를
+// 못 찾고 survivable broker 를 spawn 할 수도 없어(subagent 는 kill-on-close Windows
+// Job Object 안에서 실행, #21), `setup` 이 auth ready 라고 보고해도(broker liveness
+// 는 setup 이 워밍하지 않는 별도 축) NO_SURVIVABLE_BROKER 로 실패한다. SessionStart
+// 단독은 첫 ~10분 idle 만 커버한다. 여기서 재워밍 — UserPromptSubmit 은 main-session
+// 컨텍스트에서 prompt 처리 전·턴이 spawn 할 어떤 subagent 보다 먼저 실행 — 하면
+// subagent codex 호출 시 항상 live broker 가 있음을 보장한다. broker 가 이미 warm
+// 이면 저렴하고(ensureBrokerSession 이 ~150ms liveness 체크 후 기존 세션 반환),
+// SessionStart 와 똑같이 codex-on-PATH + CODEX_PLUGIN_EAGER_BROKER 게이트를 따르며,
+// best-effort 다: warm 실패가 prompt 를 절대 막아선 안 된다.
+async function handleUserPromptSubmit(input) {
+  if (input.cwd) {
+    await warmBrokerBestEffort(input.cwd);
+  }
+}
+
 async function handleSessionEnd(input) {
   const cwd = input.cwd || process.cwd();
   const brokerSession =
@@ -207,6 +226,11 @@ async function main() {
 
   if (eventName === "SessionStart") {
     await handleSessionStart(input);
+    return;
+  }
+
+  if (eventName === "UserPromptSubmit") {
+    await handleUserPromptSubmit(input);
     return;
   }
 

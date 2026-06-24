@@ -96,6 +96,23 @@ test("session-lifecycle-hook does not hang when stdin is never closed (5s drain 
   assert.ok(elapsed < 8_000, `expected hook to exit via internal timeout, got ${elapsed}ms`);
 });
 
+test("session-lifecycle-hook tolerates empty stdin without throwing (UserPromptSubmit)", async () => {
+  // #21 follow-up — per-turn broker 재워밍 dispatch 는 빈 입력에서 SessionStart 와
+  // 똑같이 degrade 해야 한다: throw 금지, prompt 차단 금지.
+  const result = await spawnHook(SESSION_HOOK, ["UserPromptSubmit"], { stdin: "" });
+  assert.equal(result.code, 0, `exit 0 expected, got ${result.code}, stderr=${result.stderr}`);
+});
+
+test("session-lifecycle-hook UserPromptSubmit emits nothing on stdout (no prompt injection)", async () => {
+  // UserPromptSubmit 훅의 stdout 은 사용자 prompt 컨텍스트로 다시 주입된다;
+  // warm 은 대화를 오염시키지 않도록 silent 를 유지해야 한다.
+  const result = await spawnHook(SESSION_HOOK, ["UserPromptSubmit"], {
+    stdin: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: ROOT_DIR, prompt: "hi" })
+  });
+  assert.equal(result.code, 0, `exit 0 expected, got ${result.code}, stderr=${result.stderr}`);
+  assert.equal(result.stdout, "", `stdout must be empty, got: ${result.stdout}`);
+});
+
 test("stop-review-gate-hook tolerates empty stdin without throwing", async () => {
   const result = await spawnHook(STOP_HOOK, [], { stdin: "" });
   // Exit code depends on whether the review gate is enabled (default off).

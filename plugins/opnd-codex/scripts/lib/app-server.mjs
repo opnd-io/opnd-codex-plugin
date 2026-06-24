@@ -297,6 +297,11 @@ const DEFAULT_CLIENT_INFO = {
 /** @type {InitializeCapabilities} */
 const DEFAULT_CAPABILITIES = {
   experimentalApi: false,
+  // codex 0.142.0 이 `requestAttestation` 을 InitializeCapabilities(생성 타입)의
+  // required capability 로 승격했다. 플러그인은 `attestation/generate` upstream
+  // 요청에 opt-in 하지 않으므로 false 로 명시한다 — 누락 시 `tsc`(TS2741) 가
+  // 실패하고, 신버전 app-server 에서 협상값이 implementation-defined 가 된다.
+  requestAttestation: false,
   optOutNotificationMethods: [
     "item/agentMessage/delta",
     "item/reasoning/summaryTextDelta",
