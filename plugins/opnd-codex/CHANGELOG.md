@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.5 (2026-06-24)
+
+Bug fix — idle 세션에서 broker 가 self-exit 해 codex-rescue subagent 호출이 `NO_SURVIVABLE_BROKER` 로 실패하던 문제 + `InitializeCapabilities` 빌드 drift (issue #21 follow-up):
+
+- **fix(broker): UserPromptSubmit 마다 broker 재워밍** — broker 의 idle self-exit watchdog(기본 10분 무소켓 → self-exit, PR-1.7 #193 의 crash-orphan 회수용)이 "세션 종료"와 "세션 alive-but-idle"을 구분 못 해, **살아있는 세션이 단지 idle 10분**이어도 broker 를 죽였음. 그 뒤 codex-rescue subagent 가 호출되면 live broker 부재 + subagent 는 survivable broker 를 spawn 불가(Windows kill-on-close Job Object, #21) → `NO_SURVIVABLE_BROKER` 로 실패(`setup` 은 *auth* 만 봐서 `ready:true` 라 false confidence). SessionStart warm 은 첫 idle 10분만 커버. `session-lifecycle-hook.mjs` 에 `UserPromptSubmit` 핸들러 추가 + `hooks.json` 등록 — **매 사용자 턴마다**(main-session 컨텍스트, subagent 생성 전) 기존 `warmBrokerBestEffort` 를 재사용해 live broker 보장. broker 이미 warm 시 ~150ms liveness 체크 후 즉시 반환(저렴), `codex-on-PATH` + `CODEX_PLUGIN_EAGER_BROKER` 게이트 동일, best-effort(warm 실패해도 prompt 차단 안 함, stdout 무출력으로 prompt 오염 없음). idle 10분 회수 로직은 불변(crash orphan 방어 유지).
+- **fix(app-server): `InitializeCapabilities.requestAttestation` 명시** — codex-cli 0.142.0 이 `requestAttestation` 을 required capability 로 승격(생성 타입). `DEFAULT_CAPABILITIES` 가 누락해 `npm run build`(checkJs) TS2741 추가 + 신버전 app-server 에서 협상값 implementation-defined. 플러그인은 `attestation/generate` 를 쓰지 않으므로 `requestAttestation: false` 명시. 2.2.4 CHANGELOG 의 "비범위(선존) — 무관한 `InitializeCapabilities` 불일치" 항목 해소. 빌드 에러 14→13.
+- 검증: 신규 테스트 3건(`UserPromptSubmit` dispatch / 빈 stdin 내성 / stdout 무출력 + hooks.json 등록 assertion), 전체 suite 회귀 0(baseline flake 제외). E2E 재현→수정: broker teardown(idle-exit 시뮬) → subagent `NO_SURVIVABLE_BROKER` 재현 → `UserPromptSubmit` 훅 재워밍(live:true) → subagent `Thread ready` 정상 완료.
+- **비범위 (선존 유지)**: `npm run build` 의 잔존 13건(codex.mjs `error.code = …` 6 + codex-skip-taxonomy.js 7)은 2.2.4 와 동일한 선존 checkJs debt — 본 release 가 1건(`requestAttestation`)을 줄였고 신규 추가는 0. 완전 green 화는 별도 cleanup.
+
 ## 2.2.4 (2026-06-23)
 
 Bug fix — codex-rescue subagent foreground task 가 Windows Job Object teardown 으로 죽던 문제 (issue #21, PR #22):

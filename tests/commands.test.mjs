@@ -317,6 +317,16 @@ test("hooks keep session-end cleanup and stop gating enabled", () => {
   assert.match(source, /session-lifecycle-hook\.mjs/);
 });
 
+test("#21 — hooks register a UserPromptSubmit broker re-warm via session-lifecycle-hook", () => {
+  // broker 는 ~10분 후 idle-exit 한다; SessionStart 단독은 첫 idle 윈도우만 워밍
+  // 한다. UserPromptSubmit 이 매 턴 재워밍해야 이후 codex-rescue subagent 가 항상
+  // attach 할 live(survivable) broker 를 갖는다.
+  const hooks = JSON.parse(read("hooks/hooks.json")).hooks;
+  assert.ok(Array.isArray(hooks.UserPromptSubmit), "UserPromptSubmit hook group must exist");
+  const command = hooks.UserPromptSubmit[0]?.hooks?.[0]?.command ?? "";
+  assert.match(command, /session-lifecycle-hook\.mjs UserPromptSubmit/);
+});
+
 test("setup command can offer Codex install and still points users to codex login", () => {
   const setup = read("commands/setup.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
