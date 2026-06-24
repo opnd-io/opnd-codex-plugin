@@ -152,39 +152,54 @@ export async function warmBrokerBestEffort(cwd, options = {}) {
   }
 }
 
+// #21 — 공유 broker 사전-warm 헬퍼. SessionStart 와 UserPromptSubmit 양쪽이 호출한다.
+// (1) cwd 게이트: 실제 workspace cwd 가 있을 때만 warm 한다. hooks.json 이 이 스크립트
+//     실행 전 CLAUDE_PLUGIN_ROOT 로 `cd` 하므로 process.cwd() 는 plugin 디렉토리 —
+//     그걸로 warm 하면 broker 가 엉뚱한 workspace 로 키잉돼(real /opnd-codex:* 는
+//     사용자 workspace 에서 broker 상태를 찾으므로 여전히 no broker), plugin-root
+//     broker 는 idle cleanup 까지 lingers 한다. 그래서 반드시 input.cwd 만 쓴다.
+// (2) best-effort: warm 실패는 절대 throw 되어선 안 된다. warmBrokerBestEffort 가 이미
+//     모든 에러를 흡수하지만, 여기서 catch 로 계약을 코드로 명시해 UserPromptSubmit 의
+//     exit-1 전파(=prompt 차단) 가능성을 원천 차단한다 (QUAL-001).
+export async function maybeWarmBroker(input, warm = warmBrokerBestEffort) {
+  if (!input.cwd) {
+    return;
+  }
+  try {
+    const result = await warm(input.cwd);
+    // 관측성(SEC-001/QUAL-R2-3): warm 은 best-effort 라 결과를 prompt 흐름에 반영하지
+    // 않지만, 실제 인프라 에러(spawn 실패 등)는 stderr 로 진단을 남긴다 — stdout 이
+    // 아니므로 UserPromptSubmit 의 prompt 컨텍스트를 오염시키지 않으며, 만성 broker
+    // warm 실패가 완전 무음으로 묻히지 않게 한다.
+    if (result && result.reason === "error") {
+      process.stderr.write(`[codex-plugin] broker warm failed: ${result.error}\n`);
+    }
+  } catch {
+    // best-effort — warm 실패가 SessionStart/UserPromptSubmit 를 막아선 안 된다.
+  }
+}
+
 async function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
   // #338 — codex-namespaced so other plugins' CLAUDE_PLUGIN_DATA is untouched.
   appendEnvVar(CODEX_PLUGIN_DATA_DIR_ENV, process.env[PLUGIN_DATA_ENV]);
-  // #21 — pre-warm the session broker from this (main-session) context, but
-  // ONLY when the hook supplied a real workspace cwd. hooks.json `cd`s into
-  // CLAUDE_PLUGIN_ROOT before running this script, so process.cwd() is the
-  // plugin directory — warming for it would key the broker to the wrong
-  // workspace (real /opnd-codex:* commands resolve broker state from the user's
-  // workspace and would still see no broker, while the plugin-root broker
-  // lingers until idle cleanup).
-  if (input.cwd) {
-    await warmBrokerBestEffort(input.cwd);
-  }
+  await maybeWarmBroker(input);
 }
 
 // #21 follow-up — 매 사용자 턴마다 session broker 를 재워밍한다. broker 에는 idle
 // self-exit watchdog(기본 10분 무소켓)이 있는데, crash-orphan broker 회수가 목적
 // 이지만 "세션 종료"와 "세션 alive-but-idle"을 구분 못 해 정상 think-time 공백에도
-// 세션 도중 broker 를 죽인다. 그러면 이후 codex-rescue subagent 가 live broker 를
-// 못 찾고 survivable broker 를 spawn 할 수도 없어(subagent 는 kill-on-close Windows
-// Job Object 안에서 실행, #21), `setup` 이 auth ready 라고 보고해도(broker liveness
-// 는 setup 이 워밍하지 않는 별도 축) NO_SURVIVABLE_BROKER 로 실패한다. SessionStart
-// 단독은 첫 ~10분 idle 만 커버한다. 여기서 재워밍 — UserPromptSubmit 은 main-session
-// 컨텍스트에서 prompt 처리 전·턴이 spawn 할 어떤 subagent 보다 먼저 실행 — 하면
-// subagent codex 호출 시 항상 live broker 가 있음을 보장한다. broker 가 이미 warm
-// 이면 저렴하고(ensureBrokerSession 이 ~150ms liveness 체크 후 기존 세션 반환),
-// SessionStart 와 똑같이 codex-on-PATH + CODEX_PLUGIN_EAGER_BROKER 게이트를 따르며,
-// best-effort 다: warm 실패가 prompt 를 절대 막아선 안 된다.
+// 세션 도중 broker 를 죽인다(연결 시 idle 타이머 갱신은 app-server-broker.mjs CDX-001
+// 참조). 그러면 이후 codex-rescue subagent 가 live broker 를 못 찾고 survivable
+// broker 를 spawn 할 수도 없어(subagent 는 kill-on-close Windows Job Object 안에서
+// 실행, #21), `setup` 이 auth ready 라고 보고해도(broker liveness 는 setup 이 워밍하지
+// 않는 별도 축) NO_SURVIVABLE_BROKER 로 실패한다. SessionStart 단독은 첫 ~10분 idle 만
+// 커버한다. UserPromptSubmit 은 main-session 컨텍스트에서 prompt 처리 전·턴이 spawn 할
+// 어떤 subagent 보다 먼저 실행되므로, 여기서 재워밍하면 subagent codex 호출 시 항상
+// live broker 가 있음을 보장한다. broker 가 이미 warm 이면 저렴하다(ensureBrokerSession
+// 이 ~150ms liveness 체크 후 기존 세션 반환). 게이트/실패정책은 maybeWarmBroker 참조.
 async function handleUserPromptSubmit(input) {
-  if (input.cwd) {
-    await warmBrokerBestEffort(input.cwd);
-  }
+  await maybeWarmBroker(input);
 }
 
 async function handleSessionEnd(input) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.6 (2026-06-24)
+
+Follow-up — 2.2.5 의 broker 재워밍을 keep-alive 로 완성 + 코드리뷰(4라운드) 정리:
+
+- **fix(broker): 새 연결 시 idle 타이머 갱신 (CDX-001)** — 2.2.5 의 UserPromptSubmit 재워밍은 `waitForBrokerEndpoint`(150ms connect/close) 프로브로 liveness 만 확인했는데, idle watchdog 의 `lastActiveAt` 은 2분 tick 이 `sockets.size > 0` 을 관측할 때만 갱신돼 tick 사이에 열렸다 닫힌 짧은 프로브를 놓쳤다 → broker 가 warm 직후에도 self-exit 가능(재워밍이 keep-alive 가 아니라 die/respawn churn 으로 퇴화). `app-server-broker.mjs` 의 connection 핸들러가 공유 `activity.lastActiveAt` 을 즉시 touch 하도록 수정 — 짧은 warm 프로브도 idle 타이머를 리셋해 매 턴 재워밍이 실제 keep-alive 로 동작한다. watchdog 의 tick-기반 refresh 는 long-held 연결(활성 codex turn) 커버용으로 상호보완. orphan 회수(grace 10분 무연결)는 불변.
+- **refactor: 공유 `maybeWarmBroker` 헬퍼** — handleSessionStart/handleUserPromptSubmit 의 cwd 게이트 + warm 을 단일 헬퍼로 통합(DRY). best-effort 계약을 try/catch 로 코드 명시(UserPromptSubmit exit-1 전파=prompt 차단 차단), warm 의 `reason==="error"` 시 stderr 진단(관측성, stdout 미오염).
+- **test**: maybeWarmBroker 단위테스트 4건(cwd 게이트 / no-cwd / throw 흡수 / error-path stderr) + CDX-001 connection-touch source-pin + subagent-broker-guard 배선 검증 갱신.
+- 검증: 4라운드 적대적 코드리뷰(security/quality/architecture/Codex) 0 findings 수렴. 전체 suite 599 pass(baseline flake 제외), 빌드 13 baseline 불변(신규 에러 0).
+
 ## 2.2.5 (2026-06-24)
 
 Bug fix — idle 세션에서 broker 가 self-exit 해 codex-rescue subagent 호출이 `NO_SURVIVABLE_BROKER` 로 실패하던 문제 + `InitializeCapabilities` 빌드 drift (issue #21 follow-up):
