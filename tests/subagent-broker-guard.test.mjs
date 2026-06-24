@@ -190,9 +190,15 @@ test("broker-busy under requireBroker is surfaced to the subagent, not hidden (P
   );
 });
 
-test("SessionStart only warms the broker with a real workspace cwd (P2)", () => {
+test("SessionStart + UserPromptSubmit warm the broker only with a real workspace cwd (P2)", () => {
   const src = fs.readFileSync(HOOK_SRC, "utf8");
-  assert.match(src, /if \(input\.cwd\) \{[\s\S]*?await warmBrokerBestEffort\(input\.cwd\);/);
+  // 공유 게이트 헬퍼: cwd 없으면 skip, 있으면 input.cwd 로 warm (QUAL-002 DRY).
+  assert.match(src, /export async function maybeWarmBroker\(input, warm = warmBrokerBestEffort\)/);
+  assert.match(src, /if \(!input\.cwd\) \{\s*return;\s*\}[\s\S]*?await warm\(input\.cwd\)/);
+  // 두 핸들러 모두 게이트 헬퍼를 경유한다 (직접 warm 호출 금지 — 우회 방지).
+  assert.match(src, /async function handleSessionStart\(input\)[\s\S]*?await maybeWarmBroker\(input\)/);
+  assert.match(src, /async function handleUserPromptSubmit\(input\)[\s\S]*?await maybeWarmBroker\(input\)/);
+  // process.cwd() 폴백으로 plugin-root 를 warm 하지 않는다.
   assert.doesNotMatch(src, /warmBrokerBestEffort\(input\.cwd \|\| process\.cwd\(\)\)/);
 });
 

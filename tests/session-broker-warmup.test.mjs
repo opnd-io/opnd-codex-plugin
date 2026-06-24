@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   codexOnPath,
   eagerBrokerEnabled,
+  maybeWarmBroker,
   warmBrokerBestEffort
 } from "../plugins/opnd-codex/scripts/session-lifecycle-hook.mjs";
 
@@ -93,6 +94,57 @@ test("warmBrokerBestEffort: ensureBroker throws -> swallowed, never breaks sessi
   assert.equal(r.warmed, false);
   assert.equal(r.reason, "error");
   assert.match(r.error, /broker spawn boom/);
+});
+
+/**
+ * #21 follow-up — maybeWarmBroker 는 SessionStart 와 UserPromptSubmit 가 공유하는
+ * warm 게이트(QUAL-002 DRY). cwd 게이트 + best-effort 계약(QUAL-001/005)을 핀한다.
+ */
+test("maybeWarmBroker: input.cwd 있으면 warm 을 cwd 로 호출 (UserPromptSubmit/SessionStart dispatch)", async () => {
+  let seenCwd = null;
+  await maybeWarmBroker({ cwd: "/repo/root" }, async (cwd) => {
+    seenCwd = cwd;
+  });
+  assert.equal(seenCwd, "/repo/root");
+});
+
+test("maybeWarmBroker: input.cwd 없으면 warm 미호출 (plugin-root warm 함정 회피)", async () => {
+  let called = false;
+  await maybeWarmBroker({}, async () => {
+    called = true;
+  });
+  assert.equal(called, false);
+});
+
+test("maybeWarmBroker: warm 이 throw 해도 삼킨다 (best-effort — prompt 차단 금지)", async () => {
+  await assert.doesNotReject(
+    maybeWarmBroker({ cwd: "/repo" }, async () => {
+      throw new Error("warm boom");
+    })
+  );
+});
+
+test("maybeWarmBroker: warm 이 reason:'error' 반환 시 stderr 진단 + throw 없음 (QUAL-R3-001)", async () => {
+  // warmBrokerBestEffort 는 throw 대신 {warmed:false, reason:'error', error} 를 반환하는
+  // non-throw failure path 가 있다. 그 경로가 stderr 진단을 남기되 prompt 를 막지 않음을 핀한다.
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  let captured = "";
+  process.stderr.write = (chunk) => {
+    captured += String(chunk);
+    return true;
+  };
+  try {
+    await assert.doesNotReject(
+      maybeWarmBroker({ cwd: "/repo" }, async () => ({
+        warmed: false,
+        reason: "error",
+        error: "spawn boom"
+      }))
+    );
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.match(captured, /broker warm failed: spawn boom/);
 });
 
 test("codexOnPath: real probe against a temp dir with/without a codex launcher", async () => {

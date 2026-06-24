@@ -198,6 +198,14 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const sockets = new Set();
+  // Shared activity timestamp for the idle watchdog. Touched on every new
+  // connection so even a brief liveness probe (UserPromptSubmit warm 의
+  // waitForBrokerEndpoint 가 여는 ~150ms connect/close)도 idle 타이머를 리셋한다.
+  // 그러지 않으면 watchdog 의 2분 tick 사이에 열렸다 닫힌 프로브는 관측되지 않아
+  // (sockets.size 가 tick 시점에 0), warm 이 "live" 를 반환해도 broker 가 곧
+  // self-exit 한다 — 매 턴 재워밍이 keep-alive 가 아니라 die/respawn churn 으로
+  // 퇴화하던 갭(code-review CDX-001).
+  const activity = { lastActiveAt: Date.now() };
   const pendingServerRequests = new Map();
   let nextServerRequestId = 1;
 
@@ -344,6 +352,8 @@ async function main() {
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    // CDX-001 — 새 연결 = 활동. 짧은 liveness 프로브도 idle 타이머를 갱신하게 한다.
+    activity.lastActiveAt = Date.now();
     socket.setEncoding("utf8");
     let buffer = "";
     let dataChain = Promise.resolve();
@@ -539,7 +549,7 @@ async function main() {
     process.exit(0);
   });
 
-  startIdleWatchdog({ sockets, shutdown: () => shutdown(server) });
+  startIdleWatchdog({ sockets, activity, shutdown: () => shutdown(server) });
 
   server.listen(listenTarget.path);
 }
@@ -571,17 +581,20 @@ const IDLE_WATCHDOG_GRACE_MS = clampPositiveInt(
   10 * 60 * 1000
 );
 
-function startIdleWatchdog({ sockets, shutdown }) {
-  let lastActiveAt = Date.now();
+function startIdleWatchdog({ sockets, shutdown, activity }) {
+  // 매 tick 에서 열린 소켓(진행 중인 turn = long-held 연결)이 있으면 idle 타이머를
+  // 갱신한다. 짧은 think-time 프로브(UserPromptSubmit warm)는 connection 핸들러가
+  // 직접 activity 를 touch 하므로(CDX-001), 이 tick refresh 는 활성 codex turn 의
+  // long-held 연결을 커버하는 상호보완 경로다 (둘 다 같은 activity 를 monotonic 갱신).
   const refresh = () => {
-    lastActiveAt = Date.now();
+    activity.lastActiveAt = Date.now();
   };
   const timer = setInterval(async () => {
     if (sockets.size > 0) {
       refresh();
       return;
     }
-    if (Date.now() - lastActiveAt < IDLE_WATCHDOG_GRACE_MS) {
+    if (Date.now() - activity.lastActiveAt < IDLE_WATCHDOG_GRACE_MS) {
       return;
     }
     process.stderr.write(`broker idle for ${IDLE_WATCHDOG_GRACE_MS}ms — self-exiting\n`);
