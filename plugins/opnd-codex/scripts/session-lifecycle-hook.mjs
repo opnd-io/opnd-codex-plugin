@@ -18,6 +18,7 @@ import {
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
 import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { TRANSCRIPT_PATH_ENV } from "./lib/claude-session-transfer.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -181,6 +182,9 @@ export async function maybeWarmBroker(input, warm = warmBrokerBestEffort) {
 
 async function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
+  // Upstream v1.0.5 (#374) — 현재 transcript 경로를 노출해
+  // `/opnd-codex:transfer` 가 수동 --source 없이 세션을 찾을 수 있게 한다.
+  appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
   // #338 — codex-namespaced so other plugins' CLAUDE_PLUGIN_DATA is untouched.
   appendEnvVar(CODEX_PLUGIN_DATA_DIR_ENV, process.env[PLUGIN_DATA_ENV]);
   await maybeWarmBroker(input);

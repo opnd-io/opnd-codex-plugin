@@ -90,7 +90,8 @@ test("agent control commands are exposed as deterministic runtime entrypoints", 
     "result.md",
     "review.md",
     "setup.md",
-    "status.md"
+    "status.md",
+    "transfer.md"
   ]);
   assert.match(read("commands/agent.md"), /codex-companion\.mjs" agent "\$ARGUMENTS"/);
   assert.match(read("commands/agent.md"), /approval on-request/i);
@@ -101,6 +102,19 @@ test("agent control commands are exposed as deterministic runtime entrypoints", 
   assert.match(read("commands/approve.md"), /argument-hint:\s*"<approval-id\|prefix>/);
   assert.match(read("commands/deny.md"), /codex-companion\.mjs" deny "\$ARGUMENTS"/);
   assert.match(read("commands/deny.md"), /argument-hint:\s*"<approval-id\|prefix>"/);
+});
+
+test("transfer command is a deterministic runtime entrypoint (fork #211: no disable-model-invocation)", () => {
+  const transfer = read("commands/transfer.md");
+  // #374 (upstream v1.0.5) 표면, fork 에 맞게 적응.
+  assert.match(transfer, /codex-companion\.mjs" transfer "\$ARGUMENTS"/);
+  assert.match(transfer, /codex resume <session-id>/);
+  assert.match(transfer, /argument-hint:\s*'\[--source <claude-jsonl>\]'/);
+  // #105 — node 호출은 PATH-fallback 셸 표현식으로 해석된다.
+  assert.match(transfer, /command -v node/);
+  // #211 — fork 는 모든 커맨드에서 disable-model-invocation 을 제거해 skill
+  // 목록에 계속 보이게 한다; 포팅한 transfer 커맨드도 이를 따라야 한다.
+  assert.doesNotMatch(transfer, /disable-model-invocation:\s*true/);
 });
 
 test("rescue command absorbs continue semantics", () => {
@@ -213,6 +227,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /uses the same review target selection as `\/opnd-codex:review`/i);
   assert.match(readme, /--base main challenge whether this was the right caching and retry design/);
   assert.match(readme, /### `\/opnd-codex:rescue`/);
+  assert.match(readme, /### `\/opnd-codex:transfer`/);
   assert.match(readme, /### `\/opnd-codex:agent`/);
   assert.match(readme, /### `\/opnd-codex:continue`/);
   assert.match(readme, /### `\/opnd-codex:approve` and `\/opnd-codex:deny`/);

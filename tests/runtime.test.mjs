@@ -579,11 +579,12 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
   assert.match(resume.stderr, /No previous Codex task thread was found for this repository\./);
 });
 
-test("session start hook exports the Claude session id and plugin data dir for later commands", () => {
+test("session start hook exports the Claude session id, transcript path, and plugin data dir", () => {
   const repo = makeTempDir();
   const envFile = path.join(makeTempDir(), "claude-env.sh");
   fs.writeFileSync(envFile, "", "utf8");
   const pluginDataDir = makeTempDir();
+  const transcriptPath = path.join(repo, "session.jsonl");
 
   const result = run("node", [SESSION_HOOK, "SessionStart"], {
     cwd: repo,
@@ -598,17 +599,271 @@ test("session start hook exports the Claude session id and plugin data dir for l
     input: JSON.stringify({
       hook_event_name: "SessionStart",
       session_id: "sess-current",
+      transcript_path: transcriptPath,
       cwd: repo
     })
   });
 
   assert.equal(result.status, 0, result.stderr);
-  // #338 — the hook re-exports the plugin data dir under a codex-namespaced
-  // var, NOT the generic CLAUDE_PLUGIN_DATA (which would hijack other plugins).
+  // #338 — 훅은 plugin data dir 을 generic CLAUDE_PLUGIN_DATA 가 아니라
+  // codex-namespaced var 로 재-export 한다(다른 플러그인 hijack 방지).
+  // #374 — transcript 경로도 export 해 /opnd-codex:transfer 가 찾을 수 있다.
   assert.equal(
     fs.readFileSync(envFile, "utf8"),
-    `export CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_PLUGIN_DATA_DIR='${pluginDataDir}'\n`
+    `export CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CODEX_PLUGIN_DATA_DIR='${pluginDataDir}'\n`
   );
+});
+
+// #374 (upstream v1.0.5) — Claude 세션의 Codex 이관.
+// Windows 주의: os.homedir() 는 HOME 이 아니라 USERPROFILE 을 읽으므로, transfer
+// 테스트는 둘 다 설정해 모든 OS 에서 ~/.claude/projects 가 temp home 하위로 resolve 되게 한다.
+test("transfer delegates the current Claude session directly to native import", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sessionId = "sess-native-transfer";
+  fs.mkdirSync(repo, { recursive: true });
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
+  fs.mkdirSync(projectDir, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  fs.writeFileSync(
+    sourcePath,
+    [
+      { type: "custom-title", customTitle: "Native transfer" },
+      { type: "user", cwd: repo, message: { role: "user", content: "Initial request" } },
+      { type: "assistant", cwd: repo, message: { role: "assistant", content: "Initial answer" } },
+      { type: "user", cwd: repo, message: { role: "user", content: "/opnd-codex:transfer" } }
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+    "utf8"
+  );
+  const result = run("node", [SCRIPT, "transfer", "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_HOME: path.join(home, ".codex"),
+      CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  const canonicalSourcePath = fs.realpathSync(sourcePath);
+  assert.equal(payload.threadId, "thr_1");
+  assert.equal(payload.resumeCommand, "codex resume thr_1");
+  assert.equal(payload.sourcePath, canonicalSourcePath);
+  assert.equal(payload.sessionId, sessionId);
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.threads.length, 1);
+  assert.equal(fakeState.threads[0].ephemeral, false);
+  assert.equal(fakeState.threads[0].name, "Native transfer");
+  assert.equal(fakeState.lastExternalAgentImport.sourcePath, canonicalSourcePath);
+  assert.deepEqual(
+    fakeState.threads[0].visibleMessages.map((message) => message.text),
+    ["Initial request", "Initial answer", "/opnd-codex:transfer"]
+  );
+});
+
+test("transfer reports an actionable upgrade error when native import is unsupported", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, "session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installFakeCodex(binDir, "external-import-unsupported");
+  initGitRepo(repo);
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Continue this work." } })}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "transfer", "--source", sourcePath, "--json"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_HOME: path.join(home, ".codex")
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /does not support Claude session transfer/);
+  assert.match(result.stderr, /@openai\/codex@latest/);
+});
+
+test("transfer fails visibly when native import completes without a ledger record", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, "session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installFakeCodex(binDir, "external-import-fails");
+  initGitRepo(repo);
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Do not lose this request." } })}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "transfer", "--source", sourcePath], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_HOME: path.join(home, ".codex")
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /did not record an imported thread/);
+});
+
+test("transfer rejects sources outside the Claude projects directory", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const sourcePath = path.join(home, "session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(path.join(home, ".claude", "projects"), { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Outside source." } })}\n`,
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "transfer", "--source", sourcePath], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), HOME: home, USERPROFILE: home }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /only from .*\.claude.*projects/);
+});
+
+test("transfer surfaces a completed-but-failed import instead of returning a stale thread", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, "session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installFakeCodex(binDir, "external-import-item-failure");
+  initGitRepo(repo);
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Do not lose this." } })}\n`,
+    "utf8"
+  );
+
+  // 같은 source 에 대한 stale ledger record 를 미리 심는다. completed-notification
+  // 실패 검사가 없으면 ledger fallback 이 이 thread id 를 false success 로
+  // 반환할 것이다(SF-002/CDX-002).
+  const codexHome = path.join(home, ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(codexHome, "external_agent_session_imports.json"),
+    JSON.stringify({
+      records: [
+        { source_path: fs.realpathSync(sourcePath), content_sha256: "stale", imported_thread_id: "thr_old", imported_at: 0, source_modified_at: null }
+      ]
+    }),
+    "utf8"
+  );
+
+  const result = run("node", [SCRIPT, "transfer", "--source", sourcePath], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), HOME: home, USERPROFILE: home, CODEX_HOME: codexHome }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /could not import the Claude session/i);
+  assert.match(result.stderr, /session import failed/);
+  assert.doesNotMatch(result.stdout, /thr_old/);
+});
+
+test("transfer forces the default Codex home when CODEX_HOME is unset", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, "session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Default home." } })}\n`,
+    "utf8"
+  );
+
+  const env = { ...buildEnv(binDir), HOME: home, USERPROFILE: home, CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath };
+  // default-home 경로 검증: CODEX_HOME 없으면 child import 와 parent ledger
+  // 조회 둘 다 temp home 하위 ~/.codex 로 resolve 되어야 한다.
+  delete env.CODEX_HOME;
+
+  const result = run("node", [SCRIPT, "transfer", "--json"], { cwd: repo, env });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.threadId, "thr_1");
+  assert.ok(
+    fs.existsSync(path.join(home, ".codex", "external_agent_session_imports.json")),
+    "ledger written under the default ~/.codex home"
+  );
+});
+
+test("transfer is idempotent: re-importing unchanged content returns the same thread without a new one", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  const binDir = makeTempDir();
+  const projectDir = path.join(home, ".claude", "projects", "-repo");
+  const sourcePath = path.join(projectDir, "session.jsonl");
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(
+    sourcePath,
+    `${JSON.stringify({ type: "user", cwd: repo, message: { role: "user", content: "Idempotent." } })}\n`,
+    "utf8"
+  );
+  const env = {
+    ...buildEnv(binDir),
+    HOME: home,
+    USERPROFILE: home,
+    CODEX_HOME: path.join(home, ".codex"),
+    CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath
+  };
+
+  const first = run("node", [SCRIPT, "transfer", "--json"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).threadId, "thr_1");
+
+  // 같은 변경 없는 파일의 두 번째 transfer: Codex 가 기존 thread 를 반환하고
+  // 새 ledger record 를 안 써서 fresh-diff 가 비고, source-strict `after`
+  // fallback 이 thr_1 을 복구해야 한다(QUAL2-004).
+  const second = run("node", [SCRIPT, "transfer", "--json"], { cwd: repo, env });
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(JSON.parse(second.stdout).threadId, "thr_1");
+
+  const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(fakeState.threads.length, 1, "no new thread created on idempotent re-import");
 });
 
 test("write task output focuses on the Codex result without generic follow-up hints", () => {

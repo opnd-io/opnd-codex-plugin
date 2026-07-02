@@ -21,6 +21,7 @@ they already have.
 - `/opnd-codex:pair` for foreground read-only pair-programming feedback with task-key reuse and structured result digests
 - `/opnd-codex:agent`, `/opnd-codex:continue`, `/opnd-codex:approve`, `/opnd-codex:deny`, `/opnd-codex:status`, `/opnd-codex:result`, and `/opnd-codex:cancel` to delegate and control long-running Codex work
 - `/opnd-codex:rescue` for delegating a focused investigation or fix to the Codex rescue subagent (background-capable)
+- `/opnd-codex:transfer` to hand the current Claude Code session off to a resumable Codex thread
 - `/opnd-codex:daily-evolve` for the self-evolution pipeline (Phase 0–6: upstream/telemetry aggregation → Codex L3 triage → active fork research → daily digest → action executor → scheduled-tasks integration → self-evolve meta loop)
 - `/opnd-codex:setup` for the readiness probe (Node / npm / codex CLI / auth / runtime mode) and optional stop-review-gate toggle
 
@@ -205,6 +206,25 @@ Ask Codex to redesign the database connection to be more resilient.
 - follow-up rescue requests can continue the latest Codex task in the repo
 - **(v2.0.0)** if you do not pass `--sandbox`, the plugin inherits `sandbox_mode` from your `~/.codex/config.toml` (was hard-coded to `read-only` / `workspace-write` in v1.x). See [docs/MIGRATION_v2.0.md](docs/MIGRATION_v2.0.md) to restore legacy behavior with `CODEX_PLUGIN_SANDBOX_DEFAULT=read-only`
 - `danger-full-access` should only be used when the machine or surrounding environment is already sandboxed
+
+### `/opnd-codex:transfer`
+
+Creates a persistent Codex thread from the current Claude Code session and prints a `codex resume <session-id>` command.
+
+Use it when you started a debugging or implementation conversation in Claude Code and want to continue that same context directly in Codex.
+
+Examples:
+
+```bash
+/opnd-codex:transfer
+/opnd-codex:transfer --source ~/.claude/projects/-Users-me-repo/<session-id>.jsonl
+```
+
+The plugin's existing `SessionStart` hook supplies the current transcript path automatically; `--source` is available as a manual override. The transfer uses Codex's external-agent session importer, so it follows the same conversion rules as importing Claude history in the Codex App and creates visible turns that can be continued in the App or TUI. The source must be under `~/.claude/projects`, and older Codex versions that do not expose session import must be upgraded before using this command.
+
+> On Windows, pass a manual `--source` in the `~/` or forward-slash form (e.g. `--source C:/Users/me/.claude/projects/<dir>/<id>.jsonl`); backslashes in slash-command arguments are consumed as escapes. The automatic (no-`--source`) path is unaffected.
+
+Because plugin sessions normally use an isolated `CODEX_HOME` (`$HOME/.codex/claude-code/`), the transfer deliberately targets your default Codex home so the imported thread is visible to the Codex App/TUI (an explicit `CODEX_HOME` you set is still honored).
 
 ### `/opnd-codex:agent`
 

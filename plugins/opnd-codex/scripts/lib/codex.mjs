@@ -41,6 +41,8 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
@@ -917,6 +919,11 @@ async function withAppServer(cwd, fn, options = {}) {
       serverRequestHandler: options.serverRequestHandler,
       profile: options.profile,
       fast: options.fast,
+      // spawn 되는 codex 자식용 per-invocation env override(선택). direct-spawn
+      // 경로만 소비(SpawnedCodexAppServerClient 가 `options.env ?? process.env`
+      // 사용) — 기존 caller 는 아무것도 안 넘겨 no-op. transfer 플로우가 공유
+      // default CODEX_HOME 을 강제해 import 가 사용자 Codex App 에 보이게 할 때 사용.
+      env: options.env,
       requireExistingBroker: requireBroker,
       disableBroker: !requireBroker && (wantsProfile || wantsFast || options.disableBroker === true)
     });
@@ -960,6 +967,7 @@ async function withAppServer(cwd, fn, options = {}) {
       disableBroker: true,
       profile: options.profile,
       fast: options.fast,
+      env: options.env,
       serverRequestHandler: options.serverRequestHandler
     });
     try {
@@ -1753,6 +1761,267 @@ export async function runAppServerReview(cwd, options = {}) {
   });
 }
 
+// Upstream v1.0.5 (#374) — 네이티브 external-agent 세션 임포터를 통한 Claude
+// 세션의 Codex 이관. source 경로 검증은 lib/claude-session-transfer.mjs, 사용자
+// 표면은 commands/transfer.md 참고.
+const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
+const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
+// transfer 는 정확히 한 migration item type 만 요청한다; 이 타입의 실패만
+// import 를 중단해야 한다(SF2-002 — transfer 가 요청한 적 없는 item type 의
+// 실패/경고가 성공한 세션 import 를 실패시키면 안 된다).
+const EXTERNAL_AGENT_SESSIONS_ITEM_TYPE = "SESSIONS";
+
+function resolveCodexHome() {
+  // child app-server 가 쓰는 것과 동일 해석(CODEX_HOME || ~/.codex). transfer 가
+  // child 에 CODEX_PLUGIN_USE_DEFAULT_HOME=1 을 강제하므로 child 는 정확히 이
+  // home 으로 import 하고 parent 는 같은 ledger 를 읽는다 — 중요한 건 특정 절대
+  // 경로가 아니라 parent/child 일치다.
+  return path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
+}
+
+// external-agent import ledger 를 방어적으로 읽는다. 손상되거나 반쯤 쓰인 JSON
+// 파일(child 가 write 중일 수 있음, QUAL-002/SF-008)은 friendly transfer 에러를
+// 가리는 raw SyntaxError 를 던지는 대신 "record 없음"으로 degrade 해야 한다.
+function ledgerRecords(codexHome) {
+  const ledgerPath = path.join(codexHome, "external_agent_session_imports.json");
+  if (!fs.existsSync(ledgerPath)) {
+    return [];
+  }
+  try {
+    const ledger = readJsonFile(ledgerPath);
+    return Array.isArray(ledger?.records) ? ledger.records : [];
+  } catch {
+    return [];
+  }
+}
+
+// 관대한 source-path 비교. codex-cli 는 ledger 경로를 자체 canonical 형식으로
+// 쓴다(Windows 는 `\\?\C:\...` verbatim prefix, UNC 는 `\\?\UNC\server\share`),
+// 반면 Node fs.realpathSync 는 `C:\...` / `\\server\share` 반환 — raw === 는
+// 매칭을 놓친다(CDX-001). 경로형 folding + 대소문자 무시는 Windows 전용이라
+// win32 로 게이트; POSIX(대소문자 구분 FS)는 exact-string 비교만 써서 서로 다른
+// 대소문자 변이 파일이 절대 합쳐지지 않는다(SF2-003).
+function normalizeLedgerPath(value) {
+  let normalized = String(value ?? "");
+  if (process.platform === "win32") {
+    normalized = normalized
+      .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+      .replace(/^\\\\\?\\/, "")
+      .replace(/\//g, "\\")
+      .toLowerCase();
+  }
+  return normalized;
+}
+
+function sameSourcePath(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  if (a === b) {
+    return true;
+  }
+  return normalizeLedgerPath(a) === normalizeLedgerPath(b);
+}
+
+// imported_at 이 있으면 record 를 오래된 것부터 최신 순으로 정렬해 "가장 최근
+// 매칭"이 codex-cli ledger 배열이 append 순서라는 우연에 의존하지 않게 한다
+// (QUAL2-002); timestamp 없는 record 는 stable sort 로 원래(배열) 순서를 유지.
+function sortByImportedAt(records) {
+  return records
+    .map((record, index) => ({ record, index }))
+    .sort((left, right) => {
+      const la = Number(left.record?.imported_at);
+      const ra = Number(right.record?.imported_at);
+      const lv = Number.isFinite(la) ? la : Number.NEGATIVE_INFINITY;
+      const rv = Number.isFinite(ra) ? ra : Number.NEGATIVE_INFINITY;
+      return lv === rv ? left.index - right.index : lv - rv;
+    })
+    .map((entry) => entry.record);
+}
+
+// source 가 `sourcePath` 와 매칭되는 가장 최근 imported thread id 를 선택. 매칭은
+// 항상 source-strict("id 있는 아무 record"로 degrade 안 함): 다른 세션의 record 는
+// 이번 run 자신의 record 가 없거나 동시 프로세스가 무관한 걸 추가했어도 절대
+// 반환하면 안 된다(SF2-001/CDX2-002). codex-cli 가 normalizeLedgerPath 가 못
+// 알아보는 형식으로 source 경로를 쓰면, wrong-thread false-success 대신 안전한
+// false-FAILURE("did not record an imported thread")를 낸다 — failure-path-first 선택.
+function pickImportedThreadId(records, sourcePath) {
+  const bySource = records.filter(
+    (record) => typeof record?.imported_thread_id === "string" && sameSourcePath(record?.source_path, sourcePath)
+  );
+  const ordered = sortByImportedAt(bySource);
+  return ordered.length > 0 ? ordered[ordered.length - 1].imported_thread_id : null;
+}
+
+// `externalAgentConfig/import/completed` 알림은 per-item 결과를 담는다;
+// completed-but-FAILED import(SF-001/CDX-002)는 ledger 가 아니라 여기서만 보인다.
+// 첫 SESSIONS 실패 메시지를 반환, 세션 import 성공 시 null(요청 안 한 다른 item
+// type 의 실패는 무시 — SF2-002).
+function importFailureMessage(completedParams) {
+  const results = Array.isArray(completedParams?.itemTypeResults) ? completedParams.itemTypeResults : [];
+  for (const result of results) {
+    if (result?.itemType !== EXTERNAL_AGENT_SESSIONS_ITEM_TYPE) {
+      continue;
+    }
+    const failures = Array.isArray(result?.failures) ? result.failures : [];
+    if (failures.length > 0) {
+      const first = failures[0];
+      return first?.message || first?.errorType || "Codex could not import the Claude session.";
+    }
+  }
+  return null;
+}
+
+function externalAgentSessionMigration(sourcePath, cwd) {
+  return {
+    migrationItems: [
+      {
+        itemType: EXTERNAL_AGENT_SESSIONS_ITEM_TYPE,
+        description: `Transfer Claude session ${path.basename(sourcePath)}`,
+        cwd: null,
+        details: {
+          plugins: [],
+          sessions: [{ path: sourcePath, cwd, title: null }],
+          mcpServers: [],
+          hooks: [],
+          subagents: [],
+          commands: []
+        }
+      }
+    ]
+  };
+}
+
+async function requestExternalAgentSessionImport(client, params) {
+  let resolveCompleted;
+  const completed = new Promise((resolve) => {
+    resolveCompleted = resolve;
+  });
+
+  const handler = (message) => {
+    if (message.method === EXTERNAL_AGENT_IMPORT_COMPLETED) {
+      resolveCompleted(message.params ?? null);
+    }
+  };
+  // fork 의 notification-handler 스택을 재사용해 이전 핸들러(있으면)를 덮어쓰지
+  // 않고 빠져나갈 때 복원한다.
+  pushNotificationHandler(client, handler);
+
+  let timeout = null;
+  const timedOut = new Promise((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error("Timed out waiting for Codex to finish importing the Claude session."));
+    }, EXTERNAL_AGENT_IMPORT_TIMEOUT_MS);
+  });
+  // timeout 은 completion 대기뿐 아니라 전체 operation 을 커버해야 한다: import
+  // RPC 자체가 응답하지 않으면(CDX-004) request await 가 app-server 의 훨씬 긴
+  // 기본 RPC timeout 까지 hang 한다. (Promise.race 가 `timedOut` 에 reaction 을
+  // 붙이므로 work-wins 경로의 late rejection 은 이미 소비됨 — 별도 catch 불필요.)
+
+  try {
+    return await Promise.race([
+      (async () => {
+        await client.request("externalAgentConfig/import", params);
+        return completed;
+      })(),
+      timedOut
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    popNotificationHandler(client, handler);
+  }
+}
+
+export async function importExternalAgentSession(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error(
+      "Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/opnd-codex:setup`."
+    );
+  }
+  if (!options.sourcePath) {
+    throw new Error("A Claude session source path is required.");
+  }
+
+  // #282 — 플러그인 codex 세션은 보통 격리된 $HOME/.codex/claude-code/ home 에
+  // 안착해 Codex Desktop 을 오염시키지 않는다. transfer 는 의도적 예외: 목적
+  // 자체가 세션을 사용자 자신의 Codex(App/TUI)로 넘기는 것이고 그건 DEFAULT
+  // home 을 읽는다. CODEX_PLUGIN_USE_DEFAULT_HOME=1 강제로 child 의 재격리를
+  // 막아 여기 resolveCodexHome() 이 읽는 것과 같은 home 으로 import 한다 —
+  // parent/child 가 항상 일치(둘 다 process.env.CODEX_HOME || ~/.codex 에서
+  // 유도)하며 이는 아래 ledger diff 가 의존하는 불변식이다. 사용자가 명시한
+  // CODEX_HOME 은 존중된다(그 사용자의 Codex 도 그 home 을 읽음).
+  const codexHome = resolveCodexHome();
+  // import 이전에 ledger 를 스냅샷해, 계속 커지는 live transcript 의 (path, hash)
+  // 를 재유도(CDX-001 Windows 경로형, CDX-003 hash drift)하거나 stale 한 이전
+  // record 를 false success 로 매칭(SF-002/CDX-002)하는 대신, 이번 run 이 ADD 한
+  // record 로 이번 run 의 thread 를 상관한다.
+  const priorThreadIds = new Set(
+    ledgerRecords(codexHome)
+      .map((record) => record?.imported_thread_id)
+      .filter((id) => typeof id === "string")
+  );
+
+  return withAppServer(
+    cwd,
+    async (client) => {
+      emitProgress(options.onProgress, "Importing Claude session into Codex.", "transferring");
+      let completedParams;
+      try {
+        completedParams = await requestExternalAgentSessionImport(
+          client,
+          externalAgentSessionMigration(options.sourcePath, cwd)
+        );
+      } catch (error) {
+        if (error?.rpcCode === -32601) {
+          throw Object.assign(
+            new Error(
+              "This Codex version does not support Claude session transfer. Update Codex with `npm install -g @openai/codex@latest`, then retry."
+            ),
+            { cause: error }
+          );
+        }
+        throw error;
+      }
+
+      // completed 알림이 성공을 의미하진 않는다 — per-item 실패를 명시적으로
+      // surface 해, 더 약한 "no imported thread" 메시지(나 더 나쁘게는
+      // stale-record false success)로 degrade 되지 않게 한다.
+      const failure = importFailureMessage(completedParams);
+      if (failure) {
+        const stderr = cleanCodexStderr(client.stderr);
+        throw new Error(`Codex could not import the Claude session: ${failure}${stderr ? `\n${stderr}` : ""}`);
+      }
+
+      const after = ledgerRecords(codexHome);
+      const fresh = after.filter(
+        (record) => typeof record?.imported_thread_id === "string" && !priorThreadIds.has(record.imported_thread_id)
+      );
+      // 이번 run 이 추가한 record(fresh diff)를 우선; Codex 가 변경 없는 콘텐츠의
+      // 이전 import 를 idempotent 하게 반환(새 record 미기록)하면 SAME source 의
+      // 기존 record 로 fallback. 두 pick 모두 source-strict 라 어느 쪽도 무관한
+      // 세션의 thread 를 반환할 수 없다.
+      const threadId =
+        pickImportedThreadId(fresh, options.sourcePath) ?? pickImportedThreadId(after, options.sourcePath);
+      if (!threadId) {
+        const stderr = cleanCodexStderr(client.stderr);
+        throw new Error(
+          `Codex reported that the Claude import completed, but did not record an imported thread.${stderr ? `\n${stderr}` : " Check the Codex app-server logs for the underlying import error."}`
+        );
+      }
+      emitProgress(options.onProgress, `Claude session imported (${threadId}).`, "completed", { threadId });
+      return {
+        threadId,
+        stderr: cleanCodexStderr(client.stderr)
+      };
+    },
+    {
+      disableBroker: true,
+      env: { ...process.env, CODEX_PLUGIN_USE_DEFAULT_HOME: "1" }
+    }
+  );
+}
+
 export async function runAppServerTurn(cwd, options = {}) {
   // #21 — under requireBroker (codex-rescue subagent) the turn runs entirely
   // through a LIVE pre-existing broker, which carries its own codex. The
@@ -2209,5 +2478,13 @@ export const __testHooks = {
   BROKER_BUSY_RPC_CODE,
   // Phase A1 — telemetry cluster #2 (auth expired) + #4 (usage limit) helper 직접 test 가능하도록 export
   isUsageLimitError,
-  annotateUsageLimitError
+  annotateUsageLimitError,
+  // #374 transfer — 순수 ledger-correlation 헬퍼. 전체 e2e transfer 실행 없이
+  // Windows 경로형 / latest-pick / source-strict / SESSIONS-scoping 로직을
+  // 커버하도록 직접 unit-test 한다.
+  normalizeLedgerPath,
+  sameSourcePath,
+  sortByImportedAt,
+  pickImportedThreadId,
+  importFailureMessage
 };
