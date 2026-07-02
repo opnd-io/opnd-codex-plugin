@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.3.0 (2026-07-03)
+
+Feature — upstream `openai/codex-plugin-cc` v1.0.5 의 Claude 세션 이관 기능 포팅 + app-server 진단 개선:
+
+- **feat(transfer): `/opnd-codex:transfer`** — 현재 Claude Code 세션 transcript(`.jsonl`)를 Codex 의 external-agent 세션 임포터(`externalAgentConfig/import` RPC)로 넘겨 재개 가능한 Codex 스레드를 만들고 `codex resume <session-id>` 를 출력한다(upstream #374 포팅). SessionStart 훅이 현재 transcript 경로(`CODEX_COMPANION_TRANSCRIPT_PATH`)를 자동 공급 — `--source` 는 수동 override. source 는 `~/.claude/projects` 하위로 제한(`realpath` 후 `path.relative` 봉쇄 + resolved `.jsonl` 재검사로 symlink 우회 차단).
+- **fork 격리 예외** — 플러그인 세션은 `#282` 로 `$HOME/.codex/claude-code/` 격리 home 을 쓰지만, transfer 는 사용자 Codex(App/TUI)로 넘기는 게 목적이라 이 작업만 `CODEX_PLUGIN_USE_DEFAULT_HOME=1` 로 default home 강제 — child import·ledger 조회·`codex resume` 안내가 동일 home 을 가리킨다(explicit `CODEX_HOME` 은 존중). 기존 `withAppServer(..., { disableBroker, env })` 재사용(신규 헬퍼 없음).
+- **import 상관(correlation) robustness** — 회수한 thread 를 live 하게 커지는 transcript 의 re-hash 로 매칭하지 않고, import 전/후 ledger 스냅샷 diff 로 이번 run 이 추가한 record 를 찾는다(항상 source-strict — 무관 세션 thread 반환 불가; Windows `\\?\` verbatim 경로 정규화는 win32 게이트). `import/completed` 알림의 `itemTypeResults[].failures`(SESSIONS 스코프)를 검사해 completed-but-failed 를 명시 실패로 surface. 2분 timeout 이 import RPC 전체를 커버(Promise.race).
+- **fix(app-server): 비정상 종료 에러에 child stderr 첨부** — exit code 0 아님일 때 진단 stderr(64KiB bounded 버퍼)를 에러 메시지에 붙여 codex 자식 시작 실패 원인이 삼켜지지 않게 한다.
+- **검증**: 3라운드 적대적 코드리뷰(security / quality / architecture / silent-failure / over-engineering + Codex 교차) 0 actionable findings 수렴. 리뷰가 초기 포팅의 false-success/false-failure 클러스터(live-transcript hash drift, completed-but-failed, Windows 경로형 불일치, cross-session thread 오귀속)를 검출·수정. transfer e2e 8 + 헬퍼 unit 10 + commands 12 green. `npm run build`(checkJs) 13 baseline 불변(신규 에러 0).
+- **비범위 (선존 유지)**: `npm run build` 잔존 13건(codex.mjs `error.code` 대입 6 + codex-skip-taxonomy.js 7)은 선존 checkJs debt — 본 release 신규 추가 0. Windows fake-codex broker/temp-dir flake(선존, 문서화됨)는 본 변경과 무관(transfer/lock 코드 비접촉, clean main 재현 확인). 수동 `--source` 는 Windows 에서 forward-slash 또는 `~` 형식 사용(슬래시커맨드 인자의 백슬래시는 escape 로 소비, 자동 경로는 무영향).
+
 ## 2.2.6 (2026-06-24)
 
 Follow-up — 2.2.5 의 broker 재워밍을 keep-alive 로 완성 + 코드리뷰(4라운드) 정리:
