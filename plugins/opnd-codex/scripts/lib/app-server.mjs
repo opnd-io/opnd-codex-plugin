@@ -608,10 +608,17 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     });
 
     this.proc.on("exit", (code, signal) => {
+      // Upstream v1.0.5 — 비정상 종료 시 자식의 stderr 를 surface 해 실패 원인
+      // (예: codex CLI 시작 에러)이 삼켜지지 않게 한다. `this.stderr` 는 이미
+      // bounded 버퍼(appendBoundedStderr) — bounded 유지, unbounded accumulator 로
+      // 되돌리지 말 것.
+      const stderr = this.stderr.trim();
       const detail =
         code === 0
           ? null
-          : createProtocolError(`codex app-server exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).`);
+          : createProtocolError(
+              `codex app-server exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).${stderr ? `\n${stderr}` : ""}`
+            );
       this.handleExit(detail);
     });
 
