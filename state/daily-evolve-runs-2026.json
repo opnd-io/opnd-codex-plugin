@@ -120,6 +120,282 @@
       "cost_units_consumed": 0,
       "failure_reason": null,
       "digest_file": "docs/daily-evolve/2026-05-28.md"
+    },
+    {
+      "run_id": "683f362d-02a9-45b6-98ab-5f9fbe60a4f4",
+      "started_at": "2026-05-29T00:10:10.608Z",
+      "ended_at": "2026-05-29T00:11:57.623Z",
+      "duration_ms": 107015,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 114,
+      "decision_count": {
+        "autonomous_safe": 48,
+        "needs_user": 115,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 50,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-05-29.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "ee621537-4fc3-4537-b840-d52378e505d4",
+      "started_at": "2026-05-30T00:09:37.718Z",
+      "ended_at": "2026-05-30T00:11:20.213Z",
+      "duration_ms": 102495,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 112,
+      "decision_count": {
+        "autonomous_safe": 48,
+        "needs_user": 113,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 50,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-05-30.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "959a2f13-fc39-4173-8a99-3069278000a0",
+      "started_at": "2026-05-31T00:10:07.670Z",
+      "ended_at": "2026-05-31T00:12:16.112Z",
+      "duration_ms": 128442,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 112,
+      "decision_count": {
+        "autonomous_safe": 48,
+        "needs_user": 113,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 50,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-05-31.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "fd56c8df-77e9-4395-95f2-35542f2e33e4",
+      "started_at": "2026-06-01T00:10:31.846Z",
+      "ended_at": "2026-06-01T00:13:32.076Z",
+      "duration_ms": 180230,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 112,
+      "decision_count": {
+        "autonomous_safe": 48,
+        "needs_user": 113,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 50,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-01.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "8528cee0-a5bd-4879-8db0-b09bac369f42",
+      "started_at": "2026-06-02T00:09:49.830Z",
+      "ended_at": "2026-06-02T00:11:33.262Z",
+      "duration_ms": 103432,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 112,
+      "decision_count": {
+        "autonomous_safe": 48,
+        "needs_user": 113,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 50,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-02.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "f26c8efd-b7d5-4b92-abdd-87e761928c87",
+      "started_at": "2026-06-03T00:10:28.047Z",
+      "ended_at": "2026-06-03T00:12:52.931Z",
+      "duration_ms": 144884,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 112,
+      "decision_count": {
+        "autonomous_safe": 48,
+        "needs_user": 112,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 49,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-03.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "e190724f-68cd-4aa9-85cf-67ef5b2bd806",
+      "started_at": "2026-06-05T00:10:17.472Z",
+      "ended_at": "2026-06-05T00:12:07.260Z",
+      "duration_ms": 109788,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 116,
+      "decision_count": {
+        "autonomous_safe": 46,
+        "needs_user": 116,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 47,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-05.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "be763446-5d85-480d-8c21-f67679e69d71",
+      "started_at": "2026-06-06T00:09:40.781Z",
+      "ended_at": "2026-06-06T00:11:29.476Z",
+      "duration_ms": 108695,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 115,
+      "decision_count": {
+        "autonomous_safe": 46,
+        "needs_user": 115,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 47,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-06.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "3d350f72-fc73-4f80-8e0b-5af2981ce7d0",
+      "started_at": "2026-06-07T00:10:01.437Z",
+      "ended_at": "2026-06-07T00:12:21.994Z",
+      "duration_ms": 140557,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 115,
+      "decision_count": {
+        "autonomous_safe": 46,
+        "needs_user": 115,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 47,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-07.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "de22bc5d-1cd9-4171-b273-ebd26f5153bc",
+      "started_at": "2026-06-08T00:10:26.354Z",
+      "ended_at": "2026-06-08T00:13:10.512Z",
+      "duration_ms": 164158,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 114,
+      "decision_count": {
+        "autonomous_safe": 46,
+        "needs_user": 114,
+        "needs_claude_judgment": 0
+      },
+      "cost_units_consumed": 47,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-08.md",
+      "auth_health": {
+        "status": "unknown",
+        "details": {
+          "reason": "non_object_response"
+        }
+      }
+    },
+    {
+      "run_id": "f4dedbeb-e1c5-42ed-92fc-d87bd55b2daa",
+      "started_at": "2026-06-09T00:10:17.392Z",
+      "ended_at": "2026-06-09T00:11:58.057Z",
+      "duration_ms": 100665,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 116,
+      "decision_count": {
+        "autonomous_safe": 44,
+        "needs_user": 116,
+        "needs_claude_judgment": 2
+      },
+      "cost_units_consumed": 45,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-09.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
+    },
+    {
+      "run_id": "b5fac283-a624-42ed-bf7f-c24806c91c5d",
+      "started_at": "2026-06-10T00:10:15.935Z",
+      "ended_at": "2026-06-10T00:11:45.539Z",
+      "duration_ms": 89604,
+      "status": "success",
+      "phase_reached": 4,
+      "actionable_count": 120,
+      "decision_count": {
+        "autonomous_safe": 45,
+        "needs_user": 120,
+        "needs_claude_judgment": 3
+      },
+      "cost_units_consumed": 46,
+      "failure_reason": null,
+      "digest_file": "docs/daily-evolve/2026-06-10.md",
+      "auth_health": {
+        "status": "ready",
+        "details": {
+          "reason": "ok"
+        }
+      }
     }
   ]
 }

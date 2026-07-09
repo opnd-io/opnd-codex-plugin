@@ -28,6 +28,54 @@
       "pr_draft_url": null,
       "decision": "pending",
       "rollback_target_review_id": null
+    },
+    {
+      "review_id": "7fac2854-3a01-a632-d086-63687a683ce4",
+      "review_type": "weekly_normal",
+      "started_at": "2026-06-05T00:12:45.183Z",
+      "ended_at": "2026-06-05T00:12:45.206Z",
+      "effective_at": null,
+      "self_review_depth": 0,
+      "inputs": {
+        "digests_analyzed": [],
+        "routine_telemetry": {
+          "exec_time_ms": [
+            109788,
+            144884,
+            103432,
+            180230,
+            128442,
+            102495,
+            107015,
+            127982,
+            67435,
+            118207,
+            87800
+          ],
+          "codex_cost": [
+            47,
+            49,
+            50,
+            50,
+            50,
+            50,
+            50,
+            0,
+            0,
+            41,
+            40,
+            0,
+            0,
+            0
+          ],
+          "fp_rate": [],
+          "triage_time_min": []
+        }
+      },
+      "proposed_changes": [],
+      "pr_draft_url": null,
+      "decision": "pending",
+      "rollback_target_review_id": null
     }
   ]
 }
