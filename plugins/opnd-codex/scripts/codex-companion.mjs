@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { parseArgs, parseReviewArgv, splitRawArgumentString } from "./lib/args.mjs";
+import { parseArgs, parseReviewArgv, readFlagValue, splitRawArgumentString } from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
     computeStaleHomeAuth,
@@ -835,11 +835,15 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || DEFAULT_STATUS_POLL_INTERVAL_MS);
   const deadline = Date.now() + timeoutMs;
-  let snapshot = buildSingleJobSnapshot(cwd, reference);
+  // C10 — tick 마다 reap 한다. `status --tail` / `--watch` 는 이미 그랬지만 이 루프는
+  // 아니었다. 그래서 외부에서 죽은 worker(Windows 의 지배적 경우: 자신을 띄운 subagent 의
+  // Job Object 가 닫힘)가 `running` 으로 남고, `--wait` 은 실패를 즉시 드러내는 대신
+  // 자신의 timeout 까지 돌았다.
+  let snapshot = buildSingleJobSnapshot(cwd, reference, { reap: true });
 
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
-    snapshot = buildSingleJobSnapshot(cwd, reference);
+    snapshot = buildSingleJobSnapshot(cwd, reference, { reap: true });
   }
 
   return {
@@ -1497,7 +1501,31 @@ async function runForegroundCommand(job, runner, options = {}) {
     logFile: options.logFile,
     stderr: !options.json
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile });
+
+  // C4 / C5 — 긴 await 이전에 jobId 를 알린다.
+  //
+  // Claude Code 의 Bash tool 은 foreground 호출을 약 600초에 죽인다. 그러면 이 프로세스가
+  // 출력하려던 모든 것이 사라지고, 호출자에게는 일반적인 실패와 무엇이 돌았는지에 대한
+  // 아무 단서도 남지 않는다. jobId 는 지금 알고 있으니 지금 내보낸다: 죽은 호출도 캡처된
+  // stderr 에 이 줄을 남기고, reaper 는 조치 가능한 사유로 job 을 terminal 화하며, 사용자는
+  // `--resume` 으로 thread 를 복구할 수 있다.
+  //
+  // 동시에 provenance 표지 역할도 한다: jobId 를 실은 출력은 아무것도 호출하지 않고 답한
+  // wrapper 가 아니라 실제 실행에서 나왔음을 증명한다.
+  if (!options.json) {
+    process.stderr.write(
+      `[codex-plugin-cc] jobId=${job.id} logFile=${logFile}\n` +
+        `[codex-plugin-cc] If this call is cut short (the Bash tool caps foreground calls at ~600s), ` +
+        `inspect it with /opnd-codex:status ${job.id} and continue with --background or --resume.\n`
+    );
+  }
+
+  const execution = await runTrackedJob(job, () => runner(progress), {
+    logFile,
+    // O8 — "이 실행은 codex-rescue subagent 에서 왔다" 는 신호를 telemetry 스트림으로
+    // 실어 나른다. runTrackedJob 참조.
+    requireBroker: options.requireBroker === true
+  });
   outputResult(options.json ? execution.payload : execution.rendered, options.json);
   if (execution.exitStatus !== 0) {
     process.exitCode = execution.exitStatus;
@@ -1632,11 +1660,27 @@ async function enqueueBackgroundTask(cwd, job, request, { allowLocalFallback = t
     spawnedPid = brokerOutcome.pid;
     spawnedVia = "broker";
   } else if (brokerOutcome.ambiguous) {
-    // The broker was reached but gave no clear reply — it may already have
-    // spawned a worker. Local-spawning now would create a duplicate that writes
-    // the same job files, so we don't. The job stays `queued`; re-dispatch (or a
-    // resume path) recovers it if the broker did not actually start one.
+    // broker 에는 닿았지만 명확한 응답이 없었다 — 이미 worker 를 띄웠을 수도 있다. 지금
+    // local-spawn 하면 같은 job 파일에 쓰는 중복 worker 가 생기므로 하지 않는다.
+    //
+    // C11 — 그 다음에 무슨 일이 일어나는지에 대한 계약이 정의되지 않았었다. job 은 pid 없이
+    // `queued` 로 남는다. broker 가 실제로 worker 를 시작했다면 그 worker 가 수초 내에 job
+    // 파일을 인수해 항목이 `running` 이 된다. 아니라면 QUEUED_DISPATCH_GRACE_MS 경과 후
+    // reaper 가 `reaper:dispatch_lost` 로 terminal 화하므로, 사용자는 영원히 queued 인 job
+    // 대신 조치 가능한 실패를 받는다.
+    //
+    // `dispatchState` 는 사후 진단을 위해 job 레코드에 기록된다 (job 별 JSON 과 아래 로그
+    // 줄에 나타난다). 렌더링하는 곳은 없다.
     spawnedVia = "broker-ambiguous";
+    appendLogLine(
+      logFile,
+      "worker.spawn via=broker-ambiguous (broker reached, spawn unconfirmed; awaiting worker or dispatch_lost reap)"
+    );
+    updateJobFile(job.workspaceRoot, job.id, (storedJob) => ({
+      ...(storedJob ?? queuedRecord),
+      dispatchState: "broker-ambiguous"
+    }));
+    upsertJob(job.workspaceRoot, { id: job.id, dispatchState: "broker-ambiguous" });
   } else if (!allowLocalFallback) {
     // #21 — subagent context (--require-broker): no live broker was reachable,
     // and a locally-spawned detached worker would live in the subagent's
@@ -2087,7 +2131,9 @@ async function handleTask(argv) {
     ...buildTaskJob(workspaceRoot, taskMetadata, writeCapable),
     sandbox: effectiveSandbox,
     approvalPolicy,
-    ...taskJobMetadata
+    ...taskJobMetadata,
+    // O8 — telemetry 는 이 실행이 codex-rescue subagent 에서 왔음을 알아야 한다.
+    requireBroker
   };
   try {
     await runForegroundCommand(
@@ -2190,7 +2236,9 @@ async function handleTaskWorker(argv) {
             ...request,
             onProgress: progress
           }),
-    { logFile }
+    // O8 — 저장된 request 가 broker 에서 worker 로 넘어가는 구간에서도 `requireBroker` 를
+    // 보존하므로 (buildTaskRequest 참조), worker 의 telemetry 도 그것을 유지한다.
+    { logFile, requireBroker: request.requireBroker === true }
   );
 }
 
@@ -3082,8 +3130,8 @@ async function handleDailyEvolve(argv) {
   }
   const dateArg = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
   const skipGhApi = argv.includes("--skip-gh-api");
-  const phaseIdx = argv.indexOf("--phase");
-  const phase = phaseIdx >= 0 ? Number(argv[phaseIdx + 1]) : 0;
+  const rawPhase = readFlagValue(argv, "--phase");
+  const phase = rawPhase === null ? 0 : Number(rawPhase);
   const probeOnly = argv.includes("--probe");
 
   // Phase 5.0 BLOCKING — env probe 별도 mode
@@ -3098,8 +3146,7 @@ async function handleDailyEvolve(argv) {
   // Phase 6 — Self-Evolve Meta Loop (별도 mode: --self-evolve)
   if (argv.includes("--self-evolve")) {
     const { selfEvolve } = await import("./daily-evolve/self-evolve.mjs");
-    const typeIdx = argv.indexOf("--type");
-    const reviewType = typeIdx >= 0 ? argv[typeIdx + 1] : "weekly_normal";
+    const reviewType = readFlagValue(argv, "--type") ?? "weekly_normal";
     const force = argv.includes("--force");
     const result = selfEvolve({ reviewType, force });
     process.stdout.write(JSON.stringify({ fired: result.fired, reason: result.reason, review_id: result.entry?.review_id ?? null }) + "\n");

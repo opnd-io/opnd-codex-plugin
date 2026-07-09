@@ -41,6 +41,7 @@ import {
 } from "./lib/self-evolve-policy.mjs";
 import { migrate, MigrationError } from "./lib/state-migrator.mjs";
 import { mergeLedgers, yearlyFilePath } from "./lib/run-ledger.mjs";
+import { readFlagValue } from "../lib/args.mjs";
 
 const LOG_STATE_PATH = "state/daily-evolve-self-evolve-log.json";
 const WEEKLY_REPORT_DIR = "docs/daily-evolve/_weekly";
@@ -263,8 +264,7 @@ export function selfEvolve(opts = {}) {
 
 // CLI entry
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const typeIdx = process.argv.indexOf("--type");
-  const reviewType = typeIdx >= 0 ? process.argv[typeIdx + 1] : REVIEW_TYPE.WEEKLY_NORMAL;
+  const reviewType = readFlagValue(process.argv, "--type") ?? REVIEW_TYPE.WEEKLY_NORMAL;
   const force = process.argv.includes("--force");
   const result = selfEvolve({ reviewType, force });
   process.stdout.write(JSON.stringify({ fired: result.fired, reason: result.reason }, null, 2) + "\n");

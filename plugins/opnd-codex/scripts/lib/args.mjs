@@ -1,3 +1,24 @@
+// raw argv 조각에서 `--flag <value>` / `--flag=value` 옵션 하나를 읽는다. 손으로 쓴
+// `argv.indexOf("--flag")` 조회는 공백 구분 형식만 매칭하므로, `--flag=value` 는 에러 없이
+// 조용히 호출자의 기본값으로 떨어진다. 전체 parseArgs() 를 돌리지 않는 진입점
+// (daily-evolve, self-evolve) 이 대신 이것을 쓴다.
+//
+// flag 가 없거나 뒤에 값이 없으면 `null` 을 반환하므로, 기본값은 호출자가 계속 통제한다.
+export function readFlagValue(argv, flag) {
+  const prefix = `${flag}=`;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === flag) {
+      const next = argv[index + 1];
+      return next === undefined ? null : next;
+    }
+    if (token.startsWith(prefix)) {
+      return token.slice(prefix.length);
+    }
+  }
+  return null;
+}
+
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const booleanOptions = new Set(config.booleanOptions ?? []);
