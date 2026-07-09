@@ -47,32 +47,63 @@ export const READ_LOG_TAIL_FULL_READ_CAP_BYTES = 8 * 1024 * 1024;
 export const READ_LOG_TAIL_PARTIAL_READ_BYTES = 256 * 1024;
 
 /**
+ * decoder 가 아직 붙들고 있는 절반만 디코딩된 multi-byte 시퀀스를 버린다.
+ *
+ * `TextDecoder` 에는 reset 메서드가 없지만, 인자 없는 `decode()` 는 stream 을 끝낸다:
+ * 대기 중인 continuation byte 를 (U+FFFD 로) flush 하고 decoder 를 초기 상태로
+ * 되돌린다. 이것이 없으면 byte stream 불연속 — truncation, 회전, tick 당 상한을 넘는
+ * burst — 이 남긴 lead byte 가 *다음* read 의 첫 글자에 달라붙어, 그 자체로는 멀쩡한
+ * 라인을 손상시킨다.
+ *
+ * @param {TextDecoder | undefined} decoder
+ */
+function resetDecoder(decoder) {
+  if (!decoder) {
+    return;
+  }
+  try {
+    decoder.decode();
+  } catch {
+    // 이상한 상태의 decoder 라도, tail read 밖으로 throw 하는 것보다는 낫다.
+  }
+}
+
+/**
  * @param {string | null | undefined} logFile
  * @param {number} lastOffset
  * @param {string} pendingPartial
  * @param {{ decoder?: TextDecoder }} [options]
- * @returns {{ lines: string[], nextOffset: number, pendingPartial: string }}
+ * @returns {{ lines: string[], nextOffset: number, pendingPartial: string, decoderReset: boolean }}
  */
 export function readLogTailFromOffset(logFile, lastOffset, pendingPartial, options = {}) {
   if (!logFile) {
-    return { lines: [], nextOffset: lastOffset, pendingPartial };
+    return { lines: [], nextOffset: lastOffset, pendingPartial, decoderReset: false };
   }
   let stat;
   try {
     stat = fs.statSync(logFile);
   } catch {
-    return { lines: [], nextOffset: lastOffset, pendingPartial };
+    return { lines: [], nextOffset: lastOffset, pendingPartial, decoderReset: false };
   }
+  // byte stream 불연속: 다음 read 가 지난 read 가 멈춘 지점에서 이어지지 않으므로,
+  // 그 경계를 넘어 옮겨진 decoder 상태는 쓰레기다.
+  let discontinuity = false;
   if (stat.size < lastOffset) {
     // Truncate / rotation — reset watermark and drop the stale fragment.
     lastOffset = 0;
     pendingPartial = "";
+    discontinuity = true;
   }
   if (stat.size === lastOffset) {
-    return { lines: [], nextOffset: lastOffset, pendingPartial };
+    return { lines: [], nextOffset: lastOffset, pendingPartial, decoderReset: false };
   }
   const readLen = stat.size - lastOffset;
   const cappedLen = Math.min(readLen, READ_LOG_TAIL_FULL_READ_CAP_BYTES);
+  if (cappedLen < readLen) {
+    // burst 가 상한을 넘었다: `stat.size - cappedLen` 으로 건너뛰므로, decoder 가
+    // 기다리던 바이트는 영영 오지 않는다.
+    discontinuity = true;
+  }
   const start = stat.size - cappedLen;
   let buf;
   try {
@@ -84,7 +115,10 @@ export function readLogTailFromOffset(logFile, lastOffset, pendingPartial, optio
       fs.closeSync(fd);
     }
   } catch {
-    return { lines: [], nextOffset: lastOffset, pendingPartial };
+    return { lines: [], nextOffset: lastOffset, pendingPartial, decoderReset: false };
+  }
+  if (discontinuity) {
+    resetDecoder(options.decoder);
   }
   const decoded = options.decoder
     ? options.decoder.decode(buf, { stream: true })
@@ -108,5 +142,5 @@ export function readLogTailFromOffset(logFile, lastOffset, pendingPartial, optio
   // If it ended mid-line, the final segment is the unfinished fragment and
   // becomes the next-tick partial buffer.
   const newPending = segments.pop() ?? "";
-  return { lines: segments, nextOffset: stat.size, pendingPartial: newPending };
+  return { lines: segments, nextOffset: stat.size, pendingPartial: newPending, decoderReset: discontinuity };
 }

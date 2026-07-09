@@ -187,7 +187,10 @@ test("EVENT_NAMES + ERROR_CLASSES contracts (frozen + load-bearing)", () => {
     "failed",
     "cancelled",
     "terminated",
-    "timeout"
+    "timeout",
+    // O9 — append 가 한 번 이상 실패한 뒤 첫 성공 append 에서 기록된다. reader 가
+    // "아무 일도 없었다" 와 "이벤트가 유실됐다" 를 구분할 수 있게.
+    "telemetry_write_failed"
   ]);
   assert.deepEqual(ERROR_CLASSES, [
     "rate-limit",
@@ -197,6 +200,9 @@ test("EVENT_NAMES + ERROR_CLASSES contracts (frozen + load-bearing)", () => {
     "parse",
     "network",
     "broker",
+    // O6 — 호출자가 불가능한 것을 요청했으므로 실행 자체가 시작되지 않았다.
+    // 이를 runtime 실패로 세면 진짜 회귀가 오타 뒤에 가려진다.
+    "input",
     "other"
   ]);
   assert.equal(Object.isFrozen(EVENT_NAMES), true);
@@ -252,8 +258,8 @@ test("tracked-jobs imports telemetry helpers + emits start/completed/failed/term
   const source = fs.readFileSync(TRACKED, "utf8");
   assert.match(
     source,
-    /import \{ createTraceId, emitEvent \} from "\.\/telemetry\.mjs"/,
-    "imports both helpers"
+    /import \{ classifyErrorClass, createTraceId, emitEvent \} from "\.\/telemetry\.mjs"/,
+    "imports the telemetry helpers"
   );
 
   const runTracked = source.match(/export async function runTrackedJob[\s\S]+?^}/m);
@@ -323,11 +329,11 @@ test("audit #1: telemetry module documents the concurrent-append safety boundary
   // Windows lack-of-guarantee, (c) the lib/state.mjs lock pattern as the
   // fix if concurrency grows. Without this, a future maintainer might
   // silently switch to async I/O and reintroduce the race.
-  assert.match(source, /Concurrent append safety \(audit finding #1\)/, "audit finding cross-reference present");
+  assert.match(source, /동시 append 안전성 \(audit finding #1\)/, "audit finding cross-reference present");
   assert.match(source, /PIPE_BUF/, "POSIX 4096-byte atomicity boundary named");
   assert.match(source, /Windows/, "Windows caveat called out");
-  assert.match(source, /lib\/state\.mjs lock pattern/, "fix path named");
-  assert.match(source, /do NOT silently switch to async I\/O/, "anti-pattern warning present");
+  assert.match(source, /lib\/state\.mjs 의 lock 패턴/, "fix path named");
+  assert.match(source, /async I\/O 로\s*\n?\s*\/\/\s*조용히 바꾸지 말 것/, "anti-pattern warning present");
 });
 
 test("audit #4: telemetry module documents the extras field-name reservation rule", () => {
@@ -337,11 +343,11 @@ test("audit #4: telemetry module documents the extras field-name reservation rul
   );
   assert.match(
     source,
-    /`extras` field-name reservation \(audit finding #4\)/,
+    /`extras` 필드명 예약 \(audit finding #4\)/,
     "audit finding cross-reference present"
   );
-  assert.match(source, /bump SCHEMA_VERSION/, "promotion rule explicit");
-  assert.match(source, /do not demote/, "demotion rule explicit");
+  assert.match(source, /SCHEMA_VERSION 을 올린다/, "promotion rule explicit");
+  assert.match(source, /강등시키지도 말 것/, "demotion rule explicit");
 });
 
 test("audit #5: MIGRATION_v2.0.md splits v2.1.0 telemetry env vars into their own section", () => {
