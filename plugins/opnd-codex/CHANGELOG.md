@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.4.0 (2026-07-09)
+
+Fix — telemetry ledger 감사에서 드러난 계측 왜곡 · job 생명주기 결함 · broker 소유권 race 일괄 수정. 이슈 #28 의 root cause 규명 포함.
+
+- **fix(rescue): 이슈 #28 root cause — 권한 거부가 아니라 600초 Bash 타임아웃.** `codex-rescue` 가 모든 실패를 "the Bash call failed or was denied" 한 문장으로 보고해, Claude Code Bash tool 의 foreground 절단(약 600초)이 권한 거부로 읽혔다. 실패 계약을 `[codex-rescue] Codex was not invoked — <CLASS>. <DETAIL>` 로 바꾸고 클래스를 열거한다(`timeout` / `permission-denied` / `enoent` / `nonzero-exit:<N>`). companion 은 실행 직전 stderr 에 `[codex-plugin-cc] jobId=… logFile=…` 를 먼저 써, 절단된 호출에도 복구 handle 이 남는다(`/opnd-codex:status <jobId>` 로 확인 후 `--background` / `--resume`).
+- **fix(telemetry): ledger 회전 + 실패 분류 + 유실 이벤트 가시화.** `events.jsonl` 이 8 MB 에서 `events.jsonl.1` 로 회전한다(rename only — 목적지를 먼저 unlink 하면 동시 writer 가 서로의 세그먼트를 파괴). 모든 reader 는 두 세그먼트를 오래된 것부터 읽는다. write 실패는 조용히 버려지지 않고 `telemetry_write_failed` 마커에 `droppedEvents` 누계로 기록된다(마커 개수가 아니라 합계를 보고). `errorClass` 에 `input` 을 추가하고 rate-limit 규칙의 `quota` 를 단어 경계로 고정했다("quotation" 오매칭이 JSON 파싱 에러를 탈취했다).
+- **fix(telemetry): 스위트가 사용자의 실제 ledger 에 쓰고 있었다.** 기록된 9,935 이벤트 중 7,284(73.3%)가 테스트 기원 — 스트림에서 유도한 모든 비율이 몇 배로 부풀었다. 테스트 프로세스는 이제 telemetry 를 격리하고, `codex-efficiency-report` 는 잔존 테스트 기원 이벤트를 기본 제외한다(`--include-test-origin` 으로 opt-in).
+- **fix(state): reaper 가 terminal 이벤트를 남긴다 (O5).** 외부 TerminateProcess(Windows 의 지배적 경우)는 가로챌 수 없어 job 자신의 프로세스에서 terminal 이벤트가 나오지 않는다. 실행의 약 7% 가 terminal 이벤트 없는 `started` 로 남아 완료율이 낙관 편향됐다. reap 사유 taxonomy: `dispatch_lost` / `no_pid_recorded` / `pid_reused` / `process_died`.
+- **fix(state): 상태 인지 `pruneJobs` (C7).** MAX_JOBS 상한이 status 를 보지 않아, progress write 가 뒤처진 장수 `running` job 이 실행 중에 인덱스에서 쫓겨나고 로그까지 unlink 되어 추적 불가 orphan 을 남겼다. active job 은 절대 evict 하지 않는다.
+- **fix(state): `--wait` / `result` 경로도 reap (C10) + `queued` 유예 (C11).** 외부에서 죽은 worker 가 `running` 으로 남아 `result` 가 영원히 "끝난 job 없음" 을 보고하던 문제. 반대로 `queued && pid 없음` 을 즉시 죽음으로 보던 것은 `QUEUED_DISPATCH_GRACE_MS` 유예로 완화한다(dispatch 중인 job 과 `broker-ambiguous` 로 세워둔 job 보호). 부수적으로 `Number(null) === 0` 이 `Number.isFinite` 를 통과해 `pid: null` 레코드를 `process_died` 로 오분류하던 버그 수정.
+- **fix(broker): turn 소유권 race (B2).** `turn/completed` 가 `turn/start` 응답보다 먼저 도착하면, await 이후의 대입이 아무도 해제하지 않을 소유자를 세워 다른 client 가 영구 `BROKER_BUSY` 를 받았다. 소유권 전이를 `lib/broker-turn-ownership.mjs` 상태 기계로 추출하고, 밀려난 stream 을 기억해 늦은 완료와 이른 완료를 thread id 로 구분한다.
+- **fix(broker): app-server 자식 exit 감지 (B1) + 세션 dir sweep (B3).** 자식이 죽어도 broker 가 연결을 계속 받아 idle watchdog 만료(최대 12분)까지 모든 요청이 실패하는 동안 `isBrokerEndpointReady()` 가 "live" 를 보고했다. `cxc-*` 세션 dir 는 아무도 지우지 않아 한 사용자 `%TEMP%` 에 112개가 쌓였다 — 다음 spawn 이 회수하되, pid 파일이 없는 dir 는 유예 창 뒤에만 죽은 것으로 본다(동시 spawn 의 살아있는 세션 삭제 방지). broker.log 에 listening 시작 줄을 남겨, 0바이트 로그가 "init hang" 의 명백한 증거가 되게 한다(수집 로그 112개 중 46개가 0바이트였다).
+- **fix(stop-gate): maxBuffer 넘침을 BLOCK 으로 오분류 (C1).** `spawnSync` 의 stdout 1 MB 기본값을 `task --json` payload 가 넘기면 Node 가 자식을 죽이고 `status: null` 로 만드는데, 분류기가 이를 정책 BLOCK 으로 읽어 PR-3.1 이 막으려던 rewake 루프에 도달했다. 버퍼를 32 MB 로 올리고, `error` 객체의 존재로 분기하며(code 문자열은 Node 버전마다 다르다), 파싱을 먼저 해 kill 직전에 쓰인 완전한 BLOCK 이 signal 보다 우선하게 한다. gate 가 fail-open 으로 skip 할 때 `progress`(phase=`stop_review_skipped`) 를 남긴다.
+- **fix(cli): `--flag=value` 를 조용히 무시하던 파서 (C9).** `argv.indexOf("--phase")` 는 공백 구분 형식만 매칭해, `--phase=4` 가 에러 없이 기본값으로 떨어져 phase 0 을 실행했다.
+- **fix(types): `npm run build`(checkJs) 13 에러 해소.** `CodexSkipError` typedef 도입 + `Object.assign(new Error(…), { code })`. `npm run verify` 가 CI 등가 게이트(`npm test` + `npm run build`)로 추가됐다 — 로컬 검사만으로는 checkJs 회귀를 잡지 못했다.
+- **chore(test): 실행당 약 400개씩 누적되던 temp workspace 회수** (`os.tmpdir()` 에 9,434개 잔존). `npm test` 의 glob 은 셸 확장에 의존해 Windows `cmd.exe` 에서 깨졌다 — 파일 열거로 셸을 제거.
+- **검증**: `npm run verify` (`npm test` + `npm run build`). 신규 회귀 테스트 13 파일. 미테스트 영역 — 실 Codex CLI e2e 미실행, 회전 임계값(8 MB)은 합성 fixture 로만 검증.
+
 ## 2.3.0 (2026-07-03)
 
 Feature — upstream `openai/codex-plugin-cc` v1.0.5 의 Claude 세션 이관 기능 포팅 + app-server 진단 개선:
