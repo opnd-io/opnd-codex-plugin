@@ -13,7 +13,87 @@ export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
 const BROKER_STATE_FILE = "broker.json";
 
+// B3 — broker 는 자신의 세션 dir 를 지울 수 없다: Windows 에서 broker.log 를 여전히
+// stdout/stderr 로 열고 있고, hard kill 은 shutdown 을 아예 건너뛴다. 그래서 다음 spawn
+// 이 죽은 것들을 회수한다. 상한이 있고 best-effort 다 — broker 시작 hot path 에서 돌며,
+// 남은 temp dir 하나가 throw 할 값어치는 결코 없다.
+const MAX_SWEPT_SESSION_DIRS = 200;
+
+// `broker.pid` 가 없는 세션 dir 는 모호하다: broker 가 정상 종료했거나(종료 시 pid 파일을
+// unlink 한다), 아니면 아직 자식을 띄우지 않은 동시 spawn 이 방금 만들었을 수도 있다 —
+// `createBrokerSessionDir` 는 mkdtemp 를 하고, pid 파일은 spawn 된 broker 만 쓴다. 따라서
+// "pid 파일 없음" 만으로 sweep 하면 다른 workspace 의 살아있는 세션을 지운다. cwd 별
+// broker lock 은 그것을 직렬화해 주지 않는다.
+//
+// pid 없는 dir 를 버려진 것으로 취급하기 전에 그 창이 지나기를 기다린다. 죽은 dir 가
+// spawn 한 번을 더 살아남는 비용은 0 이지만, 살아있는 dir 를 지우면 endpoint socket
+// (POSIX) 과 broker 자신의 로그가 파괴된다.
+export const SESSION_DIR_ADOPTION_GRACE_MS = 60_000;
+
+/** @returns {"dead" | "live" | "too-young"} */
+function classifySessionDir(sessionDir, nowMs) {
+  const pidFile = path.join(sessionDir, "broker.pid");
+  let raw;
+  try {
+    raw = fs.readFileSync(pidFile, "utf8").trim();
+  } catch {
+    // 아직 pid 파일이 없거나, 더 이상 없다.
+    let birth;
+    try {
+      const stat = fs.statSync(sessionDir);
+      birth = Math.min(stat.birthtimeMs || Infinity, stat.mtimeMs);
+    } catch {
+      return "dead"; // 우리 발밑에서 사라졌다
+    }
+    if (Number.isFinite(birth) && nowMs - birth < SESSION_DIR_ADOPTION_GRACE_MS) {
+      return "too-young";
+    }
+    return "dead";
+  }
+  const pid = Number(raw);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return "dead";
+  }
+  try {
+    process.kill(pid, 0);
+    return "live";
+  } catch (error) {
+    // EPERM 은 pid 가 존재하되 다른 사용자 소유라는 뜻 — 건드리지 않는다.
+    return error?.code === "EPERM" ? "live" : "dead";
+  }
+}
+
+export function sweepDeadBrokerSessionDirs(prefix = "cxc-", tmpdir = os.tmpdir(), nowMs = Date.now()) {
+  let entries;
+  try {
+    entries = fs.readdirSync(tmpdir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let swept = 0;
+  for (const entry of entries) {
+    if (swept >= MAX_SWEPT_SESSION_DIRS) {
+      break;
+    }
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) {
+      continue;
+    }
+    const sessionDir = path.join(tmpdir, entry.name);
+    if (classifySessionDir(sessionDir, nowMs) !== "dead") {
+      continue;
+    }
+    try {
+      fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 1 });
+      swept += 1;
+    } catch {
+      // 다른 프로세스가 broker.log 를 아직 열고 있을 수 있다. 다음 spawn 에서 재시도.
+    }
+  }
+  return swept;
+}
+
 export function createBrokerSessionDir(prefix = "cxc-") {
+  sweepDeadBrokerSessionDirs(prefix);
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
@@ -350,7 +430,10 @@ export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessi
   const resolvedSessionDir = sessionDir ?? (pidFile ? path.dirname(pidFile) : logFile ? path.dirname(logFile) : null);
   if (resolvedSessionDir && fs.existsSync(resolvedSessionDir)) {
     try {
-      fs.rmdirSync(resolvedSessionDir);
+      // B3 — 예전에는 `rmdirSync` 였고, 비어있지 않은 디렉터리에서 조용히 실패했다.
+      // broker 가 남긴 파일(지우지 못한 로그, socket)이 하나라도 있으면 dir 가 영원히
+      // 살아남았다. 트리째 제거한다.
+      fs.rmSync(resolvedSessionDir, { recursive: true, force: true, maxRetries: 1 });
     } catch {
       // Ignore non-empty or missing directories.
     }

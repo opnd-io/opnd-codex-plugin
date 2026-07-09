@@ -95,6 +95,24 @@ export function applyUtf8LocaleOverride(targetEnv, baseEnv = targetEnv) {
   };
 }
 
+// override 자체는 유효 locale 이 UTF-8 이 아닐 때 항상 적용된다.
+// *notice* 는 다른 문제다: 사용자에게 locale 을 고치라고 요구한다.
+// Windows 에서 `LANG` / `LC_ALL` 은 애초에 설정되지 않는다 — 그것이 정상 상태이지
+// 잘못된 설정이 아니다 — 그래서 notice 가 worker spawn 마다 떴고 읽는 사람이 조치할
+// 수 있는 것은 아무것도 알려주지 않았다. 호스트가 실제로 locale 을 선언했고 그것이
+// UTF-8 이 아닐 때만 말한다.
+export function localeNoticeIsActionable(baseEnv) {
+  const declared = [baseEnv.LC_ALL, baseEnv.LC_CTYPE, baseEnv.LANG].some(
+    (value) => String(value ?? "").trim() !== ""
+  );
+  if (declared) {
+    return true;
+  }
+  // 아무것도 선언되지 않음: POSIX 에서는 조치 가능(사용자가 LANG 을 export 하면 된다),
+  // Windows 에서는 소음(설정할 관례적 위치가 없다).
+  return process.platform !== "win32";
+}
+
 // Module-level guard so the locale-override notice prints at most once per
 // process even if buildPluginCodexEnv is called repeatedly (broker init +
 // every retry path).
@@ -257,7 +275,7 @@ export function buildPluginCodexEnv(baseEnv = process.env) {
   // limitation; the realistic case is "user fixes locale, then resumes"
   // for which a restart is already needed.
   const localeResult = applyUtf8LocaleOverride(result, baseEnv);
-  if (localeResult.applied && !localeOverrideNoticeEmitted) {
+  if (localeResult.applied && !localeOverrideNoticeEmitted && localeNoticeIsActionable(baseEnv)) {
     // Audit finding #4 (LOW) trade-off: flip the latch BEFORE the write
     // so even a broken stderr collapses the notice attempt to "happens
     // once" rather than "retries forever and pollutes the log". The
