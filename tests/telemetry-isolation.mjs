@@ -1,4 +1,6 @@
-// O1 — `npm test` *바깥* 에서 시작한 테스트 프로세스를 위한 telemetry 격리. 사용법:
+import { SESSION_SCOPED_ENV_KEYS } from "../scripts/test-env.mjs";
+
+// O1 — `npm test` *바깥* 에서 시작한 테스트 프로세스를 위한 env 격리. 사용법:
 // `node --import ./tests/telemetry-isolation.mjs --test tests/some.test.mjs` 처럼 preload 한다.
 //
 // `npm test` 는 이 파일을 쓰지 않는다: `scripts/run-tests.mjs` 가 같은 변수를 자식 env 에
@@ -26,4 +28,10 @@ if (!("CODEX_PLUGIN_TELEMETRY_DISABLED" in process.env)) {
 // 테스트 출력에서 소음이고, 더 중요하게는 stderr assertion 을 취약하게 만든다.
 if (!("CODEX_PLUGIN_SUPPRESS_V2_NOTICE" in process.env)) {
   process.env.CODEX_PLUGIN_SUPPRESS_V2_NOTICE = "1";
+}
+
+// 세션 신원은 telemetry 와 달리 opt-out 이 없다 — 상속된 값은 언제나 오염이다.
+// `scripts/run-tests.mjs` 가 `npm test` 경로에서 같은 일을 한다.
+for (const key of SESSION_SCOPED_ENV_KEYS) {
+  delete process.env[key];
 }

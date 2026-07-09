@@ -18,6 +18,8 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { buildTestChildEnv } from "./test-env.mjs";
+
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEST_DIRS = [path.join(ROOT_DIR, "tests"), path.join(ROOT_DIR, "tests", "daily-evolve")];
 
@@ -50,18 +52,12 @@ const args = ["--test", ...files, ...process.argv.slice(2)];
 const result = spawnSync(process.execPath, args, {
   cwd: ROOT_DIR,
   stdio: "inherit",
-  env: {
-    // 자식 프로세스와 그것이 spawn 하는 모든 프로세스가 이것을 상속한다. Node 버전과
-    // 무관하다. 호출자 env 의 명시적 값이 뒤에 spread 되어 이기므로, 실제 write 를 관찰해야
-    // 하는 테스트는 opt-out 할 수 있다.
-    //
-    // `tests/telemetry-isolation.mjs` 는 테스트 파일 하나를 직접 돌리는 개발자를 위해
-    // `--import` 로 같은 일을 한다. 여기서는 의도적으로 쓰지 않는다 — 이미 지켜진 경로를
-    // 지키는 두 번째 레이어가 되기 때문이다.
-    CODEX_PLUGIN_TELEMETRY_DISABLED: "1",
-    CODEX_PLUGIN_SUPPRESS_V2_NOTICE: "1",
-    ...process.env
-  }
+  // 자식 프로세스와 그것이 spawn 하는 모든 프로세스가 이 env 를 상속한다. Node 버전과
+  // 무관하다. 무엇을 넣고 무엇을 지우는지는 `scripts/test-env.mjs` 참조.
+  //
+  // `tests/telemetry-isolation.mjs` 는 테스트 파일 하나를 직접 돌리는 개발자를 위해
+  // `--import` 로 telemetry 부분만 같은 일을 한다.
+  env: buildTestChildEnv(process.env)
 });
 
 if (result.error) {

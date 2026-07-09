@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { buildTestChildEnv } from "../scripts/test-env.mjs";
 import { makeTempDir, sweepTrackedBrokers, sweepTrackedWorkspaces, withTelemetryIsolation } from "./helpers.mjs";
 
 // O3 — `makeTempDir()` 는 모든 workspace 를 등록했지만 아무도 제거하지 않았다. 그래서 전체
@@ -108,6 +109,42 @@ test("the exit sweep also runs after an uncaught throw", () => {
 });
 
 // O1 — 자식 env 격리.
+
+// 세션 신원 누출. `helpers.run()` 은 `options.env` 가 없으면 spawnSync 에 env 를 넘기지
+// 않으므로 자식이 부모 env 를 통째로 상속한다. 개발자의 Claude Code 세션 안에서 돌리면
+// `CODEX_COMPANION_SESSION_ID` 가 흘러들고, `filterJobsForCurrentSession` 이 sessionId 없는
+// fixture 를 전부 걸러내 `status` / `result` 테스트 3건이 실패했다. CI 에는 그 변수가 없어
+// 통과하므로, 오랫동안 Windows fake-codex 문제로 잘못 귀인돼 있었다.
+test("buildTestChildEnv strips the inherited Claude session identity", () => {
+  const env = buildTestChildEnv({
+    PATH: "/usr/bin",
+    CODEX_COMPANION_SESSION_ID: "sess-from-the-developers-editor",
+    CODEX_COMPANION_TRANSCRIPT_PATH: "C:\\Users\\me\\.claude\\projects\\x.jsonl"
+  });
+  assert.equal("CODEX_COMPANION_SESSION_ID" in env, false);
+  assert.equal("CODEX_COMPANION_TRANSCRIPT_PATH" in env, false);
+  assert.equal(env.PATH, "/usr/bin", "unrelated variables survive");
+});
+
+test("buildTestChildEnv gives session identity no opt-out", () => {
+  // telemetry 는 명시적 값으로 opt-out 할 수 있지만, 상속된 세션 신원은 언제나 오염이다.
+  const env = buildTestChildEnv({ CODEX_COMPANION_SESSION_ID: "" });
+  assert.equal("CODEX_COMPANION_SESSION_ID" in env, false);
+});
+
+test("buildTestChildEnv disables telemetry by default but lets a test opt out", () => {
+  assert.equal(buildTestChildEnv({}).CODEX_PLUGIN_TELEMETRY_DISABLED, "1");
+  assert.equal(
+    buildTestChildEnv({ CODEX_PLUGIN_TELEMETRY_DISABLED: "" }).CODEX_PLUGIN_TELEMETRY_DISABLED,
+    "",
+    "an explicit value in the caller's env wins"
+  );
+});
+
+test("buildTestChildEnv keeps CODEX_PLUGIN_DATA_DIR", () => {
+  // 그 변수는 job/state 디렉터리도 해석한다. 옮기면 스위트가 무엇을 테스트하는지가 달라진다.
+  assert.equal(buildTestChildEnv({ CODEX_PLUGIN_DATA_DIR: "/data" }).CODEX_PLUGIN_DATA_DIR, "/data");
+});
 
 test("withTelemetryIsolation disables telemetry by default", () => {
   assert.equal(withTelemetryIsolation({ PATH: "/usr/bin" }).CODEX_PLUGIN_TELEMETRY_DISABLED, "1");
