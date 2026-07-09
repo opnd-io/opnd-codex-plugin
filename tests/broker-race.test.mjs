@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { ensureStateDir, withBrokerLockAsync } from "../plugins/opnd-codex/scripts/lib/state.mjs";
+import { ensureStateDir, loadState, updateState, withBrokerLockAsync } from "../plugins/opnd-codex/scripts/lib/state.mjs";
 
 // PR-1.4 (#286 race 3) regression — broker.json read-modify-write must be
 // serialized across concurrent callers via a dedicated mkdir-based lock so
@@ -54,17 +54,31 @@ test("withBrokerLockAsync releases the lock when the body throws", async () => {
 });
 
 test("withBrokerLockAsync is independent of withStateLock (no cross-blocking)", async () => {
-  // The state lock and broker lock are separate mkdir dirs (.lock vs
-  // .broker.lock). A broker-lock acquire should not block a state-lock
-  // acquire happening in parallel.
+  // state lock 과 broker lock 은 서로 다른 mkdir dir 다 (`.lock` vs `.broker.lock`).
+  // broker lock 을 쥔 채로도 state lock 을 잡을 수 있어야 한다.
+  //
+  // 예전 본문은 broker lock 왕복 시간을 재고 `elapsed < 1000` 을 assert 했다. state lock 은
+  // 건드리지도 않았으므로 이름이 주장하는 성질을 검증하지 않았고, 전체 스위트의 spawn 부하
+  // 아래서 1.3초가 나와 실패했다. 벽시계 임계값은 hang 가드일 수는 있어도 정확성 게이트가
+  // 아니다.
+  //
+  // 대신 결정적인 신호를 쓴다: 두 락이 얽혀 있으면 `acquireStateLock` 이 재시도를 소진하고
+  // *throw* 한다. 따라서 "throw 하지 않고 끝난다" 가 곧 독립성이다.
   const workspaceRoot = makeTempDir();
   ensureStateDir(workspaceRoot);
 
-  const start = Date.now();
+  let stateLockTaken = false;
   await withBrokerLockAsync(workspaceRoot, async () => {
-    // Hold the broker lock for ~50ms.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // broker lock 을 쥔 채로 state lock 을 요구한다. `updateState` 가 그것을 잡는다.
+    updateState(workspaceRoot, (state) => {
+      state.config.stopReviewGate = true;
+    });
+    stateLockTaken = true;
   });
-  const elapsed = Date.now() - start;
-  assert.ok(elapsed < 1000, "broker lock acquire round-trip is fast");
+
+  assert.equal(stateLockTaken, true, "the state lock was acquired while the broker lock was held");
+  assert.equal(loadState(workspaceRoot).config.stopReviewGate, true, "and the mutation landed");
+
+  // broker lock 이 정상 반환됐는지 — 남은 lock dir 가 있으면 여기서 재취득이 실패한다.
+  assert.equal(await withBrokerLockAsync(workspaceRoot, async () => "ok"), "ok");
 });
