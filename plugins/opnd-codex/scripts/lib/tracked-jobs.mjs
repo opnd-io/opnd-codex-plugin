@@ -12,7 +12,7 @@ import {
   writeTaskSession
 } from "./state.mjs";
 import { hashText } from "./task-identity.mjs";
-import { createTraceId, emitEvent } from "./telemetry.mjs";
+import { classifyErrorClass, createTraceId, emitEvent } from "./telemetry.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -411,6 +411,11 @@ export async function runTrackedJob(job, runner, options = {}) {
   // one here so their lifecycle still appears as a single correlated thread
   // in the telemetry stream.
   const traceId = job.traceId ?? createTraceId();
+  // O8 — `--require-broker` 는 codex-rescue subagent 만 넘긴다 (agents/codex-rescue.md 가
+  // 생략을 금지한다). 이것을 기록하면 telemetry 스트림이 빠뜨렸던 분모가 생긴다: 없으면
+  // broker 실패율을 전체 job 에 대해서는 계산할 수 있어도, 실제로 영향받는 subagent 기동
+  // job 에 대해서는 결코 계산할 수 없다.
+  const requireBroker = (options.requireBroker ?? job.requireBroker) === true;
   const startedAtMs = Date.parse(startedAt);
   const runningRecord = {
     ...job,
@@ -454,7 +459,8 @@ export async function runTrackedJob(job, runner, options = {}) {
     jobId: job.id,
     jobClass: job.jobClass ?? job.kind ?? "task",
     phase: "starting",
-    cwd: job.workspaceRoot
+    cwd: job.workspaceRoot,
+    requireBroker: requireBroker || undefined
   });
 
   const releaseSignalHandlers = installForegroundSignalHandlers(job, runningRecord, options);
@@ -523,7 +529,8 @@ export async function runTrackedJob(job, runner, options = {}) {
       threadId: execution.threadId ?? undefined,
       failureClass: failureClass ?? undefined,
       outputProfile: job.outputProfile ?? undefined,
-      taskKey: job.taskKey ?? undefined
+      taskKey: job.taskKey ?? undefined,
+      requireBroker: requireBroker || undefined
     });
 
     // PR-7.4 (#134) — opt-in audible completion bell. No-op unless the
@@ -553,11 +560,13 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt
     });
 
-    // PR-9.1 — terminal event for the throw path. We deliberately do not
-    // try to classify the error here (errorClass is left undefined) so the
-    // emit stays cheap and unambiguous. Downstream code that has more
-    // context (rate-limit / auth / sandbox / timeout) can emit a dedicated
-    // `failed` event with errorClass set before the throw reaches us.
+    // PR-9.1 — throw 경로의 terminal 이벤트.
+    //
+    // O6 — 예전에는 `errorClass` 를 undefined 로 뒀고("emit 을 싸게 유지") 그 결과 스트림에서
+    // 가장 큰 버킷이 미분류였다. 그중 대략 7분의 1은 CLI 가 잘못된 요청을 거부한 것이다
+    // (prompt 없음, resume 할 이전 thread 없음) — 이것들은 실행조차 되지 않았으므로 실패율에
+    // 접어 넣으면 진짜 회귀가 사용자 오타 뒤에 숨는다. `classifyErrorClass` 는 메시지에 대한
+    // 순수 정규식 매칭이고, 그 앞뒤의 파일시스템 쓰기에 비하면 비용은 무시할 만하다.
     emitEvent("failed", {
       traceId,
       jobId: job.id,
@@ -565,7 +574,9 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: "failed",
       cwd: job.workspaceRoot,
       elapsedMs: Number.isFinite(startedAtMs) ? Date.parse(completedAt) - startedAtMs : undefined,
-      errorMessage
+      errorClass: classifyErrorClass(errorMessage),
+      errorMessage,
+      requireBroker: requireBroker || undefined
     });
 
     // PR-7.4 (#134) — bell on failure too. Symmetric with the success path

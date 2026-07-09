@@ -183,9 +183,12 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /If the user asks for `spark`, map that to `--model gpt-5\.3-codex-spark`/i);
   assert.match(agent, /If the user asks for a concrete model name such as `gpt-5\.4-mini`, pass it through with `--model`/i);
   assert.match(agent, /Return the stdout of the `codex-companion` command exactly as-is/i);
-  // #158 — failure contract: a denied/failed Bash call returns one explicit
-  // failure line and never a fabricated Codex result.
-  assert.match(agent, /Codex was not invoked — the Bash call failed or was denied/i);
+  // #158 / #28 — 실패 계약: 실패한 Bash 호출은 명시적인 실패 줄 하나를 반환하고, 그것이
+  // *어떤* 실패였는지 이름을 대며, 결코 결과를 지어내지 않는다. 예전의 한 문장
+  // ("the Bash call failed or was denied") 은 평범한 600초 timeout 을 "denied" 로 뭉갰고,
+  // 그것이 #28 의 진단을 어렵게 만들었다.
+  assert.match(agent, /Codex was not invoked — <CLASS>\. <DETAIL>/);
+  assert.match(agent, /Always call `Bash` first/i);
   assert.match(agent, /MUST NOT[\s\S]*substitute your own investigation/i);
   assert.match(agent, /gpt-5-4-prompting/);
   assert.match(agent, /only to tighten the user's request into a better Codex prompt/i);

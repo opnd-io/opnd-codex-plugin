@@ -96,3 +96,57 @@ test("lib/*.mjs 는 npm package import 없음 (zero npm 룰)", () => {
   }
   assert.deepEqual(npmImports, [], `npm import detected:\n${JSON.stringify(npmImports, null, 2)}`);
 });
+
+// 위 세 테스트는 `import ... from "..."` 문만 검사하므로, 모듈이 아무것도 import 하지 않고도
+// 네트워크나 파일시스템에 닿을 수 있다: `fetch()` 는 전역이고 `await import("node:fs")` 는
+// 정적 import 가 아니다. 현재 위반 0건 — 이 가드가 그 상태를 유지한다.
+const FORBIDDEN_GLOBAL_CALLS = [
+  { name: "fetch", pattern: /(^|[^.\w])fetch\s*\(/ },
+  { name: "globalThis.fetch", pattern: /globalThis\s*\.\s*fetch/ },
+  { name: "require", pattern: /(^|[^.\w])require\s*\(/ },
+  { name: "process.binding", pattern: /process\s*\.\s*binding\s*\(/ },
+];
+
+const DYNAMIC_IMPORT_RE = /(^|[^.\w])import\s*\(\s*["'`]([^"'`]+)["'`]/g;
+
+function stripCommentsAndStrings(source) {
+  // schema id 안의 `"http://json-schema.org/..."` 나 `// fetch(...)` 주석이 아래 호출 감지기를
+  // 오작동시키지 않도록 하는 값싼 어휘 수준 청소.
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/'(?:\\.|[^'\\])*'/g, "''")
+    .replace(/`(?:\\.|[^`\\])*`/g, "``");
+}
+
+test("lib/*.mjs 는 전역 IO 호출 없음 (fetch / require / dynamic import)", () => {
+  const libFiles = fs.readdirSync(LIB_DIR).filter((f) => f.endsWith(".mjs"));
+  const violations = [];
+  for (const file of libFiles) {
+    const raw = fs.readFileSync(path.join(LIB_DIR, file), "utf8");
+    const source = stripCommentsAndStrings(raw);
+    for (const { name, pattern } of FORBIDDEN_GLOBAL_CALLS) {
+      if (pattern.test(source)) {
+        violations.push({ file, call: name });
+      }
+    }
+    // Dynamic import needs the *unstripped* source: the specifier is a string.
+    for (const match of raw.matchAll(DYNAMIC_IMPORT_RE)) {
+      const spec = match[2];
+      if (spec.startsWith(".")) {
+        continue; // relative sibling import — same rule as the static case
+      }
+      if (spec.startsWith("node:") && ALLOWED_NODE_BUILTINS.includes(spec)) {
+        continue;
+      }
+      violations.push({ file, dynamicImport: spec });
+    }
+  }
+  assert.deepEqual(
+    violations,
+    [],
+    `lib purity violation (global IO call or dynamic import):\n${JSON.stringify(violations, null, 2)}\n` +
+      `fetch/require/dynamic-import bypass the static-import guards above.`,
+  );
+});

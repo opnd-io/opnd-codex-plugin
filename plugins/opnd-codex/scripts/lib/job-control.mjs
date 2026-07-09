@@ -259,7 +259,12 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  // C10 — 선택하기 전에 reap 한다. 외부에서 죽은 worker 는 스스로 terminal 상태에
+  // 도달하지 못하므로, 이것이 없으면 죽은 job 이 `running` 으로 남고
+  // `resolveResultJob` 은 영원히 "아직 끝난 job 없음" 을 보고한다. 위 `--wait` poll
+  // 루프도 같은 문제를 안고 있었다. 이제 둘 다 reap 한다.
+  const all = listJobs(workspaceRoot, { reap: true });
+  const jobs = sortJobsNewestFirst(reference ? all : filterJobsForCurrentSession(all));
   const selected = matchJobReference(
     jobs,
     reference,

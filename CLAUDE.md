@@ -67,8 +67,12 @@ remote 변경 / repo rename / 신규 release 시 위 셋이 정합 유지 확인
 
 ## Test 정책
 
-`npm test` = `node --test tests/*.test.mjs tests/daily-evolve/*.test.mjs`. 신규 phase 추가 시 양쪽 glob 에 반영 자동 (glob 확장).
+`npm test` = `node scripts/run-tests.mjs` (v2.4.0+). 셸 glob 확장에 의존하지 않도록 러너가 `tests/*.test.mjs` 와 `tests/daily-evolve/*.test.mjs` 를 직접 열거한다 — `cmd.exe` 는 glob 을 확장하지 않아 Windows 에서 조용히 깨졌다.
 
-baseline pre-existing flake 3 case (`tests/runtime.test.mjs` 의 review/status/result 관련 — Windows fake-codex shim + temp-dir 이슈) 는 `plan-upstream-backlog.md ## 비범위` 에 등재. 신규 PR 회귀 0 기준은 본 3 case 제외.
+`npm run verify` = `npm test` + `npm run build`(checkJs). **CI 등가 게이트이므로 push 전 이것을 돌린다.** `npm test` 만으로는 checkJs 회귀를 잡지 못한다. Codex CLI 부재 시 build 단계는 명시적 `SKIPPED` 로 표기된다 (green 으로 위장하지 않음).
+
+**러너의 env 격리** (`scripts/test-env.mjs`): 테스트 자식 프로세스는 부모 env 를 상속한다 (`helpers.run()` 은 `options.env` 가 없으면 spawnSync 에 env 를 넘기지 않는다). 따라서 러너가 (1) telemetry 를 무력화하고 — 스위트가 사용자의 실제 ledger 에 쓰고 있었다 — (2) 상속된 세션 신원(`CODEX_COMPANION_SESSION_ID` / `CODEX_COMPANION_TRANSCRIPT_PATH`)을 삭제한다. telemetry 는 명시적 값으로 opt-out 가능하지만 세션 신원은 아니다. `CODEX_PLUGIN_DATA_DIR` 는 job/state 경로도 해석하므로 의도적으로 남긴다.
+
+> **정정 (v2.4.0)**: `tests/runtime.test.mjs` 의 review/status/result 3 case 는 "Windows fake-codex shim + temp-dir 이슈" 로 인한 baseline flake 로 등재돼 있었으나 **오귀인이었다**. 실제 원인은 결정적이다 — 상속된 `CODEX_COMPANION_SESSION_ID` 를 `filterJobsForCurrentSession` 이 읽어 sessionId 없는 fixture 를 전부 걸러냈다. CI 에는 그 변수가 없어 통과했으므로 Claude Code 세션 안에서만 실패했다. 위 env 격리로 해소됐고, 이제 **신규 PR 회귀 0 기준에 예외 없음** (제외 3 case 없음).
 
 **fixture schema parity**: 단위 test 의 fixture 가 production parser 가 받는 실제 schema 와 정합해야 함 — 본 repo 2026-05-28 의 `auth-health-check.test.mjs` 21 fixture 가 `codex.loggedIn` (잘못된 schema) 사용 → production `auth.loggedIn` 과 drift → 정상 로그인도 NOT_LOGGED_IN 으로 잘못 degrade 되던 회귀 사례.

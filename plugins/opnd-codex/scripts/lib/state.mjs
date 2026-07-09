@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { resolveWorkspaceRoot } from "./workspace.mjs";
+// telemetry.mjs 는 node builtin 만 import 하므로 여기로 되돌아오는 cycle 이 생길 수
+// 없다. 그 상태를 유지할 것 — telemetry.mjs 의 회전 경로가 아래 lock helper 를
+// 의도적으로 피하는 이유가 정확히 이것이다.
+import { createTraceId, emitEvent } from "./telemetry.mjs";
 
 const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
@@ -28,6 +32,17 @@ const STALE_LOCK_MS = 30000;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+// 두 timestamp 중 하나라도 없거나 파싱 불가면 0 이 아니라 undefined 를 반환한다.
+// emitEvent 가 지어낸 duration 을 기록하는 대신 필드를 버리도록.
+function elapsedMsBetween(startedAt, completedAt) {
+  const start = Date.parse(String(startedAt ?? ""));
+  const end = Date.parse(String(completedAt ?? ""));
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return undefined;
+  }
+  return end - start;
 }
 
 function defaultState() {
@@ -250,11 +265,47 @@ export function isJobProcessAlive(job) {
   }
   const currentStart = getProcessStartTimeRaw(pid);
   if (!currentStart) {
-    // OS-level lookup failed (unsupported platform, transient error). Fall back
-    // to liveness only; this matches v1.0.4 behavior.
+    // OS 수준 조회 실패 (미지원 플랫폼, 일시적 에러, 미래 Windows 에서 제거된 `wmic`,
+    // probe 를 막는 sandbox). liveness 만으로 폴백한다. v1.0.4 동작과 같다.
+    //
+    // C8 — 그 폴백은 pid-reuse guard 를 맨 kill(pid,0) 으로 조용히 격하시키는데,
+    // 이것으로는 "우리 worker" 와 "그 pid 를 물려받은 무관한 프로세스" 를 구분할 수
+    // 없다. 지금까지 보이지 않았다. 프로세스당 한 번 기록해, 몇 달 뒤 잘못 reap 된
+    // job 으로 발견되는 대신 ledger 에 격하가 드러나게 한다.
+    notePidGuardDegraded(pid);
     return true;
   }
   return String(currentStart) === String(recordedStart);
+}
+
+// warn-once latch. probe 는 구조적 이유로 실패한다 — `wmic` 부재, spawn 을 막는
+// sandbox — 따라서 그 프로세스의 모든 pid 에 대해 실패하고, 이벤트 하나가 신호 전부를
+// 담는다. trade-off 는 실재한다: *일시적* 인 첫 실패가 같은 프로세스의 이후 다른 원인
+// 보고를 억제한다. 수명이 짧은 CLI 에서는 허용 가능하고, 유일한 장수 프로세스인
+// broker 는 reap 하지 않는다.
+let pidGuardDegradedNoticeEmitted = false;
+
+/** 테스트 전용: C8 warn-once latch 를 초기화한다. */
+export function __resetPidGuardDegradedNotice() {
+  pidGuardDegradedNoticeEmitted = false;
+}
+
+function notePidGuardDegraded(pid) {
+  if (pidGuardDegradedNoticeEmitted) {
+    return;
+  }
+  // 신호가 실제로 stream 에 들어간 뒤에만 latch 한다. 먼저 세우면 write 실패(디스크
+  // 가득, 쓰기 불가한 telemetry dir)가 격하를 보고하는 그 하나의 이벤트를 조용히
+  // 버렸다 — 이 코드가 표면화하려던 바로 그것을.
+  // telemetry 가 비활성일 때도 `emitEvent` 는 false 를 반환한다. 그 경우 기록할 것이
+  // 없고, 재시도 비용은 값싼 early return 뿐이다.
+  pidGuardDegradedNoticeEmitted = emitEvent("progress", {
+    traceId: createTraceId(),
+    phase: "pid_guard_degraded",
+    pidGuard: "liveness-only",
+    platform: process.platform,
+    probedPid: pid
+  });
 }
 
 function readLockOwnerPid(lockDir) {
@@ -423,10 +474,26 @@ export function loadState(cwd, options = {}) {
   return normalizeState(parsed);
 }
 
+// C7 — 상한이 status 를 보지 않았다: job 을 `updatedAt` 으로 정렬해 MAX_JOBS 를 넘는
+// 것을 로그 파일과 함께 버렸다. 마지막 progress write 가 더 새로운 job 50개 뒤로 밀린
+// 장수 `running` / `queued` job 은 그래서 *아직 실행 중인데도* 인덱스에서 쫓겨나고
+// 로그가 unlink 되어, 추적 불가능한 orphan 프로세스를 남겼다.
+//
+// active job 은 절대 쫓아내지 않는다. 상한은 여전히 terminal job 에 적용되므로 정상
+// 사용에서 인덱스가 무한히 자라지 않는다. 멈춘 `running` 항목이 병적으로 쌓이는 것은
+// pruner 가 아니라 reaper 가 다룰 문제다.
+const ACTIVE_JOB_STATUSES = new Set(["running", "queued"]);
+
 function pruneJobs(jobs) {
-  return [...jobs]
-    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-    .slice(0, MAX_JOBS);
+  const byRecency = [...jobs].sort((left, right) =>
+    String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))
+  );
+  const active = byRecency.filter((job) => ACTIVE_JOB_STATUSES.has(job.status));
+  const terminal = byRecency.filter((job) => !ACTIVE_JOB_STATUSES.has(job.status));
+  const terminalBudget = Math.max(0, MAX_JOBS - active.length);
+  const retained = new Set([...active, ...terminal.slice(0, terminalBudget)]);
+  // 나머지 코드가 기대하는 최신순 정렬을 보존한다.
+  return byRecency.filter((job) => retained.has(job));
 }
 
 function removeFileIfExists(filePath) {
@@ -511,9 +578,8 @@ export function listJobs(cwd, options = {}) {
 // /opnd-codex:status, /opnd-codex:result, --resume-last calls see a terminal state
 // instead of an indefinitely "running" zombie.
 //
-// Idempotent. Safe to call from any read entrypoint. Best-effort: if the
-// state lock is contested we skip rather than block, since the next read
-// will reap on its own.
+// 멱등하다. 어떤 read entrypoint 에서 호출해도 안전하다. best-effort: state lock 이
+// 경합 중이면 block 하지 않고 건너뛴다 — 다음 read 가 알아서 reap 한다.
 // #21 (F3 defense-in-depth) — `process_died` means the recorded pid is
 // genuinely gone (not recycled, not "no pid"), yet the job never reached a
 // terminal state on its own. On Windows the dominant cause is an EXTERNAL kill:
@@ -521,7 +587,44 @@ export function listJobs(cwd, options = {}) {
 // terminated when that subagent's kill-on-close Job Object closes at turn end.
 // Surfacing that likely cause + remedy keeps it from being misread as a
 // watchdog/timeout. `failureReason` stays the machine-readable `reaper:*`.
+// C11 — `queued` job 은 *아직* pid 가 없다: dispatcher 는 worker 를 spawn 한 뒤에야
+// pid 를 기록한다. 따라서 "queued && pid 없음" 으로 reap 하면 단지 dispatch 중이던
+// job 을 죽였고, 이는 `broker-ambiguous` 가 job 을 세워 두는 상태이기도 하다 (broker
+// 에는 닿았으나 명확한 응답이 없어, local-spawn 하면 worker 중복 위험). dispatch 에
+// 유예 창을 준다. 그 너머면 job 은 정말 유실된 것이고, 영원한 "queued" 보다 그렇게
+// 말하는 편이 낫다.
+export const QUEUED_DISPATCH_GRACE_MS = 60_000;
+
+function queuedDispatchStillPlausible(job, nowMs) {
+  const stamp = Date.parse(String(job.updatedAt ?? job.createdAt ?? job.startedAt ?? ""));
+  if (!Number.isFinite(stamp)) {
+    return false; // 신뢰할 timestamp 없음 — 유실로 간주
+  }
+  return nowMs - stamp < QUEUED_DISPATCH_GRACE_MS;
+}
+
+// 이 job 이 reap 대상인가? 읽기 전용 pre-scan 과 쓰기 경로가 공유하므로, 무엇을 죽은
+// 것으로 볼지 둘의 판정이 어긋날 수 없다.
+function shouldReap(job, aliveCheck, nowMs) {
+  if (job.status !== "running" && job.status !== "queued") {
+    return false;
+  }
+  const pidValue = Number(job.pid);
+  const hasPid = Number.isFinite(pidValue) && pidValue > 0;
+  if (!hasPid && job.status === "queued" && queuedDispatchStillPlausible(job, nowMs)) {
+    return false;
+  }
+  return !aliveCheck(job);
+}
+
 export function reapErrorMessage(reason) {
+  if (reason === "dispatch_lost") {
+    return (
+      "Job reaped by liveness check (dispatch_lost): it stayed queued without a worker process. " +
+      "The broker was reached but never confirmed a spawn (broker-ambiguous), or the dispatch died before " +
+      "recording a pid. Re-run the request; nothing was executed."
+    );
+  }
   if (reason === "process_died") {
     return (
       "Job reaped by liveness check (process_died): the worker process is gone but never reported completion. " +
@@ -535,20 +638,44 @@ export function reapErrorMessage(reason) {
 
 export function reapDeadJobs(cwd, options = {}) {
   const aliveCheck = options.aliveCheck ?? isJobProcessAlive;
+  const nowMs = options.nowMs ?? Date.now();
+
+  // 읽기 전용 pre-scan. `updateState` 는 state lock 을 잡고, mutator 가 아무것도 바꾸지
+  // 않아도 state.json 을 무조건 다시 쓴다. 이제 모든 read entrypoint 가 reap 하며
+  // `--wait` poll 루프도 tick 마다 한 번씩 그렇게 하므로, 압도적으로 흔한 "reap 할 것
+  // 없음" 경우는 lock 도 디스크도 건드리면 안 된다.
+  //
+  // 여기서의 throw 는 "reap 할 것 없음" 이 *아니다*: 판단할 수 없었다는 뜻이다. 빈
+  // 결과로 삼키지 말고 lock 경로로 흘려보낸다 — fast path 는 불필요함을 증명한 일만
+  // 건너뛸 수 있다.
+  try {
+    if (!loadState(cwd).jobs.some((job) => shouldReap(job, aliveCheck, nowMs))) {
+      return [];
+    }
+  } catch {
+    // 흘려보낸다
+  }
+
   let reaped = [];
   try {
     updateState(cwd, (state) => {
       const completedAt = nowIso();
       for (const job of state.jobs) {
-        if (job.status !== "running" && job.status !== "queued") {
+        // lock 아래서 재평가한다. 위 pre-scan 은 fast path 일 뿐이다.
+        if (!shouldReap(job, aliveCheck, nowMs)) {
           continue;
         }
-        if (aliveCheck(job)) {
-          continue;
-        }
-        const reason = !Number.isFinite(Number(job.pid))
-          ? "no_pid_recorded"
-          : isPidRunning(Number(job.pid))
+        // `Number(null)` 은 0 이고 Number.isFinite 를 통과한다 — 그래서 `pid: null` 인
+        // 레코드(모든 queued job, 그리고 reaper 가 이미 손댄 모든 job)가 "pid 없음" 이
+        // 아니라 `process_died` 로 분류되곤 했다. isJobProcessAlive 자신의 `pid > 0`
+        // 검사를 그대로 따른다.
+        const pidValue = Number(job.pid);
+        const hasPid = Number.isFinite(pidValue) && pidValue > 0;
+        const reason = !hasPid
+          ? job.status === "queued"
+            ? "dispatch_lost"
+            : "no_pid_recorded"
+          : isPidRunning(pidValue)
           ? "pid_reused"
           : "process_died";
         job.status = "failed";
@@ -557,7 +684,14 @@ export function reapDeadJobs(cwd, options = {}) {
         job.completedAt = completedAt;
         job.errorMessage = job.errorMessage ?? reapErrorMessage(reason);
         job.failureReason = job.failureReason ?? `reaper:${reason}`;
-        reaped.push({ id: job.id, reason });
+        reaped.push({
+          id: job.id,
+          reason,
+          jobClass: job.jobClass ?? job.kind ?? "task",
+          traceId: job.traceId ?? null,
+          startedAt: job.startedAt ?? null,
+          completedAt
+        });
       }
     });
   } catch {
@@ -565,6 +699,24 @@ export function reapDeadJobs(cwd, options = {}) {
     // reader will reap. We never want the reaper to bubble an error up to the
     // status / result rendering path.
     return [];
+  }
+
+  // O5 — 외부에서 죽은 job 이 terminal 상태에 도달하는 유일한 지점이 reaper 다: 외부
+  // TerminateProcess(Windows 의 지배적 경우)는 가로챌 수 없으므로 SIGTERM 핸들러가
+  // 돌지 않고, job 자신의 프로세스에서는 terminal 이벤트가 나오지 않는다. 이 emit 이
+  // 없으면 실행의 약 7% 가 terminal 이벤트 없는 `started` 로 남고, ledger 에서 읽는
+  // 모든 완료율이 낙관 편향된다.
+  for (const entry of reaped) {
+    emitEvent("terminated", {
+      traceId: entry.traceId ?? createTraceId(),
+      jobId: entry.id,
+      jobClass: entry.jobClass,
+      phase: "terminated",
+      cwd,
+      elapsedMs: elapsedMsBetween(entry.startedAt, entry.completedAt),
+      errorClass: entry.reason === "no_pid_recorded" ? "other" : "broker",
+      reason: `reaper:${entry.reason}`
+    });
   }
   // Mirror the terminal state into per-job files so individual /opnd-codex:result
   // calls see the same thing the index says. Done outside the lock to keep

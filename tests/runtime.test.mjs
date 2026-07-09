@@ -181,6 +181,61 @@ test("task runs when the active provider does not require OpenAI login", () => {
   assert.match(result.stdout, /Handled the requested task/);
 });
 
+test("task announces its jobId on stderr before running, and keeps stdout clean", () => {
+  // C4 / #28 — Claude Code 의 Bash tool 은 foreground 호출을 약 600초에 죽인다. 그러면
+  // 프로세스가 출력하려던 모든 것이 사라진다. jobId 는 실행 *이전에* stderr 에 있어야, 죽은
+  // 호출도 무엇이 돌았는지에 대한 단서를 남긴다. `rescue-failure-contract.test.mjs` 는 이
+  // 계약의 agent prompt 쪽을 소스 읽기로 고정하고, 여기서는 그것이 의존하는 런타임 동작을
+  // 고정한다.
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "provider-no-auth");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "announce the job id"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+
+  const jobIdLine = result.stderr.split(/\r?\n/).find((line) => line.includes("[codex-plugin-cc] jobId="));
+  assert.ok(jobIdLine, `no jobId announcement on stderr:\n${result.stderr}`);
+  assert.match(jobIdLine, /jobId=task-[a-z0-9-]+/, "the announced id is a real task id");
+  assert.match(result.stderr, /caps foreground calls at ~600s/, "and it names the recovery path");
+
+  // Codex 출력보다 뒤가 아니라 앞에 와야 한다.
+  const announceIndex = result.stderr.indexOf("[codex-plugin-cc] jobId=");
+  const firstCodexLine = result.stderr.indexOf("[codex]");
+  if (firstCodexLine >= 0) {
+    assert.ok(announceIndex < firstCodexLine, "announced before the run began");
+  }
+
+  assert.doesNotMatch(result.stdout, /\[codex-plugin-cc\] jobId=/, "stdout stays parseable");
+});
+
+test("task --json does not announce the jobId on stderr", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "provider-no-auth");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--json", "structured consumers stay quiet"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /\[codex-plugin-cc\] jobId=/);
+  JSON.parse(result.stdout); // 여전히 깨끗한 payload
+});
+
 test("task forwards explicit sandbox mode to app-server thread start", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -1702,6 +1757,12 @@ test("status --wait times out cleanly when a job is still active", () => {
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
 
+  // C10 — `status --wait` 도 이제 `status` / `--watch` 처럼 poll tick 마다 reap 한다.
+  // pid 없이 `running` 으로 표시된 fixture 는 active job 이 아니라 좀비다: 프로세스가 없으니
+  // 결코 끝날 수 없고, 예전 동작(호출자 자신의 timeout 까지 polling)이 바로 그 버그였다.
+  // fixture 에 실제로 살아있는 pid 를 줘서 테스트 이름이 주장하는 바를 검증하게 한다.
+  const livePid = process.pid;
+
   const logFile = path.join(jobsDir, "task-live.log");
   fs.writeFileSync(logFile, "[2026-03-18T15:30:00.000Z] Starting Codex Task.\n", "utf8");
   fs.writeFileSync(
@@ -1711,6 +1772,7 @@ test("status --wait times out cleanly when a job is still active", () => {
         id: "task-live",
         status: "running",
         title: "Codex Task",
+        pid: livePid,
         logFile
       },
       null,
@@ -1732,6 +1794,7 @@ test("status --wait times out cleanly when a job is still active", () => {
             title: "Codex Task",
             jobClass: "task",
             summary: "Investigate flaky test",
+            pid: livePid,
             logFile,
             createdAt: "2026-03-18T15:30:00.000Z",
             startedAt: "2026-03-18T15:30:01.000Z",
@@ -1754,6 +1817,49 @@ test("status --wait times out cleanly when a job is still active", () => {
   assert.equal(payload.job.id, "task-live");
   assert.equal(payload.job.status, "running");
   assert.equal(payload.waitTimedOut, true);
+});
+
+test("status --wait reaps a dead job instead of polling until its own timeout", () => {
+  // C10 — 위 테스트의 짝. `--wait` 은 reaper 를 건너뛰었고, 그래서 외부에서 죽은
+  // worker(Windows 의 지배적 경우: 자신을 띄운 subagent 의 Job Object 가 닫힘)가 `running`
+  // 으로 남아, 모든 `--wait` 이 쓸모없는 보고를 내기 전에 deadline 을 다 태웠다.
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const deadPid = 999999999;
+  const logFile = path.join(jobsDir, "task-dead.log");
+  fs.writeFileSync(logFile, "[2026-03-18T15:30:00.000Z] Starting Codex Task.\n", "utf8");
+  const record = {
+    id: "task-dead",
+    status: "running",
+    title: "Codex Task",
+    jobClass: "task",
+    pid: deadPid,
+    logFile,
+    createdAt: "2026-03-18T15:30:00.000Z",
+    startedAt: "2026-03-18T15:30:01.000Z",
+    updatedAt: "2026-03-18T15:30:02.000Z"
+  };
+  fs.writeFileSync(path.join(jobsDir, "task-dead.json"), JSON.stringify(record, null, 2), "utf8");
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify({ version: 1, config: { stopReviewGate: false }, jobs: [record] }, null, 2)}\n`,
+    "utf8"
+  );
+
+  const startedAt = Date.now();
+  const result = run("node", [SCRIPT, "status", "task-dead", "--wait", "--timeout-ms", "30000", "--json"], {
+    cwd: workspace
+  });
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.status, "failed", "the reaper terminalized it on the first tick");
+  assert.equal(payload.waitTimedOut, false);
+  assert.ok(elapsedMs < 15000, `returned in ${elapsedMs}ms, well inside the 30s deadline`);
 });
 
 test("result returns the stored output for the latest finished job by default", () => {

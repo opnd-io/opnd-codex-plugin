@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, ENV_INJECTION_VECTORS } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { createTurnOwnership } from "./lib/broker-turn-ownership.mjs";
 import { resolveWorkerStdioFile } from "./lib/state.mjs";
 import { cleanProtocolLine } from "./lib/jsonl.mjs";
 
@@ -194,9 +195,10 @@ async function main() {
   const pidFile = options["pid-file"] ? path.resolve(options["pid-file"]) : null;
   writePidFile(pidFile);
 
-  let activeRequestSocket = null;
-  let activeStreamSocket = null;
-  let activeStreamThreadIds = null;
+  // B2 — turn 소유권은 `await` 양쪽에서 대입되는 변수 두 개가 아니라 상태 기계 하나
+  // (lib/broker-turn-ownership.mjs) 에 산다. 이유는 그 모듈 참조: `turn/completed` 는
+  // 자신이 해제할 소유권을 세우기로 되어 있던 응답보다 먼저 도착할 수 있다.
+  const ownership = createTurnOwnership();
   const sockets = new Set();
   // Shared activity timestamp for the idle watchdog. Touched on every new
   // connection so even a brief liveness probe (UserPromptSubmit warm 의
@@ -258,7 +260,7 @@ async function main() {
   }
 
   function forwardServerRequest(message) {
-    const target = activeStreamSocket ?? activeRequestSocket;
+    const target = ownership.serverRequestTarget();
     if (!target || target.destroyed) {
       throw new Error(`No active broker client can handle server request: ${message.method}`);
     }
@@ -298,34 +300,27 @@ async function main() {
   });
 
   function clearSocketOwnership(socket) {
-    if (activeRequestSocket === socket) {
-      activeRequestSocket = null;
-    }
-    if (activeStreamSocket === socket) {
-      activeStreamSocket = null;
-      activeStreamThreadIds = null;
-    }
+    ownership.releaseSocket(socket);
   }
 
   function routeNotification(message) {
-    const target = activeRequestSocket ?? activeStreamSocket;
+    const target = ownership.notificationTarget();
     if (!target) {
       return;
     }
     send(target, message);
-    if (message.method === "turn/completed" && activeStreamSocket === target) {
-      const threadId = message.params?.threadId ?? null;
-      if (!threadId || !activeStreamThreadIds || activeStreamThreadIds.has(threadId)) {
-        activeStreamSocket = null;
-        activeStreamThreadIds = null;
-        if (activeRequestSocket === target) {
-          activeRequestSocket = null;
-        }
-      }
+    if (message.method === "turn/completed") {
+      ownership.handleTurnCompleted(target, message.params?.threadId ?? null);
     }
   }
 
+  let shuttingDown = false;
+
   async function shutdown(server) {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
     // Reject any in-flight server-side RPCs and tear down the sweep timer so the broker
     // exits cleanly even if the event loop is otherwise idle.
     rejectAllPendingServerRequests(new Error("Broker is shutting down."));
@@ -343,6 +338,11 @@ async function main() {
     if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
       fs.unlinkSync(listenTarget.path);
     }
+    // B3 — 여기서 자신의 `cxc-*` 세션 dir 를 지우는 것은 통하지 않는다: 이 프로세스가
+    // broker.log 를 stdout/stderr 로 열어 두고 있고 Windows 는 열린 파일의 unlink 를
+    // 거부한다. 게다가 hard kill 은 이 경로를 아예 건너뛰는데, 유출된 dir 의 대부분이
+    // 거기서 나왔다. 그래서 sweep 은 broker-lifecycle.mjs 에 있고, *다음* broker spawn 이
+    // pid 가 사라진 세션 dir 를 회수한다.
     if (pidFile && fs.existsSync(pidFile)) {
       fs.unlinkSync(pidFile);
     }
@@ -455,12 +455,9 @@ async function main() {
         }
 
         const allowActiveTurnControlDuringActiveStream =
-          isActiveTurnControlRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
+          isActiveTurnControlRequest(message) && ownership.canRunTurnControl(socket);
 
-        if (
-          ((activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
-          !allowActiveTurnControlDuringActiveStream
-        ) {
+        if (ownership.isBusyFor(socket) && !allowActiveTurnControlDuringActiveStream) {
           send(socket, {
             id: message.id,
             error: buildJsonRpcError(BROKER_BUSY_RPC_CODE, "Shared Codex broker is busy.")
@@ -482,40 +479,39 @@ async function main() {
         }
 
         const isStreaming = STREAMING_METHODS.has(message.method);
-        activeRequestSocket = socket;
+        // streaming 이면 await *이전에* stream 소유권을 claim 한다 —
+        // lib/broker-turn-ownership.mjs 참조. params 에서 유도한 thread id 덕분에, 이 요청이
+        // 밀어낸 stream 의 늦은 완료와 요청 자신의 이른 완료를 구분할 수 있다.
+        ownership.beginRequest(
+          socket,
+          isStreaming,
+          isStreaming ? buildStreamThreadIds(message.method, message.params ?? {}, null) : null
+        );
 
         try {
           const result = await appClient.request(message.method, message.params ?? {});
           send(socket, { id: message.id, result });
-          if (isStreaming) {
-            activeStreamSocket = socket;
-            activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
-          }
-          if (activeRequestSocket === socket) {
-            activeRequestSocket = null;
-          }
+          ownership.settleRequest(
+            socket,
+            isStreaming,
+            isStreaming ? buildStreamThreadIds(message.method, message.params ?? {}, result) : null
+          );
         } catch (error) {
           send(socket, {
             id: message.id,
             error: buildJsonRpcError(error.rpcCode ?? -32000, error.message)
           });
-          if (activeRequestSocket === socket) {
-            activeRequestSocket = null;
-          }
-          if (activeStreamSocket === socket && !isStreaming) {
-            activeStreamSocket = null;
-          }
+          ownership.failRequest(socket);
         }
       }
     };
 
-    // PR-fix (analyze MEDIUM-1) — processSocketChunk is async and yields at
-    // `await appClient.request(...)`. Node serializes the *invocation* of
-    // data listeners but not their async *completion*: a second `data`
-    // event could otherwise start mutating `buffer` and broker turn-ownership
-    // state (activeRequestSocket / activeStreamSocket) while the prior chunk's
-    // await is still pending. Chain each chunk onto the previous so buffer
-    // parsing and turn routing stay strictly sequential per socket.
+    // PR-fix (analyze MEDIUM-1) — processSocketChunk 은 async 이고
+    // `await appClient.request(...)` 에서 양보한다. Node 는 data listener 의 *호출* 은
+    // 직렬화하지만 async *완료* 는 그렇지 않다: 두 번째 `data` 이벤트가 앞 chunk 의
+    // await 이 아직 진행 중인데도 `buffer` 와 broker 의 turn 소유권 상태
+    // (lib/broker-turn-ownership.mjs 참조) 를 변경하기 시작할 수 있다. chunk 를 앞의 것에
+    // 체인으로 이어, buffer 파싱과 turn 라우팅이 socket 별로 엄격히 순차 유지되게 한다.
     socket.on("data", (chunk) => {
       dataChain = dataChain
         .then(() => processSocketChunk(chunk))
@@ -549,9 +545,41 @@ async function main() {
     process.exit(0);
   });
 
+  // B1 — liveness 는 client 가 이 프로세스에 socket 을 열 수 있느냐로 결정된다. 그것은
+  // 뒤에 있는 app-server 자식에 대해 아무것도 말해주지 않는다: 자식이 죽어도 broker 는
+  // 계속 연결을 받고, idle watchdog 이 만료될 때까지 (최대 12분) 모든 요청이 실패하는데
+  // 그 동안 `isBrokerEndpointReady()` 는 태연히 "live" 를 보고하고 client 는 그것을
+  // 재사용한다. 자식의 exit 를 구독하면 그것이 즉각적이고 정직한 "endpoint 사라짐" 이
+  // 되고, 기존 connect-probe 는 그 신호를 이미 이해한다.
+  appClient.exitPromise
+    .then(async () => {
+      if (shuttingDown) {
+        return; // 우리 자신의 shutdown() 이 닫은 것 — 보고할 것 없음
+      }
+      process.stderr.write("[codex-broker] app-server child exited — shutting down broker\n");
+      try {
+        await shutdown(server);
+      } catch {
+        // best-effort. 중요한 것은 아래의 exit 다
+      }
+      process.exit(1);
+    })
+    .catch(() => {
+      // 오늘의 exitPromise 는 reject 하지 않는다. detached daemon 안에서 unhandled
+      // rejection 을 만드느니 방어적으로 삼킨다.
+    });
+
   startIdleWatchdog({ sockets, activity, shutdown: () => shutdown(server) });
 
-  server.listen(listenTarget.path);
+  server.listen(listenTarget.path, () => {
+    // O4 — 지금까지 이 프로세스가 broker.log 에 쓴 *유일한* 줄은 idle self-exit 메시지
+    // 였다. 수집된 로그 112개 중 46개가 0바이트였고, 0바이트 로그는 "정상 기동 후 일찍
+    // 죽음" 과 "init 중 hang" 둘 중 어느 쪽도 될 수 있었다. 시작 줄이 있으면 빈 로그는
+    // 후자의 명백한 증거가 된다.
+    process.stderr.write(
+      `[codex-broker] listening endpoint=${endpoint} pid=${process.pid} cwd=${cwd}\n`
+    );
+  });
 }
 
 // Self-exit when the broker has been idle (no connected sockets) for a long stretch. The

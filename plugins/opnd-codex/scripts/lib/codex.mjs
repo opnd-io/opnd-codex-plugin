@@ -1138,11 +1138,15 @@ export async function resumeTimedOutThread(threadId, options = {}) {
       const exitCode = typeof code === "number" ? code : null;
       const status = exitCode ?? (signal ? 1 : 0);
       const timedOut = status === 124;
+      /** @type {import("./codex-skip-taxonomy.js").CodexSkipError | null} */
       let error = null;
       if (status !== 0) {
-        error = new Error(`Codex timeout resume command exited with status ${status}.`);
-        error.code = "CODEX_TIMEOUT_RESUME_FAILED";
-        error.exitCode = status;
+        // CLAUDE.md: plain `Error` 에 대입하지 말고 생성 시점에 code 를 붙인다.
+        // checkJs 가 대입을 거부한다 (TS2339).
+        error = Object.assign(new Error(`Codex timeout resume command exited with status ${status}.`), {
+          code: "CODEX_TIMEOUT_RESUME_FAILED",
+          exitCode: status
+        });
         if (timedOut) {
           withCodexSkipMetadata(error, SKIP_REASON_TIMEOUT, { threadId });
         }

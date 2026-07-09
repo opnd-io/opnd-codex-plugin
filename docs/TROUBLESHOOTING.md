@@ -394,12 +394,32 @@ If your symptom does not match any section above:
    - exact command
    - `/codex:setup --json` output
    - relevant log excerpt from `~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/<job-id>.log`
-   - relevant JSONL events from `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl` filtered by your job's `traceId` (printed in the job log header as `trace.id=<16-char-hex>`), e.g.: `jq -c 'select(.traceId == "abcdef1234567890")' ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`
+   - relevant JSONL events filtered by your job's `traceId` (printed in the job log header as `trace.id=<16-char-hex>`). The ledger rotates once it passes 8 MB, so read the rotated segment too — otherwise older events are silently missing:
+
+     ```bash
+     jq -c 'select(.traceId == "abcdef1234567890")' \
+       ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl.1 \
+       ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl
+     ```
+
    - OS / shell / Node / codex-cli versions
 
 ### Telemetry stream — what it is and how to opt out
 
-v2.1.0 added an append-only JSONL telemetry stream at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`. Each job emits at minimum `enqueued` (background only) / `started` / one of `completed | failed | cancelled | terminated | timeout`, all tagged with a 16-character `traceId` so events for one logical run can be stitched back together across the broker / worker boundary. The stream is local-only — nothing is sent anywhere. It exists for the user to grep their own history when filing a bug.
+v2.1.0 added a JSONL telemetry stream at `~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl`. Each job emits at minimum `enqueued` (background only) / `started` / one of `completed | failed | cancelled | terminated | timeout`, all tagged with a 16-character `traceId` so events for one logical run can be stitched back together across the broker / worker boundary. The stream is local-only — nothing is sent anywhere. It exists for the user to grep their own history when filing a bug.
+
+**Rotation (v2.4.0).** The writer appends, but once the file passes 8 MB it is moved to `events.jsonl.1` and a fresh `events.jsonl` starts. Only one rotated segment is kept. Anything that reads the stream must read both files, oldest first — `jq` over `events.jsonl` alone will silently miss everything before the last rotation. `npm run efficiency-report` already does this.
+
+Two events beyond the per-job lifecycle set:
+
+| event | when |
+| --- | --- |
+| `progress` | a phase transition worth recording outside a job's terminal state. `phase: "pid_guard_degraded"` means the OS could not report a process's birth time, so the reaper's pid-reuse guard fell back to a plain liveness check. `phase: "stop_review_skipped"` means the stop-time review gate allowed the session to end without running (infrastructure failure — see `skipReason`). |
+| `telemetry_write_failed` | **v2.4.0.** Written on the first successful append after one or more appends failed. `extras.droppedEvents` carries how many were lost. Without it, "no events" and "events were lost" look identical. |
+
+`failed` events carry an `errorClass` from a fixed taxonomy: `rate-limit | auth | sandbox | timeout | parse | network | broker | input | other`. **`input` (v2.4.0)** means the CLI rejected the request — no prompt, no prior thread to resume, a job already running. Those runs never started, so counting them as runtime failures inflates the failure rate.
+
+The reaper also emits `terminated` for jobs it finds dead (v2.4.0). A worker killed from outside — on Windows, when its spawning subagent's Job Object closes — cannot emit its own terminal event, so before this the run appeared to be `started` forever.
 
 Schema (v1):
 
@@ -635,7 +655,10 @@ codex mcp ls 2>&1 | head -40
 # 2. The full JSONL trace from the broker for the failing turn. The PR-9.1
 #    telemetry stream includes traceId so events from one logical run can
 #    be grepped out:
+#    (the ledger rotates at 8 MB — read events.jsonl.1 first, or older
+#     events for this traceId are silently missing)
 jq -c 'select(.traceId == "<traceId-from-failing-job>")' \
+  ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl.1 \
   ~/.claude/plugins/data/codex-openai-codex/telemetry/events.jsonl
 
 # 3. The verbatim elicitation request the server sent (look for
