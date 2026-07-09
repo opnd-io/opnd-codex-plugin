@@ -152,3 +152,8 @@ plugins/opnd-codex/.generated/
 # Local analysis / review artifacts (machine paths + Codex session IDs)
 docs/analyze/
 docs/code-review/
+
+# Ad-hoc Codex home / state scratch dirs left behind by manual debugging.
+# The test suite never writes here (it uses os.tmpdir()), so an untracked,
+# un-ignored `.tmp-codex-test*/` would be swept into the repo by `git add -A`.
+.tmp-codex-test*/
