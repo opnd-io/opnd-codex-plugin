@@ -587,6 +587,14 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     // to the codex CLI via the `-c profile=<name>` config-override syntax so
     // the app-server picks up `[profiles.<name>]` from ~/.codex/config.toml
     // without requiring the user to flip their global default first.
+    //
+    // 알려진 이슈 (codex CLI 0.144.1+): `[profiles.*]` 테이블 + `-c profile=`
+    // override 는 upstream 에서 제거됐다("legacy profile config no longer supported").
+    // `codex app-server` 는 `--profile` 플래그가 없고(`-c/--config` 만 있음), 이
+    // 플러그인은 CODEX_HOME 을 $HOME/.codex/claude-code/ 로 pin 하므로 V2 프로파일
+    // 파일 `<name>.config.toml` 은 그 경로에 있어야 한다. 재설계 전까지(예: profile
+    // 파일을 읽어 model/model_reasoning_effort 를 `-c` override 로 확장), 호출부는
+    // --profile 대신 per-call --model/--effort(turn params 로 전달)로 티어링해야 한다.
     const codexArgs = ["app-server"];
     if (typeof this.options.profile === "string" && this.options.profile.trim()) {
       codexArgs.push("-c", `profile=${this.options.profile.trim()}`);

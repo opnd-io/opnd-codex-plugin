@@ -114,7 +114,12 @@ const DEFAULT_STATUS_TAIL_LINES = 20;
 const DEFAULT_STATUS_WATCH_INTERVAL_MS = 1500;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
-const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
+const MODEL_ALIASES = new Map([
+  ["spark", "gpt-5.3-codex-spark"],
+  ["sol", "gpt-5.6-sol"],
+  ["terra", "gpt-5.6-terra"],
+  ["luna", "gpt-5.6-luna"],
+]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 
 function printUsage() {

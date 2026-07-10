@@ -4,8 +4,8 @@ argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model|spark>]
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
-Invoke the `codex:codex-rescue` subagent via the `Agent` tool (`subagent_type: "codex:codex-rescue"`), forwarding the raw user request as the prompt.
-`codex:codex-rescue` is a subagent, not a skill — do not call `Skill(codex:codex-rescue)` (no such skill) or `Skill(codex:rescue)` (that re-enters this command and hangs the session). The command runs inline so the `Agent` tool stays in scope; forked general-purpose subagents do not expose it.
+Invoke the `opnd-codex:codex-rescue` subagent via the `Agent` tool (`subagent_type: "opnd-codex:codex-rescue"`), forwarding the raw user request as the prompt.
+`opnd-codex:codex-rescue` is a subagent, not a skill — do not call `Skill(opnd-codex:codex-rescue)` (no such skill) or `Skill(opnd-codex:rescue)` (that re-enters this command and hangs the session). The command runs inline so the `Agent` tool stays in scope; forked general-purpose subagents do not expose it.
 The final user-visible response must be Codex's output verbatim.
 
 Raw user request:
@@ -13,8 +13,8 @@ $ARGUMENTS
 
 Execution mode:
 
-- If the request includes `--background`, run the `codex:codex-rescue` subagent in the background.
-- If the request includes `--wait`, run the `codex:codex-rescue` subagent in the foreground.
+- If the request includes `--background`, run the `opnd-codex:codex-rescue` subagent in the background.
+- If the request includes `--wait`, run the `opnd-codex:codex-rescue` subagent in the foreground.
 - If neither flag is present, default to foreground.
 - `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
 - `--model` and `--effort` are runtime-selection flags. Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text.
@@ -57,7 +57,7 @@ Operating rules:
 Approval handling (#232):
 
 - A foreground `task` run started with an approval policy (`--approval on-request` / `on-failure` / `untrusted`) can finish with one or more **pending approvals**: the Codex turn paused waiting for a command, file-change, or tool decision. The companion output renders these as a `Pending approvals:` block, one `<approval-id>` per line with its `Approve:` / `Deny:` slash-command hints.
-- The `codex:codex-rescue` subagent only has the `Bash` tool — it cannot prompt the user. Resolving pending approvals is therefore **this command's** responsibility (the command has `AskUserQuestion`); the subagent stays a pure forwarder.
+- The `opnd-codex:codex-rescue` subagent only has the `Bash` tool — it cannot prompt the user. Resolving pending approvals is therefore **this command's** responsibility (the command has `AskUserQuestion`); the subagent stays a pure forwarder.
 - After the subagent returns, if its verbatim output contains a `Pending approvals:` block, use `AskUserQuestion` — once, listing each pending `<approval-id>` — to ask the user to **Approve** or **Deny** each one. Then run `/opnd-codex:approve <approval-id>` or `/opnd-codex:deny <approval-id>` for each decision. If the user wants Codex to continue past the decision, re-issue the rescue with `--resume`.
 - Non-interactive fallback: if `AskUserQuestion` is unavailable (`claude --print` and similar), do **not** prompt — leave the verbatim output as-is. The rendered `Approve:` / `Deny:` lines let the operator act manually.
 - This approval step is the one action the command may take *after* the verbatim Codex output. It must never edit, summarize, or re-order that output — it only appends an interactive approval prompt beneath it.
