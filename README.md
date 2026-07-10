@@ -74,7 +74,7 @@ If Codex is installed but not logged in yet, run:
 After install, you should see:
 
 - the slash commands listed below
-- the `codex:codex-rescue` subagent in `/agents`
+- the `opnd-codex:codex-rescue` subagent in `/agents`
 
 One simple first run is:
 
@@ -154,7 +154,7 @@ Examples:
 
 ### `/opnd-codex:rescue`
 
-Hands a task to Codex through the `codex:codex-rescue` subagent.
+Hands a task to Codex through the `opnd-codex:codex-rescue` subagent.
 
 Use it when you want Codex to:
 
@@ -371,7 +371,7 @@ Once Phase 5 is wired up to `scheduled-tasks` MCP (manual registration via `--pr
 
 ### Start Something Long-Running
 
-Foreground rescues / reviews are capped at the upstream Claude Code Bash tool's ~600 s ceiling. A rescue that runs longer is killed by Claude Code before Codex finishes, and there is no jobId to resume — pick `--background` whenever you expect a deep refactor, full-repo audit, or open-ended investigation. If you forget, the `codex:codex-rescue` subagent will surface a one-line notice in front of the result reminding you to re-issue with `--background` next time.
+Foreground rescues / reviews are capped at the upstream Claude Code Bash tool's ~600 s ceiling. A rescue that runs longer is killed by Claude Code before Codex finishes, and there is no jobId to resume — pick `--background` whenever you expect a deep refactor, full-repo audit, or open-ended investigation. If you forget, the `opnd-codex:codex-rescue` subagent will surface a one-line notice in front of the result reminding you to re-issue with `--background` next time.
 
 ```bash
 /opnd-codex:adversarial-review --background
@@ -517,4 +517,4 @@ What this means in practice:
   `.claude/settings.json` (e.g. deny the matching `Bash(node:*)` invocation) —
   that is the supported, per-project control, not a plugin frontmatter flag.
 - **`/opnd-codex:rescue`** remains the intended entry point for assistant-driven
-  Codex delegation — it routes through the `codex:codex-rescue` subagent.
+  Codex delegation — it routes through the `opnd-codex:codex-rescue` subagent.

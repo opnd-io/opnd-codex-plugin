@@ -326,7 +326,7 @@ test("docs alignment: /opnd-codex:rescue command keeps its own command-layer sem
 
   assert.match(
     command,
-    /If the request includes `--background`, run the `codex:codex-rescue` subagent in the background/i,
+    /If the request includes `--background`, run the `opnd-codex:codex-rescue` subagent in the background/i,
     "/opnd-codex:rescue command maps --background to subagent run_in_background"
   );
   assert.match(
